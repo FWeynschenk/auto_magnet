@@ -3,15 +3,14 @@ automatically finds movies and shows based on search terms and pushes the magnet
 
 add a .env file in the root to configure
 
-```TRANSMISSION_USER=_transmission-user-name_
+```TRANSMISSION_USER=transmission-user-name
 
-TRANSMISSION_PW=_transmission-password_
+TRANSMISSION_PW=transmission-password
 
-TRANSMISSION_HOST=_transmission-host_
+TRANSMISSION_HOST=transmission-host
 
-MOVIEPATH=_movies-folder-path_
+MOVIEPATH=movies-folder-path
 
-SERIESPATH=_series-folder-path_
+SERIESPATH=series-folder-path
 
-AMAGNET_PORT=_port-where-dashboard-is-hosted_
-```
+AMAGNET_PORT=port-where-dashboard-is-hosted```

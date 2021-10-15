@@ -132,6 +132,12 @@ app.post('/raw', (req, res) => {
     res.sendStatus(200);
 });
 
+app.get('/run', (req, res) => {
+    console.log('manual run:');
+    run();
+    res.sendStatus(200);
+});
+
 app.post('/action', (req, res) => {
     let index;
     switch (req.body.action) {

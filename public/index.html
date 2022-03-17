@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="/css/style.css" rel="stylesheet">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <title>Hello, world!</title>
+</head>
+
+<body v-scope v-on:wheel="v.updateScr" @mounted="v.mounted"
+  :style="`background-image: url(${v.bgURI}); background-size: cover;
+background-repeat: no-repeat; background-attachment: fixed; background-position: center; overflow-y: scroll !important;`">
+  <!-- Show item template -->
+  <template id="show">
+    <div class="accordion-item my-2" :style="v.find(v.search, title)">
+      <h2 class="accordion-header" :id="'showHeader'+id">
+        <button :class="`accordion-button ${index?'collapsed':''}`" type="button" data-bs-toggle="collapse"
+          :data-bs-target="'#showBody'+id" aria-expanded="false" aria-controls="'showBody'+id">
+          <div class="d-flex justify-content-between w-100">
+            {{title}}
+            <div :class="`${v.showStatusDict[status].class} me-3`" role="status"
+              :title="v.showStatusDict[status].msg">
+              <span class="visually-hidden">{{v.showStatusDict[status].msg}}</span>
+            </div>
+          </div>
+        </button>
+      </h2>
+      <div :id="'showBody'+id" :class="`accordion-collapse collapse ${index?'':'show'}`" :aria-labelledby="'show'+id"
+        data-bs-parent="#showAccordion">
+        <div class="accordion-body">
+          <div class="row justify-content-center">
+            <div class="col-md-3 col-12">
+              <img v-if="poster" :src="v.posterPrefix + poster" class="img-fluid rounded" alt="No img :(">
+            </div>
+            <div class="col-md-9 col-12 row">
+              <div class="col-12">
+                {{summary}}
+              </div>
+              <p class="card-text col-9 mb-0" style="align-self: end;">
+                <small class="text-muted">{{releaseDate? 'Released:&nbsp' + releaseDate + '&nbsp&nbsp&nbsp Scored:&nbsp'
+                  + rating : '' }} &nbsp&nbsp&nbsp {{`Status:&nbsp${status}`}}</small>
+              </p>
+              <button type="button" class="btn btn-primary col-3" @click="delMovie()"
+                style="align-self: end;">Delete</button>
+            </div>
+          </div>
+        </div>
+      </div>
+  </template>
+  <!-- Movie item template -->
+  <template id="movie">
+    <div class="accordion-item my-2" :style="v.find(v.search, title)">
+      <h2 class="accordion-header" :id="'movieHeader'+id">
+        <button :class="`accordion-button ${index?'collapsed':''}`" type="button" data-bs-toggle="collapse"
+          :data-bs-target="'#movieBody'+id" aria-expanded="false" aria-controls="'movieBody'+id">
+          <div class="d-flex justify-content-between w-100">
+            {{title}}
+            <div :class="`${v.movieStatusDict[status].class} me-3`" role="status"
+              :title="v.movieStatusDict[status].msg">
+              <span class="visually-hidden">{{v.movieStatusDict[status].msg}}</span>
+            </div>
+          </div>
+        </button>
+      </h2>
+      <div :id="'movieBody'+id" :class="`accordion-collapse collapse ${index?'':'show'}`" :aria-labelledby="'movie'+id"
+        data-bs-parent="#movieAccordion">
+        <div class="accordion-body">
+          <div class="row justify-content-center">
+            <div class="col-md-3 col-12">
+              <img v-if="poster" :src="v.posterPrefix + poster" class="img-fluid rounded" alt="No img :(">
+            </div>
+            <div class="col-md-9 col-12 row">
+              <div class="col-12">
+                {{summary}}
+              </div>
+              <p class="card-text col-9 mb-0" style="align-self: end;">
+                <small class="text-muted">{{releaseDate? 'Released:&nbsp' + releaseDate + '&nbsp&nbsp&nbsp Scored:&nbsp'
+                  + rating : '' }} &nbsp&nbsp&nbsp {{`Status:&nbsp${status}`}}</small>
+              </p>
+              <div class="dropdown col-3" style="align-self: end;">
+                <button class="btn btn-danger dropdown-toggle w-100" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                  Delete
+                </button>
+                <ul class="dropdown-menu">
+                  <li><a class="dropdown-item" @click="delMovie" href="#">Delete</a></li>
+                  <li><a class="dropdown-item" @click="delMovieWithData" href="#">Delete With data!</a></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+  <!-- Found movie template -->
+  <template id="foundMovie">
+    <div class="card">
+      <div class="row g-0">
+        <div class="col-3">
+          <img v-if="poster" :src="v.posterPrefix + poster" class="img-fluid rounded-start" alt="No img :(">
+        </div>
+        <div class="col-9">
+          <div class="card-body row h-100">
+            <h5 class="card-title col-12">{{title}}</h5>
+            <p class="card-text col-12">{{summary}}</p>
+            <p class="card-text col-9 mb-0" style="align-self: end;">
+              <small class="text-muted">{{releaseDate? 'Released ' + releaseDate + ', Scored: ' + rating : ''}}</small>
+            </p>
+            <button type="button" class="btn btn-primary col-3" @click="addMovie()" style="align-self: end;"
+              :disabled="!btnEnabled">{{btnEnabled ? 'Add' : 'Added!'}}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+  <!-- Found show template -->
+  <template id="foundShow">
+    <div class="card">
+      <div class="row g-0">
+        <div class="col-3">
+          <img v-if="poster" :src="v.posterPrefix + poster" class="img-fluid rounded-start" alt="No img :(">
+        </div>
+        <div class="col-9">
+          <div class="card-body row h-100">
+            <h5 class="card-title col-12">{{title}}</h5>
+            <p class="card-text col-12">{{summary}}</p>
+            <p class="card-text col-9 mb-0" style="align-self: end;">
+              <small class="text-muted">{{releaseDate? 'Released ' + releaseDate + ', Scored: ' + rating : ''}}</small>
+            </p>
+            <button type="button" class="btn btn-primary col-3" @click="addShow()" style="align-self: end;"
+              :disabled="!btnEnabled">{{btnEnabled ? 'Add' : 'Added!'}}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+
+
+  <!-- Modal -->
+  <div class="modal fade" id="addModal" tabindex="-1" aria-labelledby="addModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-fullscreen-lg-down modal-lg">
+      <div class="modal-content" v-scope="Add()">
+        <div class="modal-header">
+          <h5 class="modal-title" id="addModalLabel">Find Media</h5>
+          <div :class="`${v.findStatusDict[resStatus].class} ms-3`" role="status"
+            :title="v.findStatusDict[resStatus].msg">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" @mounted="mounted" style="height: 80vh !important;">
+          <div class="input-group mb-3">
+            <span class="input-group-text">Title</span>
+            <input id="addInput" type="text" class="form-control required" v-model="query"
+              aria-label="Title to search for" placeholder="required">
+            <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown"
+              aria-expanded="false" :disabled="!query">Search</button>
+            <ul class="dropdown-menu dropdown-menu-end" role="menu">
+              <li><a class="dropdown-item" @click="findMovie" href="#">Movie</a></li>
+              <li>
+                <hr class="dropdown-divider">
+              </li>
+              <li><a class="dropdown-item" @click="findShow" href="#">Show</a></li>
+            </ul>
+          </div>
+          <div class="input-group mb-3">
+            <span class="input-group-text">Year</span>
+            <input type="number" class="form-control" v-model="year" aria-describedby="year specifier"
+              placeholder="optional">
+          </div>
+          <div v-if="foundMovies.length" class="row">
+            <div v-for="movie in foundMovies" class="col-12" :key="movie.id">
+              <div v-scope="FoundMovie(movie)"></div>
+            </div>
+          </div>
+          <div v-if="foundShows.length" class="row">
+            <div v-for="show in foundShows" class="col-12" :key="show.id">
+              <div v-scope="FoundShow(show)"></div>
+            </div>
+          </div>
+
+        </div>
+        <!--<div class="modal-footer">
+          footer
+        </div>-->
+      </div>
+    </div>
+  </div>
+
+  <div class="container d-grid gap-4">
+    <!-- Recent box -->
+    <div class="row card shadow pb-3" style="background: rgba(255,255,255,0.75);">
+      <h2 class="px-4">
+        Recent
+      </h2>
+      <div class="container">
+        <div class="p-2 px-3 row g-3">
+          <div class="col-12 col-lg-6">
+            <div class="card shadow h-100 p-2">
+              Lorem ipsum dolor sit amet consectetur adipisicing elit. Soluta assumenda ipsum laborum labore provident
+              iure
+              eveniet sed? Nesciunt ducimus inventore deserunt mollitia vel provident error pariatur dolore, sed
+              corporis!
+              Perspiciatis.
+            </div>
+          </div>
+          <div class="col-12 col-lg-6">
+            <div class="card shadow h-100 p-2">
+              Lorem ipsum dolor sit amet consectetur adipisicing elit. At repellat omnis totam minus, officia iusto
+              tempore,
+              iure, laboriosam voluptatibus eos accusantium expedita provident corrupti. Cumque quam cupiditate
+              distinctio
+              eum nihil. Lorem ipsum dolor sit, amet consectetur adipisicing elit. Distinctio blanditiis nobis sunt
+              dignissimos temporibus at asperiores numquam officiis illo, veritatis facere facilis delectus magni
+              voluptatibus nisi! Animi eius corrupti qui. Lorem ipsum dolor sit amet consectetur, adipisicing elit. Enim
+              consequatur cum quibusdam, deleniti non ab suscipit adipisci inventore! Id reprehenderit recusandae sit
+              quisquam sint cumque magni odit veritatis officia nemo!
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabbed list box -->
+    <div class="shadow row card" style="background: rgba(255,255,255,0.75);">
+      <nav class="pt-3">
+        <div class="nav nav-pills nav-fill mx-3 py-2  px-3" id="nav-tab" role="tablist"
+          style="background: rgba(255,255,255,0.5); border-radius: 0.25rem;">
+          <button class="nav-link active m-3" id="nav-movie-tab" data-bs-toggle="tab" data-bs-target="#movieAccordion"
+            type="button" role="tab" aria-controls="movieAccordion" aria-selected="true"
+            style="outline: solid; outline-color: #ffffff; outline-width: 0.25rem; border: none;">
+            <h2 class="bi bi-camera-reels"> Movies</h2>
+          </button>
+          <button class="nav-link m-3" id="nav-show-tab" data-bs-toggle="tab" data-bs-target="#showAccordion"
+            type="button" role="tab" aria-controls="showAccordion" aria-selected="false"
+            style="outline: solid; outline-color: #ffffff; outline-width: 0.25rem; border: none;">
+            <h2 class="bi-tv"> Shows</h2>
+          </button>
+          <div class="align-self-center border rounded-pill m-3">
+            <input class="border-0 rounded-pill" type="text" value="search" placeholder="filter" id="search-input"
+              v-model="v.search">
+          </div>
+          <button type="button" class="nav-link m-3" data-bs-toggle="modal" data-bs-target="#addModal"
+            style="outline: solid; outline-color: #ffffff; outline-width: 0.25rem; border: none;">
+            <h2 class="bi bi-plus-circle"> Add</h2>
+          </button>
+          <!--sort? <i class="bi bi-sort-down"></i> -->
+        </div>
+      </nav>
+      <div class="tab-content" id="nav-tabContent">
+        <div class="accordion tab-pane fade show active px-3 pb-3" id="movieAccordion" role="tabpanel"
+          aria-labelledby="nav-movie-tab">
+          <!-- movies list -->
+          <div v-for="(movie, index) in v.movies" :key="movie.id">
+            <div v-scope="Movie(movie, index)"></div>
+          </div>
+        </div>
+        <div class="accordion tab-pane fade px-3 pb-3" id="showAccordion" role="tabpanel" aria-labelledby="nav-show-tab">
+          <!-- shows list -->
+          <div v-for="(show, index) in v.shows" :key="show.id">
+            <div v-scope="Show(show, index)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!--scroll icons-->
+  <i :class="`${v.topScr} bi bi-chevron-double-up position-fixed top-0 end-0 fs-1`"
+    style="color:rgb(179, 179, 179)"></i>
+  <i :class="`${v.bottomScr} bi bi-chevron-double-down position-fixed bottom-0 end-0 fs-1`"
+    style="color:rgb(179, 179, 179)"></i>
+
+
+
+</body>
+
+<script src="bootstrap.bundle.js"></script>
+<script type="module" src="js/index.js"></script>
+
+</html>

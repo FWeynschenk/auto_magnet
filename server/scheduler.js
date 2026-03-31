@@ -41,8 +41,10 @@ async function processMovie(movie) {
     return;
   }
 
-  const result = await addTorrent(winner.magnet, settings.get('movie_path'));
-  movies.update(movie.id, { status: 'downloading', magnet: winner.magnet, torrent_id: result.id });
+  const torrentUrl = winner.magnet || winner.download_url;
+  if (!torrentUrl) { console.log(`[scheduler] no magnet or download_url for: ${movie.title}`); return; }
+  const result = await addTorrent(torrentUrl, settings.get('movie_path'));
+  movies.update(movie.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id });
   console.log(`[scheduler] added "${movie.title}" — torrent #${result.id}`);
 }
 
@@ -107,13 +109,15 @@ async function processShow(show) {
   }
 
   const downloadDir = `${settings.get('shows_path')}/${show.title}`;
-  const result = await addTorrent(winner.magnet, downloadDir);
+  const torrentUrl = winner.magnet || winner.download_url;
+  if (!torrentUrl) { console.log(`[scheduler] no magnet or download_url for "${show.title}" ${epStr}`); return; }
+  const result = await addTorrent(torrentUrl, downloadDir);
   episodes.insert({
     show_id:    show.id,
     season:     nextSeason,
     episode:    nextEpisode,
     status:     'downloading',
-    magnet:     winner.magnet,
+    magnet:     torrentUrl,
     torrent_id: result.id,
   });
   console.log(`[scheduler] added "${show.title}" ${epStr} — torrent #${result.id}`);

@@ -66,26 +66,27 @@ router.post('/preview', async (req, res) => {
 // Grab a specific torrent result (manual-mode confirm)
 router.post('/grab', async (req, res) => {
   const { torrent, media_id, media_type, season, episode: ep } = req.body;
-  if (!torrent?.magnet) return res.status(400).json({ error: 'torrent.magnet required' });
-  if (!media_id)        return res.status(400).json({ error: 'media_id required' });
+  const torrentUrl = torrent?.magnet || torrent?.download_url;
+  if (!torrentUrl) return res.status(400).json({ error: 'torrent.magnet or torrent.download_url required' });
+  if (!media_id)   return res.status(400).json({ error: 'media_id required' });
 
   try {
     if (media_type === 'movie') {
       const downloadDir = settings.get('movie_path');
-      const result = await addTorrent(torrent.magnet, downloadDir);
-      movies.update(media_id, { status: 'downloading', magnet: torrent.magnet, torrent_id: result.id });
+      const result = await addTorrent(torrentUrl, downloadDir);
+      movies.update(media_id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id });
       res.json({ success: true, torrent_id: result.id });
     } else {
       const show = shows.byId(media_id);
       if (!show) return res.status(404).json({ error: 'Show not found' });
       const downloadDir = `${settings.get('shows_path')}/${show.title}`;
-      const result = await addTorrent(torrent.magnet, downloadDir);
+      const result = await addTorrent(torrentUrl, downloadDir);
       episodes.insert({
         show_id:    media_id,
         season:     season  || 1,
         episode:    ep      || 1,
         status:     'downloading',
-        magnet:     torrent.magnet,
+        magnet:     torrentUrl,
         torrent_id: result.id,
       });
       res.json({ success: true, torrent_id: result.id });

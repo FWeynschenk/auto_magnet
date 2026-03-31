@@ -4,6 +4,7 @@ const express = require('express');
 const router  = express.Router();
 const { movies } = require('../db');
 const { getMovieDetails } = require('../tmdb');
+const { run: runScheduler } = require('../scheduler');
 
 router.get('/', (_req, res) => {
   res.json(movies.all());
@@ -41,6 +42,16 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   movies.remove(req.params.id);
   res.sendStatus(204);
+});
+
+// Reset a movie so it can be re-grabbed (clears torrent info + cached results)
+router.post('/:id/redo', (req, res) => {
+  const movie = movies.byId(req.params.id);
+  if (!movie) return res.status(404).json({ error: 'Movie not found' });
+  movies.update(req.params.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null });
+  // Kick off background scheduler so manual movies get their cache populated
+  runScheduler().catch(() => {});
+  res.json(movies.byId(req.params.id));
 });
 
 module.exports = router;

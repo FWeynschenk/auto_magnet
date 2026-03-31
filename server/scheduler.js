@@ -23,7 +23,22 @@ async function runMovies() {
 }
 
 async function processMovie(movie) {
-  if (movie.mode === 'manual') return; // user will pick from preview
+  if (movie.mode === 'manual') {
+    if (movie.results_cache) return; // already searched, awaiting user approval
+    console.log(`[scheduler] movie (manual): ${movie.title} — searching for preview cache`);
+    const query   = `${movie.title} ${movie.year || ''}`.trim();
+    const quality = movie.quality || settings.get('default_quality') || '1080p';
+    const [prowlarrResults, ytsResults] = await Promise.all([
+      prowlarr.search(query, 'movie'),
+      yts.search(movie.title, quality),
+    ]);
+    const top5 = select([...prowlarrResults, ...ytsResults], { preferredQuality: quality, type: 'movie', limit: 5 });
+    if (top5.length > 0) {
+      movies.update(movie.id, { results_cache: JSON.stringify(top5) });
+      console.log(`[scheduler] cached ${top5.length} results for manual movie "${movie.title}"`);
+    }
+    return;
+  }
 
   console.log(`[scheduler] movie: ${movie.title} (${movie.year || '?'})`);
   const query   = `${movie.title} ${movie.year || ''}`.trim();
@@ -63,8 +78,8 @@ async function runShows() {
 
 async function processShow(show) {
   const latest = episodes.latest(show.id);
-  let nextSeason  = latest ? latest.season  : 1;
-  let nextEpisode = latest ? latest.episode + 1 : 1;
+  let nextSeason  = latest ? latest.season  : (show.start_season  || 1);
+  let nextEpisode = latest ? latest.episode + 1 : (show.start_episode || 1);
 
   // Ask TMDB if this episode exists in the current season
   let seasonInfo = null;
@@ -87,9 +102,17 @@ async function processShow(show) {
   const epStr = `S${String(nextSeason).padStart(2, '0')}E${String(nextEpisode).padStart(2, '0')}`;
 
   if (show.mode === 'manual') {
-    // Insert a pending row — user will approve via PreviewDialog
-    episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'pending', magnet: null, torrent_id: null });
-    console.log(`[scheduler] "${show.title}" ${epStr}: awaiting manual approval`);
+    // Search and cache results, then insert pending row for user approval
+    console.log(`[scheduler] "${show.title}" ${epStr}: searching for preview cache`);
+    const quality = show.quality || settings.get('default_quality') || '1080p';
+    const [prowlarrResults, eztvResults] = await Promise.all([
+      prowlarr.search(`${show.title} ${epStr}`, 'show'),
+      eztv.search(show.imdb_id, nextSeason, nextEpisode),
+    ]);
+    const top5 = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', limit: 5 });
+    const resultsCache = top5.length > 0 ? JSON.stringify(top5) : null;
+    episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'pending', magnet: null, torrent_id: null, results_cache: resultsCache });
+    console.log(`[scheduler] "${show.title}" ${epStr}: awaiting manual approval (cached ${top5.length} results)`);
     return;
   }
 

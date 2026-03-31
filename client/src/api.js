@@ -17,14 +17,16 @@ export const movies = {
   add:    (body)       => req('POST',   '/movies', body),
   update: (id, body)   => req('PUT',    `/movies/${id}`, body),
   remove: (id)         => req('DELETE', `/movies/${id}`),
+  redo:   (id)         => req('POST',   `/movies/${id}/redo`),
 };
 
 export const shows = {
-  list:     ()         => req('GET',    '/shows'),
-  add:      (body)     => req('POST',   '/shows', body),
-  update:   (id, body) => req('PUT',    `/shows/${id}`, body),
-  remove:   (id)       => req('DELETE', `/shows/${id}`),
-  episodes: (id)       => req('GET',    `/shows/${id}/episodes`),
+  list:        ()              => req('GET',    '/shows'),
+  add:         (body)          => req('POST',   '/shows', body),
+  update:      (id, body)      => req('PUT',    `/shows/${id}`, body),
+  remove:      (id)            => req('DELETE', `/shows/${id}`),
+  episodes:    (id)            => req('GET',    `/shows/${id}/episodes`),
+  redoEpisode: (showId, epId)  => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
 };
 
 export const search = {

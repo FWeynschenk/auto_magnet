@@ -14,7 +14,7 @@ router.get('/', (_req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const { tmdb_id, quality = '1080p', mode = 'auto' } = req.body;
+  const { tmdb_id, quality = '1080p', mode = 'auto', start_season = 1, start_episode = 1 } = req.body;
   if (!tmdb_id) return res.status(400).json({ error: 'tmdb_id required' });
 
   try {
@@ -22,7 +22,7 @@ router.post('/', async (req, res) => {
     if (!details) return res.status(404).json({ error: 'Show not found on TMDB' });
 
     const { tmdb_id: tid, imdb_id, title, poster_url } = details;
-    const result = shows.insert({ tmdb_id: tid, imdb_id, title, poster_url, quality, mode });
+    const result = shows.insert({ tmdb_id: tid, imdb_id, title, poster_url, quality, mode, start_season, start_episode });
     const show   = shows.byId(result.lastInsertRowid);
     res.status(201).json({ ...show, episodes: [] });
   } catch (err) {
@@ -51,6 +51,16 @@ router.delete('/:id', (req, res) => {
 
 router.get('/:id/episodes', (req, res) => {
   res.json(episodes.forShow(req.params.id));
+});
+
+// Reset an episode so it can be re-grabbed (clears torrent info + cached results)
+router.post('/:id/episodes/:epId/redo', (req, res) => {
+  const ep = episodes.byId(req.params.epId);
+  if (!ep || String(ep.show_id) !== String(req.params.id)) {
+    return res.status(404).json({ error: 'Episode not found' });
+  }
+  episodes.update(ep.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null });
+  res.json(episodes.byId(ep.id));
 });
 
 module.exports = router;

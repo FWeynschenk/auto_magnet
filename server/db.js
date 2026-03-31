@@ -58,6 +58,17 @@ db.exec(`
   );
 `);
 
+// Schema migrations — safe to run on every startup
+const migrations = [
+  'ALTER TABLE movies   ADD COLUMN results_cache TEXT',
+  'ALTER TABLE episodes ADD COLUMN results_cache TEXT',
+  'ALTER TABLE shows    ADD COLUMN start_season  INTEGER DEFAULT 1',
+  'ALTER TABLE shows    ADD COLUMN start_episode INTEGER DEFAULT 1',
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch (_) {}
+}
+
 // Seed defaults from .env on first run (INSERT OR IGNORE = won't overwrite saved settings)
 const defaultSettings = {
   transmission_host: process.env.TRANSMISSION_HOST || 'localhost',
@@ -111,9 +122,9 @@ const shows = {
   active: () => db.prepare('SELECT * FROM shows WHERE active = 1').all(),
 
   insert: (data) => db.prepare(`
-    INSERT INTO shows (tmdb_id, imdb_id, title, poster_url, quality, mode)
-    VALUES ($tmdb_id, $imdb_id, $title, $poster_url, $quality, $mode)
-  `).run(p(data)),
+    INSERT INTO shows (tmdb_id, imdb_id, title, poster_url, quality, mode, start_season, start_episode)
+    VALUES ($tmdb_id, $imdb_id, $title, $poster_url, $quality, $mode, $start_season, $start_episode)
+  `).run(p({ start_season: 1, start_episode: 1, ...data })),
 
   update: (id, data) => {
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');
@@ -133,10 +144,18 @@ const episodes = {
   exists: (showId, season, episode) =>
     db.prepare('SELECT id FROM episodes WHERE show_id = ? AND season = ? AND episode = ?').get(showId, season, episode),
 
+  get: (showId, season, episode) =>
+    db.prepare('SELECT * FROM episodes WHERE show_id = ? AND season = ? AND episode = ?').get(showId, season, episode),
+
+  byId: (id) =>
+    db.prepare('SELECT * FROM episodes WHERE id = ?').get(id),
+
   insert: (data) => db.prepare(`
-    INSERT OR IGNORE INTO episodes (show_id, season, episode, status, magnet, torrent_id)
-    VALUES ($show_id, $season, $episode, $status, $magnet, $torrent_id)
-  `).run(p(data)),
+    INSERT OR IGNORE INTO episodes (show_id, season, episode, status, magnet, torrent_id, results_cache)
+    VALUES ($show_id, $season, $episode, $status, $magnet, $torrent_id, $results_cache)
+  `).run(p({ results_cache: null, ...data })),
+
+  remove: (id) => db.prepare('DELETE FROM episodes WHERE id = ?').run(id),
 
   update: (id, data) => {
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');

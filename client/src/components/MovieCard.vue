@@ -20,10 +20,15 @@
 
     <div class="actions">
       <button
-        v-if="movie.mode === 'manual' && (movie.status === 'pending' || movie.status === 'failed')"
+        v-if="movie.mode === 'manual' && movie.status === 'pending'"
         class="btn-primary btn-sm"
         @click="$emit('preview', movie)"
       >Browse</button>
+      <button
+        v-if="movie.status === 'done' || movie.status === 'downloading' || movie.status === 'failed' || (movie.mode === 'auto' && movie.status === 'pending')"
+        class="btn-ghost btn-sm"
+        @click="$emit('redo', movie)"
+      >Redo</button>
       <button
         class="btn-ghost btn-sm"
         @click="toggleMode"
@@ -37,7 +42,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ movie: Object });
-const emit  = defineEmits(['remove', 'update', 'preview']);
+const emit  = defineEmits(['remove', 'update', 'preview', 'redo']);
 
 const statusClass = computed(() => ({
   pending:     'status-pending',

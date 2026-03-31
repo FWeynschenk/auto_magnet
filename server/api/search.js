@@ -23,8 +23,18 @@ router.get('/tmdb', async (req, res) => {
 
 // Preview top 5 scored results for a title (used by manual-mode items and preview button)
 router.post('/preview', async (req, res) => {
-  const { tmdb_id, type, season, episode: ep, quality = '1080p' } = req.body;
+  const { tmdb_id, type, season, episode: ep, quality = '1080p', movie_id, episode_id } = req.body;
   if (!tmdb_id || !type) return res.status(400).json({ error: 'tmdb_id and type required' });
+
+  // Return cached results if available (scheduler pre-searched for manual-mode items)
+  if (movie_id) {
+    const movie = movies.byId(movie_id);
+    if (movie?.results_cache) return res.json(JSON.parse(movie.results_cache));
+  }
+  if (episode_id) {
+    const epRow = episodes.byId(episode_id);
+    if (epRow?.results_cache) return res.json(JSON.parse(epRow.results_cache));
+  }
 
   try {
     let title, imdbId, year;
@@ -81,14 +91,21 @@ router.post('/grab', async (req, res) => {
       if (!show) return res.status(404).json({ error: 'Show not found' });
       const downloadDir = `${settings.get('shows_path')}/${show.title}`;
       const result = await addTorrent(torrentUrl, downloadDir);
-      episodes.insert({
-        show_id:    media_id,
-        season:     season  || 1,
-        episode:    ep      || 1,
-        status:     'downloading',
-        magnet:     torrentUrl,
-        torrent_id: result.id,
-      });
+      const epSeason  = season || 1;
+      const epEpisode = ep     || 1;
+      const existing  = episodes.get(media_id, epSeason, epEpisode);
+      if (existing) {
+        episodes.update(existing.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, results_cache: null });
+      } else {
+        episodes.insert({
+          show_id:    media_id,
+          season:     epSeason,
+          episode:    epEpisode,
+          status:     'downloading',
+          magnet:     torrentUrl,
+          torrent_id: result.id,
+        });
+      }
       res.json({ success: true, torrent_id: result.id });
     }
   } catch (err) {

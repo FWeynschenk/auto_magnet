@@ -20,6 +20,7 @@
         @remove="remove"
         @update="update"
         @preview="openPreview"
+        @redo-episode="redoEpisode"
       />
     </div>
 
@@ -35,6 +36,7 @@
       :item="previewItem.show"
       :season="previewItem.season"
       :episode="previewItem.episode"
+      :episode-id="previewItem.episode_id || null"
       @close="previewItem = null"
       @grabbed="reload"
     />
@@ -42,7 +44,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { shows as api } from '../api.js';
 import ShowCard     from '../components/ShowCard.vue';
 import AddDialog    from '../components/AddDialog.vue';
@@ -52,10 +54,15 @@ const list        = ref([]);
 const loading     = ref(true);
 const showAdd     = ref(false);
 const previewItem = ref(null);
+let pollTimer     = null;
 
 async function reload() {
   loading.value = true;
   try { list.value = await api.list(); } finally { loading.value = false; }
+}
+
+async function silentReload() {
+  try { list.value = await api.list(); } catch (_) {}
 }
 
 async function remove(id) {
@@ -73,17 +80,38 @@ function onAdded(show) {
   list.value.unshift(show);
 }
 
-// show = ShowCard's show object, epStr = 'S01E03'
-function openPreview(show, epStr) {
+// show = ShowCard's show object, epStr = 'S01E03', episodeId = db id
+function openPreview(show, epStr, episodeId) {
   const match = epStr?.match(/S(\d+)E(\d+)/i);
   previewItem.value = {
-    show: { ...show, type: 'tv' },
-    season:  match ? parseInt(match[1]) : null,
-    episode: match ? parseInt(match[2]) : null,
+    show:       { ...show, type: 'tv' },
+    season:     match ? parseInt(match[1]) : null,
+    episode:    match ? parseInt(match[2]) : null,
+    episode_id: episodeId || null,
   };
 }
 
-onMounted(reload);
+// episode redo: reset episode then open PreviewDialog for manual selection
+async function redoEpisode(show, episode) {
+  await api.redoEpisode(show.id, episode.id);
+  // refresh that show's episode list
+  const updated = await api.list();
+  list.value = updated;
+  // open preview dialog for this episode
+  previewItem.value = {
+    show: { ...show, type: 'tv' },
+    season:  episode.season,
+    episode: episode.episode,
+    episode_id: episode.id,
+  };
+}
+
+onMounted(() => {
+  reload();
+  pollTimer = setInterval(silentReload, 30000);
+});
+
+onUnmounted(() => clearInterval(pollTimer));
 </script>
 
 <style scoped>

@@ -51,10 +51,10 @@ import { ref, onMounted, computed } from 'vue';
 import { search as searchApi } from '../api.js';
 
 const props = defineProps({
-  item:    Object,  // { tmdb_id, title, type, quality, id } for movie
-          //  or { show, season, episode } for show episode
-  season:  { type: Number, default: null },
-  episode: { type: Number, default: null },
+  item:       Object,   // { tmdb_id, title, type, quality, id } for movie / show
+  season:     { type: Number, default: null },
+  episode:    { type: Number, default: null },
+  episodeId:  { type: Number, default: null },  // episode DB id — used to load cached results
 });
 const emit = defineEmits(['close', 'grabbed']);
 
@@ -72,12 +72,15 @@ const epLabel = computed(() => {
 
 onMounted(async () => {
   try {
+    const isMovie = (props.item.type || 'movie') === 'movie';
     results.value = await searchApi.preview({
-      tmdb_id: props.item.tmdb_id,
-      type:    props.item.type || 'movie',
-      quality: props.item.quality || '1080p',
-      season:  props.season,
-      episode: props.episode,
+      tmdb_id:    props.item.tmdb_id,
+      type:       props.item.type || 'movie',
+      quality:    props.item.quality || '1080p',
+      season:     props.season,
+      episode:    props.episode,
+      movie_id:   isMovie ? props.item.id : undefined,
+      episode_id: props.episodeId || undefined,
     });
   } catch (err) {
     error.value = err.message;

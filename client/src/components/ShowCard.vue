@@ -13,10 +13,10 @@
         <span>{{ show.mode }}</span>
       </div>
 
-      <EpisodeGrid :episodes="show.episodes" />
+      <EpisodeGrid :episodes="show.episodes" @redo-episode="ep => $emit('redo-episode', show, ep)" />
 
       <div v-if="pendingEpisode && show.mode === 'manual'" class="preview-hint">
-        {{ pendingEpisode }} awaiting approval
+        {{ pendingEpStr }} awaiting approval
       </div>
     </div>
 
@@ -24,7 +24,7 @@
       <button
         v-if="show.mode === 'manual' && pendingEpisode"
         class="btn-primary btn-sm"
-        @click="$emit('preview', show, pendingEpisode)"
+        @click="$emit('preview', show, pendingEpStr, pendingEpisode.id)"
       >Browse</button>
       <button class="btn-ghost btn-sm" @click="toggleActive">
         {{ show.active ? 'Pause' : 'Resume' }}
@@ -43,11 +43,15 @@ import { computed } from 'vue';
 import EpisodeGrid from './EpisodeGrid.vue';
 
 const props = defineProps({ show: Object });
-const emit  = defineEmits(['remove', 'update', 'preview']);
+const emit  = defineEmits(['remove', 'update', 'preview', 'redo-episode']);
 
 const pendingEpisode = computed(() => {
-  const ep = (props.show.episodes || []).find(e => e.status === 'pending');
-  if (!ep) return null;
+  return (props.show.episodes || []).find(e => e.status === 'pending') || null;
+});
+
+const pendingEpStr = computed(() => {
+  if (!pendingEpisode.value) return null;
+  const ep = pendingEpisode.value;
   return `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
 });
 

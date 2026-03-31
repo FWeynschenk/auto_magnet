@@ -65,6 +65,14 @@
               <option value="manual">Manual (I'll choose the torrent)</option>
             </select>
           </label>
+          <div v-if="type === 'tv'" class="start-row">
+            <label>Start season
+              <input v-model.number="startSeason" type="number" min="1" class="num-input" />
+            </label>
+            <label>Start episode
+              <input v-model.number="startEpisode" type="number" min="1" class="num-input" />
+            </label>
+          </div>
         </div>
 
         <div v-if="error" class="error-msg">{{ error }}</div>
@@ -91,9 +99,11 @@ const query    = ref('');
 const results  = ref([]);
 const selected = ref(null);
 const loading  = ref(false);
-const quality  = ref('1080p');
-const mode     = ref('auto');
-const adding   = ref(false);
+const quality      = ref('1080p');
+const mode         = ref('auto');
+const startSeason  = ref(1);
+const startEpisode = ref(1);
+const adding       = ref(false);
 const error    = ref('');
 const inputEl  = ref(null);
 
@@ -129,7 +139,9 @@ async function add() {
   error.value  = '';
   try {
     const api = props.type === 'movie' ? moviesApi : showsApi;
-    const result = await api.add({ tmdb_id: selected.value.tmdb_id, quality: quality.value, mode: mode.value });
+    const body = { tmdb_id: selected.value.tmdb_id, quality: quality.value, mode: mode.value };
+    if (props.type === 'tv') { body.start_season = startSeason.value; body.start_episode = startEpisode.value; }
+    const result = await api.add(body);
     emit('added', result);
     emit('close');
   } catch (err) {
@@ -210,6 +222,13 @@ async function add() {
 
 .options { display: flex; flex-direction: column; gap: 12px; }
 .options label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.start-row { display: flex; gap: 12px; }
+.start-row label { flex: 1; }
+.num-input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); padding: 8px 10px; font-size: 14px; outline: none; width: 100%;
+}
+.num-input:focus { border-color: var(--accent); }
 .options select {
   background: var(--bg);
   border: 1px solid var(--border);

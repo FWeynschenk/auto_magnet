@@ -20,6 +20,7 @@
         @remove="remove"
         @update="update"
         @preview="openPreview"
+        @redo="redo"
       />
     </div>
 
@@ -40,7 +41,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { movies as api } from '../api.js';
 import MovieCard    from '../components/MovieCard.vue';
 import AddDialog    from '../components/AddDialog.vue';
@@ -50,10 +51,15 @@ const list        = ref([]);
 const loading     = ref(true);
 const showAdd     = ref(false);
 const previewItem = ref(null);
+let pollTimer     = null;
 
 async function reload() {
   loading.value = true;
   try { list.value = await api.list(); } finally { loading.value = false; }
+}
+
+async function silentReload() {
+  try { list.value = await api.list(); } catch (_) {}
 }
 
 async function remove(id) {
@@ -75,7 +81,19 @@ function openPreview(movie) {
   previewItem.value = { ...movie, type: 'movie' };
 }
 
-onMounted(reload);
+async function redo(movie) {
+  const updated = await api.redo(movie.id);
+  const idx = list.value.findIndex(m => m.id === movie.id);
+  if (idx !== -1) list.value[idx] = updated;
+  previewItem.value = { ...updated, type: 'movie' };
+}
+
+onMounted(() => {
+  reload();
+  pollTimer = setInterval(silentReload, 30000);
+});
+
+onUnmounted(() => clearInterval(pollTimer));
 </script>
 
 <style scoped>

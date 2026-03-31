@@ -71,8 +71,14 @@ async function addTorrent(magnetOrUrl, downloadDir) {
 
   // .torrent URL — download the file on this server (has Docker-internal access),
   // then send as metainfo base64 so Transmission doesn't need to reach that URL.
-  const resp = await fetch(magnetOrUrl, { signal: AbortSignal.timeout(30000) });
-  if (!resp.ok) throw new Error(`Failed to download torrent file: HTTP ${resp.status}`);
+  console.log('[transmission] fetching torrent file:', magnetOrUrl.substring(0, 120));
+  let resp;
+  try {
+    resp = await fetch(magnetOrUrl, { signal: AbortSignal.timeout(30000) });
+  } catch (err) {
+    throw new Error(`torrent file fetch failed (${magnetOrUrl.substring(0, 80)}): ${err.cause?.message || err.message}`);
+  }
+  if (!resp.ok) throw new Error(`Failed to download torrent file: HTTP ${resp.status} (${magnetOrUrl.substring(0, 80)})`);
   const base64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
   return addByBase64(base64, downloadDir);
 }

@@ -50,6 +50,9 @@ function scoreResult(result, preferredQuality, type) {
   s += q.bonus;
   if (preferredQuality && q.label === preferredQuality) s += 50;
   if (isTrustedGroup(result, type)) s += 20;
+  // Strongly prefer results with a magnet link — download URLs often aren't
+  // fetchable from Docker (Cloudflare-protected torrent sites)
+  if (result.magnet) s += 150;
   return s;
 }
 

@@ -69,17 +69,35 @@ async function addTorrent(magnetOrUrl, downloadDir) {
     return addByUrl(magnetOrUrl, downloadDir);
   }
 
-  // .torrent URL — download the file on this server (has Docker-internal access),
-  // then send as metainfo base64 so Transmission doesn't need to reach that URL.
-  console.log('[transmission] fetching torrent file:', magnetOrUrl.substring(0, 120));
+  // .torrent URL — Prowlarr sometimes redirects these to magnet: URIs.
+  // Catch the redirect manually; if it's a magnet use it directly.
+  // Otherwise download the .torrent bytes and send as base64 metainfo.
+  console.log('[transmission] resolving download URL:', magnetOrUrl.substring(0, 120));
   let resp;
   try {
-    resp = await fetch(magnetOrUrl, { signal: AbortSignal.timeout(30000) });
+    resp = await fetch(magnetOrUrl, { redirect: 'manual', signal: AbortSignal.timeout(30000) });
   } catch (err) {
-    throw new Error(`torrent file fetch failed (${magnetOrUrl.substring(0, 80)}): ${err.cause?.message || err.message}`);
+    throw new Error(`download URL fetch failed: ${err.cause?.message || err.message}`);
   }
-  if (!resp.ok) throw new Error(`Failed to download torrent file: HTTP ${resp.status} (${magnetOrUrl.substring(0, 80)})`);
-  const base64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
+
+  const location = resp.headers.get('location') || '';
+  if (location.startsWith('magnet:')) {
+    console.log('[transmission] redirected to magnet, using directly');
+    return addByUrl(location, downloadDir);
+  }
+
+  // Follow non-magnet redirects or read the body directly
+  const target = (resp.status >= 300 && resp.status < 400 && location) ? location : null;
+  let bodyResp = resp;
+  if (target) {
+    try {
+      bodyResp = await fetch(target, { signal: AbortSignal.timeout(30000) });
+    } catch (err) {
+      throw new Error(`torrent redirect fetch failed: ${err.cause?.message || err.message}`);
+    }
+  }
+  if (!bodyResp.ok) throw new Error(`Failed to download torrent file: HTTP ${bodyResp.status}`);
+  const base64 = Buffer.from(await bodyResp.arrayBuffer()).toString('base64');
   return addByBase64(base64, downloadDir);
 }
 

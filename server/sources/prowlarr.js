@@ -26,18 +26,37 @@ async function search(query, type = 'movie') {
       return [];
     }
     const data = await res.json();
-    return (Array.isArray(data) ? data : [])
-      .map(item => ({
-        source:       'prowlarr',
-        title:        item.title,
-        seeders:      item.seeders ?? 0,
-        size:         item.size ?? 0,
-        magnet:       item.magnetUrl || buildMagnet(item.infoHash, item.title),
-        download_url: item.downloadUrl || null,
-        info_hash:    item.infoHash || null,
-        published_at: item.publishDate || null,
-      }))
-      .filter(r => r.magnet || r.download_url);
+    const items = (Array.isArray(data) ? data : []).map(item => ({
+      source:       'prowlarr',
+      title:        item.title,
+      seeders:      item.seeders ?? 0,
+      size:         item.size ?? 0,
+      magnet:       item.magnetUrl || buildMagnet(item.infoHash, item.title),
+      download_url: item.downloadUrl || null,
+      info_hash:    item.infoHash || null,
+      published_at: item.publishDate || null,
+    }));
+
+    // For results that only have a download_url (no magnet/hash), Prowlarr often
+    // redirects that URL to a magnet: URI. Resolve those redirects now so the
+    // selector can properly prefer magnet-bearing results.
+    await Promise.all(items
+      .filter(r => !r.magnet && r.download_url)
+      .map(async r => {
+        try {
+          const head = await fetch(r.download_url, {
+            method:   'GET',
+            redirect: 'manual',
+            headers:  { 'X-Api-Key': apiKey },
+            signal:   AbortSignal.timeout(10000),
+          });
+          const loc = head.headers.get('location') || '';
+          if (loc.startsWith('magnet:')) r.magnet = loc;
+        } catch (_) {}
+      })
+    );
+
+    return items.filter(r => r.magnet || r.download_url);
   } catch (err) {
     console.error('[prowlarr] search error:', err.message);
     return [];

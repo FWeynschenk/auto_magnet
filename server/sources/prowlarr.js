@@ -19,7 +19,7 @@ async function search(query, type = 'movie') {
   try {
     const res = await fetch(url, {
       headers: { 'X-Api-Key': apiKey },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(90000),
     });
     if (!res.ok) {
       console.warn(`[prowlarr] HTTP ${res.status}`);

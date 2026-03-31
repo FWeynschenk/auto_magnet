@@ -1,0 +1,49 @@
+services:
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Europe/Amsterdam}
+    volumes:
+      - prowlarr-config:/config
+    ports:
+      - "9696:9696"
+    restart: unless-stopped
+
+  auto-magnet:
+    build: .
+    container_name: auto-magnet
+    depends_on:
+      - prowlarr
+    environment:
+      # Transmission — your existing instance on the network
+      - TRANSMISSION_HOST=${TRANSMISSION_HOST}
+      - TRANSMISSION_PORT=${TRANSMISSION_PORT:-9091}
+      - TRANSMISSION_USER=${TRANSMISSION_USER:-}
+      - TRANSMISSION_PW=${TRANSMISSION_PW:-}
+      # Download paths as seen by Transmission on its host
+      - MOVIEPATH=${MOVIEPATH}
+      - SHOWSPATH=${SHOWSPATH}
+      # Prowlarr — container on the internal Docker network
+      - PROWLARR_HOST=prowlarr
+      - PROWLARR_PORT=9696
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY:-}
+      # TMDB & search
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - MIN_SEEDS=${MIN_SEEDS:-10}
+      - DEFAULT_QUALITY=${DEFAULT_QUALITY:-1080p}
+      # App
+      - AMAGNET_PORT=62201
+      - DB_PATH=/data/auto_magnet.db
+    volumes:
+      - auto-magnet-data:/data
+    ports:
+      - "${AMAGNET_PORT:-62201}:62201"
+    restart: unless-stopped
+
+volumes:
+  prowlarr-config:
+  auto-magnet-data:

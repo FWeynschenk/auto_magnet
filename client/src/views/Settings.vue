@@ -1,0 +1,185 @@
+<template>
+  <div>
+    <div class="view-header">
+      <h1>Settings</h1>
+      <span class="tx-indicator" :class="status.connected ? 'ok' : 'err'">
+        ● {{ status.connected ? 'Transmission connected' : 'Transmission unreachable' }}
+      </span>
+    </div>
+
+    <div v-if="loading" class="state-msg">Loading…</div>
+
+    <form v-else @submit.prevent="save" class="settings-form">
+
+      <section>
+        <h2>Transmission</h2>
+        <div class="fields">
+          <label>Host
+            <input v-model="form.transmission_host" type="text" placeholder="192.168.0.102" />
+          </label>
+          <label>Port
+            <input v-model="form.transmission_port" type="text" placeholder="9091" />
+          </label>
+          <label>Username
+            <input v-model="form.transmission_user" type="text" />
+          </label>
+          <label>Password
+            <input v-model="form.transmission_pw" type="password" placeholder="leave blank to keep current" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Download Paths</h2>
+        <div class="fields">
+          <label>Movies directory
+            <input v-model="form.movie_path" type="text" placeholder="/HDD0/Shared/Movies" />
+          </label>
+          <label>Shows directory
+            <input v-model="form.shows_path" type="text" placeholder="/HDD0/Shared/Series" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Prowlarr</h2>
+        <div class="fields">
+          <label>Host
+            <input v-model="form.prowlarr_host" type="text" placeholder="localhost" />
+          </label>
+          <label>Port
+            <input v-model="form.prowlarr_port" type="text" placeholder="9696" />
+          </label>
+          <label>API Key
+            <input v-model="form.prowlarr_api_key" type="password" placeholder="leave blank to keep current" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>TMDB</h2>
+        <div class="fields">
+          <label>API Key
+            <input v-model="form.tmdb_api_key" type="password" placeholder="leave blank to keep current" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Search</h2>
+        <div class="fields">
+          <label>Minimum seeders
+            <input v-model="form.min_seeds" type="number" min="0" max="999" />
+          </label>
+          <label>Default quality
+            <select v-model="form.default_quality">
+              <option value="2160p">4K (2160p)</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="any">Best available</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <div v-if="saved" class="saved-msg">Settings saved.</div>
+      <div v-if="saveError" class="error-msg">{{ saveError }}</div>
+
+      <div class="form-footer">
+        <button type="submit" class="btn-primary" :disabled="saving">
+          {{ saving ? 'Saving…' : 'Save Settings' }}
+        </button>
+      </div>
+    </form>
+  </div>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue';
+import { settings as api } from '../api.js';
+
+const form      = ref({});
+const loading   = ref(true);
+const saving    = ref(false);
+const saved     = ref(false);
+const saveError = ref('');
+const status    = ref({ connected: false });
+
+onMounted(async () => {
+  try {
+    [form.value, status.value] = await Promise.all([api.get(), api.status()]);
+  } finally {
+    loading.value = false;
+  }
+});
+
+async function save() {
+  saving.value    = true;
+  saved.value     = false;
+  saveError.value = '';
+  try {
+    await api.save(form.value);
+    saved.value = true;
+    // Re-check Transmission after saving
+    status.value = await api.status();
+    setTimeout(() => { saved.value = false; }, 3000);
+  } catch (err) {
+    saveError.value = err.message;
+  } finally {
+    saving.value = false;
+  }
+}
+</script>
+
+<style scoped>
+.view-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px;
+}
+h1 { font-size: 22px; font-weight: 700; }
+.tx-indicator { font-size: 13px; font-weight: 500; }
+.tx-indicator.ok  { color: var(--green); }
+.tx-indicator.err { color: var(--red); }
+
+.state-msg { color: var(--muted); padding: 40px 0; text-align: center; }
+
+.settings-form { display: flex; flex-direction: column; gap: 32px; max-width: 640px; }
+
+section h2 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--muted);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+input, select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+  outline: none;
+  width: 100%;
+}
+input:focus, select:focus { border-color: var(--accent); }
+
+.saved-msg { color: var(--green); font-size: 13px; }
+.error-msg { color: var(--red);   font-size: 13px; }
+
+.form-footer { padding-top: 4px; }
+</style>

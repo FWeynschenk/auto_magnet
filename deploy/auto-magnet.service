@@ -1,0 +1,39 @@
+# auto-magnet systemd service
+#
+# SETUP:
+#   1. Clone the repo:       git clone <repo> /opt/auto_magnet
+#   2. Create your env file: cp /opt/auto_magnet/.env.example /opt/auto_magnet/.env
+#                            nano /opt/auto_magnet/.env   # fill in all values
+#   3. Install this service: sudo cp /opt/auto_magnet/deploy/auto-magnet.service /etc/systemd/system/
+#                            sudo systemctl daemon-reload
+#                            sudo systemctl enable --now auto-magnet
+#
+# PROWLARR FIRST-RUN:
+#   After the stack starts, open http://<host>:9696 to configure Prowlarr.
+#   - Go to Settings → Indexers and add your preferred torrent sites
+#   - Copy the API key from Settings → General
+#   - Add it to /opt/auto_magnet/.env as PROWLARR_API_KEY=<key>
+#   - sudo systemctl restart auto-magnet
+#
+# USEFUL COMMANDS:
+#   sudo systemctl status auto-magnet
+#   sudo journalctl -u auto-magnet -f
+#   docker compose -f /opt/auto_magnet/docker-compose.yml logs -f auto-magnet
+
+[Unit]
+Description=auto_magnet + Prowlarr (Docker Compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/auto_magnet
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+ExecReload=/usr/bin/docker compose pull && /usr/bin/docker compose up -d --remove-orphans
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

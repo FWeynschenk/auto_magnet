@@ -6,8 +6,12 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
-# Store
+# Store (legacy v1)
 store.json
+
+# Database & Docker persistent data
+auto_magnet.db
+data/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

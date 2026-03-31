@@ -11,6 +11,9 @@ const ALLOWED_KEYS = [
   'prowlarr_host', 'prowlarr_port', 'prowlarr_api_key',
   'tmdb_api_key',
   'min_seeds', 'default_quality',
+  'scheduler_interval_mins', 'min_size_mb', 'max_size_gb',
+  'air_date_buffer_hours', 'tmdb_region',
+  'preferred_movie_groups', 'preferred_show_groups', 'quality_strict',
 ];
 
 router.get('/', (_req, res) => {

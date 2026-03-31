@@ -123,4 +123,24 @@ function testConnection() {
   });
 }
 
-module.exports = { addTorrent, getTorrents, testConnection };
+/**
+ * Poll Transmission for all active torrents and return a Map of
+ * torrentId → { progress: 0-100, done: boolean }
+ */
+async function getTorrentProgress() {
+  try {
+    const torrents = await getTorrents();
+    const map = new Map();
+    for (const t of torrents) {
+      map.set(t.id, {
+        progress: Math.round((t.percentDone || 0) * 100),
+        done:     (t.percentDone || 0) >= 1,
+      });
+    }
+    return map;
+  } catch (_) {
+    return new Map();
+  }
+}
+
+module.exports = { addTorrent, getTorrents, getTorrentProgress, testConnection };

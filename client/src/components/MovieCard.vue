@@ -13,6 +13,19 @@
         <span class="badge mode">{{ movie.mode }}</span>
       </div>
 
+      <!-- Download progress bar -->
+      <div v-if="movie.status === 'downloading'" class="progress-wrap">
+        <div class="progress-bar">
+          <div class="progress-fill" :style="{ width: (movie.progress || 0) + '%' }" />
+        </div>
+        <span class="progress-label">{{ movie.progress || 0 }}%</span>
+      </div>
+
+      <!-- Release date -->
+      <div v-if="movie.release_date" class="release-date">
+        {{ movie.status === 'pending' && !hasReleased ? '🗓 ' : '' }}{{ formatDate(movie.release_date) }}
+      </div>
+
       <div v-if="movie.status === 'pending' && movie.mode === 'manual'" class="preview-hint">
         Awaiting approval
       </div>
@@ -29,10 +42,9 @@
         class="btn-ghost btn-sm"
         @click="$emit('redo', movie)"
       >Redo</button>
-      <button
-        class="btn-ghost btn-sm"
-        @click="toggleMode"
-      >{{ movie.mode === 'auto' ? 'Set Manual' : 'Set Auto' }}</button>
+      <button class="btn-ghost btn-sm" @click="toggleMode">
+        {{ movie.mode === 'auto' ? 'Set Manual' : 'Set Auto' }}
+      </button>
       <button class="btn-danger btn-sm" @click="$emit('remove', movie.id)">Remove</button>
     </div>
   </div>
@@ -51,6 +63,17 @@ const statusClass = computed(() => ({
   done:        'status-done',
   failed:      'status-failed',
 }[props.movie.status] || 'status-pending'));
+
+const hasReleased = computed(() => {
+  if (!props.movie.release_date) return true;
+  return props.movie.release_date <= new Date().toISOString().slice(0, 10);
+});
+
+function formatDate(d) {
+  if (!d) return '';
+  const date = new Date(d + 'T00:00:00');
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
 function toggleMode() {
   emit('update', props.movie.id, { mode: props.movie.mode === 'auto' ? 'manual' : 'auto' });
@@ -71,18 +94,12 @@ function toggleMode() {
 .card:hover { border-color: var(--accent); }
 
 .poster {
-  width: 72px;
-  height: 108px;
-  object-fit: cover;
-  border-radius: 4px;
-  flex-shrink: 0;
+  width: 72px; height: 108px;
+  object-fit: cover; border-radius: 4px; flex-shrink: 0;
 }
 .poster-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--border);
-  font-size: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--border); font-size: 28px;
 }
 
 .info { flex: 1; min-width: 0; }
@@ -92,14 +109,9 @@ function toggleMode() {
 
 .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .badge {
-  padding: 2px 8px;
-  border-radius: 99px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .4px;
-  background: var(--border);
-  color: var(--muted);
+  padding: 2px 8px; border-radius: 99px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
+  background: var(--border); color: var(--muted);
 }
 .status-pending     { background: #374151; color: var(--muted); }
 .status-searching   { background: #1d4ed8; color: #fff; }
@@ -109,6 +121,12 @@ function toggleMode() {
 .quality { background: #1e1b4b; color: var(--accent-h); }
 .mode    { background: #0c4a6e; color: #7dd3fc; }
 
+.progress-wrap { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.progress-bar  { flex: 1; height: 5px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 99px; transition: width .5s; }
+.progress-label { font-size: 11px; color: var(--muted); flex-shrink: 0; width: 28px; }
+
+.release-date { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .preview-hint { margin-top: 6px; font-size: 12px; color: var(--yellow); }
 
 .actions { display: flex; flex-direction: column; gap: 6px; }

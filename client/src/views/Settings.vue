@@ -62,6 +62,21 @@
           <label>API Key
             <input v-model="form.tmdb_api_key" type="password" placeholder="leave blank to keep current" />
           </label>
+          <label>Region <span class="hint">(for release dates, e.g. US, GB, NL)</span>
+            <input v-model="form.tmdb_region" type="text" placeholder="US" maxlength="2" style="text-transform:uppercase" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Scheduler</h2>
+        <div class="fields">
+          <label>Check interval (minutes) <span class="hint">min 5</span>
+            <input v-model.number="form.scheduler_interval_mins" type="number" min="5" max="1440" />
+          </label>
+          <label>Air date buffer (hours) <span class="hint">wait this long after air date before searching</span>
+            <input v-model.number="form.air_date_buffer_hours" type="number" min="0" max="48" />
+          </label>
         </div>
       </section>
 
@@ -69,7 +84,7 @@
         <h2>Search</h2>
         <div class="fields">
           <label>Minimum seeders
-            <input v-model="form.min_seeds" type="number" min="0" max="999" />
+            <input v-model.number="form.min_seeds" type="number" min="0" max="999" />
           </label>
           <label>Default quality
             <select v-model="form.default_quality">
@@ -78,6 +93,22 @@
               <option value="720p">720p</option>
               <option value="any">Best available</option>
             </select>
+          </label>
+          <label>Min file size (MB)
+            <input v-model.number="form.min_size_mb" type="number" min="0" />
+          </label>
+          <label>Max file size (GB)
+            <input v-model.number="form.max_size_gb" type="number" min="1" />
+          </label>
+          <label class="span2">Preferred movie groups <span class="hint">comma-separated, e.g. yts,yify</span>
+            <input v-model="form.preferred_movie_groups" type="text" placeholder="yts,yify" />
+          </label>
+          <label class="span2">Preferred show groups <span class="hint">comma-separated, e.g. eztv,tgx,ettv,rartv</span>
+            <input v-model="form.preferred_show_groups" type="text" placeholder="eztv,tgx,ettv,rartv" />
+          </label>
+          <label class="check-label span2">
+            <input v-model="qualityStrictBool" type="checkbox" class="checkbox" />
+            Strict quality mode — only grab results that exactly match preferred quality
           </label>
         </div>
       </section>
@@ -96,7 +127,7 @@
       <div class="run-header">
         <div>
           <div class="run-title">Scheduler</div>
-          <div class="run-sub">Runs automatically every hour. Trigger a manual run below.</div>
+          <div class="run-sub">Runs automatically every {{ form.scheduler_interval_mins || 60 }} minutes. Trigger a manual run below.</div>
         </div>
         <button class="btn-primary" :disabled="running" @click="runNow">
           {{ running ? 'Running…' : '▶ Run Now' }}
@@ -108,7 +139,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { settings as api, scheduler } from '../api.js';
 
 const form      = ref({});
@@ -119,6 +150,12 @@ const saveError = ref('');
 const status    = ref({ connected: false });
 const running   = ref(false);
 const runMsg    = ref('');
+
+// quality_strict is stored as "0"/"1" string — expose as bool for the checkbox
+const qualityStrictBool = computed({
+  get: () => form.value.quality_strict === '1',
+  set: (v) => { form.value.quality_strict = v ? '1' : '0'; },
+});
 
 onMounted(async () => {
   try {
@@ -146,9 +183,8 @@ async function save() {
   saveError.value = '';
   try {
     await api.save(form.value);
-    saved.value = true;
-    // Re-check Transmission after saving
-    status.value = await api.status();
+    saved.value   = true;
+    status.value  = await api.status();
     setTimeout(() => { saved.value = false; }, 3000);
   } catch (err) {
     saveError.value = err.message;
@@ -173,35 +209,28 @@ h1 { font-size: 22px; font-weight: 700; }
 .settings-form { display: flex; flex-direction: column; gap: 32px; max-width: 640px; }
 
 section h2 {
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .6px;
-  color: var(--muted);
-  margin-bottom: 12px;
-  padding-bottom: 6px;
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .6px; color: var(--muted);
+  margin-bottom: 12px; padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.span2  { grid-column: span 2; }
 
 label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 13px;
-  color: var(--muted);
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 13px; color: var(--muted);
 }
+.hint { font-size: 11px; color: var(--border); margin-left: 4px; }
+
+.check-label { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.checkbox    { width: 15px; height: 15px; flex-shrink: 0; accent-color: var(--accent); }
 
 input, select {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  padding: 8px 10px;
-  font-size: 14px;
-  outline: none;
-  width: 100%;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  padding: 8px 10px; font-size: 14px; outline: none; width: 100%;
 }
 input:focus, select:focus { border-color: var(--accent); }
 
@@ -211,16 +240,11 @@ input:focus, select:focus { border-color: var(--accent); }
 .form-footer { padding-top: 4px; }
 
 .run-section {
-  margin-top: 32px;
-  max-width: 640px;
+  margin-top: 32px; max-width: 640px;
   padding: 16px 20px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
 }
-.run-header {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
-}
-.run-title { font-weight: 600; font-size: 14px; }
-.run-sub   { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.run-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.run-title  { font-weight: 600; font-size: 14px; }
+.run-sub    { color: var(--muted); font-size: 12px; margin-top: 3px; }
 </style>

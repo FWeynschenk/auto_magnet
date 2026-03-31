@@ -78,4 +78,27 @@ async function getSeasonDetails(tmdbId, seasonNumber) {
   };
 }
 
-module.exports = { searchMulti, getMovieDetails, getTvDetails, getSeasonDetails };
+/**
+ * Fetch the digital/streaming release date for a movie from TMDB.
+ * Returns an ISO date string "YYYY-MM-DD" or null.
+ * type=4 is Digital, type=3 is Theatrical (fallback).
+ */
+async function getMovieReleaseDates(tmdbId, region = 'US') {
+  try {
+    const url = `${BASE}/movie/${tmdbId}/release_dates?api_key=${apiKey()}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const regionData = (data.results || []).find(r => r.iso_3166_1 === region);
+    if (!regionData) return null;
+    const dates = regionData.release_dates || [];
+    const digital    = dates.find(d => d.type === 4);
+    const theatrical = dates.find(d => d.type === 3);
+    const pick = digital || theatrical;
+    return pick ? pick.release_date.slice(0, 10) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+module.exports = { searchMulti, getMovieDetails, getTvDetails, getSeasonDetails, getMovieReleaseDates };

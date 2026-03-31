@@ -9,9 +9,16 @@
             :key="ep.episode"
             class="ep-bubble clickable"
             :class="ep.status"
-            :title="`S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status} · click to redo`"
-            @click="$emit('redo-episode', ep)"
-          >{{ String(ep.episode).padStart(2, '0') }}</span>
+            :title="`S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''} · click to redo · shift+click to skip`"
+            @click="handleClick(ep, $event)"
+          >
+            <template v-if="ep.status === 'downloading' && ep.progress > 0">
+              {{ ep.progress }}
+            </template>
+            <template v-else>
+              {{ String(ep.episode).padStart(2, '0') }}
+            </template>
+          </span>
         </div>
       </div>
     </template>
@@ -23,7 +30,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ episodes: Array });
-defineEmits(['redo-episode']);
+const emit  = defineEmits(['redo-episode', 'skip-episode']);
 
 const seasons = computed(() => {
   const map = {};
@@ -35,6 +42,14 @@ const seasons = computed(() => {
     .sort(([a], [b]) => Number(a) - Number(b))
     .map(([num, episodes]) => ({ num: Number(num), episodes: episodes.sort((a, b) => a.episode - b.episode) }));
 });
+
+function handleClick(ep, event) {
+  if (event.shiftKey) {
+    emit('skip-episode', ep);
+  } else {
+    emit('redo-episode', ep);
+  }
+}
 </script>
 
 <style scoped>
@@ -47,20 +62,15 @@ const seasons = computed(() => {
 .ep-bubbles { display: flex; flex-wrap: wrap; gap: 3px; }
 
 .ep-bubble {
-  width: 26px;
-  height: 20px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--border);
-  color: var(--muted);
+  width: 26px; height: 20px; border-radius: 4px;
+  font-size: 10px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--border); color: var(--muted);
   cursor: default;
 }
-.ep-bubble.clickable { cursor: pointer; }
+.ep-bubble.clickable  { cursor: pointer; }
 .ep-bubble.clickable:hover { filter: brightness(1.4); }
+
 .ep-bubble.done        { background: #14532d; color: #86efac; }
 .ep-bubble.downloading { background: #92400e; color: #fde68a; }
 .ep-bubble.pending     { background: #1e3a5f; color: #93c5fd; }

@@ -64,6 +64,10 @@ const migrations = [
   'ALTER TABLE episodes ADD COLUMN results_cache TEXT',
   'ALTER TABLE shows    ADD COLUMN start_season  INTEGER DEFAULT 1',
   'ALTER TABLE shows    ADD COLUMN start_episode INTEGER DEFAULT 1',
+  'ALTER TABLE movies   ADD COLUMN release_date  TEXT',
+  'ALTER TABLE movies   ADD COLUMN progress      INTEGER DEFAULT 0',
+  'ALTER TABLE episodes ADD COLUMN air_date      TEXT',
+  'ALTER TABLE episodes ADD COLUMN progress      INTEGER DEFAULT 0',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -81,8 +85,16 @@ const defaultSettings = {
   prowlarr_port:     process.env.PROWLARR_PORT      || '9696',
   prowlarr_api_key:  process.env.PROWLARR_API_KEY   || '',
   tmdb_api_key:      process.env.TMDB_API_KEY       || '',
-  min_seeds:         process.env.MIN_SEEDS          || '10',
-  default_quality:   process.env.DEFAULT_QUALITY    || '1080p',
+  min_seeds:                 process.env.MIN_SEEDS          || '10',
+  default_quality:           process.env.DEFAULT_QUALITY    || '1080p',
+  scheduler_interval_mins:   '60',
+  min_size_mb:               '200',
+  max_size_gb:               '60',
+  air_date_buffer_hours:     '2',
+  tmdb_region:               'US',
+  preferred_movie_groups:    'yts,yify',
+  preferred_show_groups:     'eztv,tgx,ettv,rartv',
+  quality_strict:            '0',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -100,7 +112,8 @@ function p(obj) {
 const movies = {
   all: () => db.prepare('SELECT * FROM movies ORDER BY added_at DESC').all(),
   byId: (id) => db.prepare('SELECT * FROM movies WHERE id = ?').get(id),
-  pending: () => db.prepare("SELECT * FROM movies WHERE status IN ('pending', 'failed')").all(),
+  pending:     () => db.prepare("SELECT * FROM movies WHERE status IN ('pending', 'failed')").all(),
+  downloading: () => db.prepare("SELECT * FROM movies WHERE status = 'downloading' AND torrent_id IS NOT NULL").all(),
 
   insert: (data) => db.prepare(`
     INSERT INTO movies (tmdb_id, imdb_id, title, year, poster_url, quality, mode)
@@ -138,6 +151,9 @@ const episodes = {
   forShow: (showId) =>
     db.prepare('SELECT * FROM episodes WHERE show_id = ? ORDER BY season, episode').all(showId),
 
+  downloading: () => db.prepare("SELECT * FROM episodes WHERE status = 'downloading' AND torrent_id IS NOT NULL").all(),
+  failed:      (showId) => db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'failed'").all(showId),
+
   latest: (showId) =>
     db.prepare('SELECT * FROM episodes WHERE show_id = ? ORDER BY season DESC, episode DESC LIMIT 1').get(showId),
 
@@ -151,9 +167,9 @@ const episodes = {
     db.prepare('SELECT * FROM episodes WHERE id = ?').get(id),
 
   insert: (data) => db.prepare(`
-    INSERT OR IGNORE INTO episodes (show_id, season, episode, status, magnet, torrent_id, results_cache)
-    VALUES ($show_id, $season, $episode, $status, $magnet, $torrent_id, $results_cache)
-  `).run(p({ results_cache: null, ...data })),
+    INSERT OR IGNORE INTO episodes (show_id, season, episode, status, magnet, torrent_id, results_cache, air_date)
+    VALUES ($show_id, $season, $episode, $status, $magnet, $torrent_id, $results_cache, $air_date)
+  `).run(p({ results_cache: null, air_date: null, ...data })),
 
   remove: (id) => db.prepare('DELETE FROM episodes WHERE id = ?').run(id),
 

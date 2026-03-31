@@ -13,20 +13,23 @@ async function req(method, path, body) {
 }
 
 export const movies = {
-  list:   ()           => req('GET',    '/movies'),
-  add:    (body)       => req('POST',   '/movies', body),
-  update: (id, body)   => req('PUT',    `/movies/${id}`, body),
-  remove: (id)         => req('DELETE', `/movies/${id}`),
-  redo:   (id)         => req('POST',   `/movies/${id}/redo`),
+  list:        ()           => req('GET',    '/movies'),
+  add:         (body)       => req('POST',   '/movies', body),
+  update:      (id, body)   => req('PUT',    `/movies/${id}`, body),
+  remove:      (id)         => req('DELETE', `/movies/${id}`),
+  redo:        (id)         => req('POST',   `/movies/${id}/redo`),
+  retryFailed: ()           => req('POST',   '/movies/retry-failed'),
 };
 
 export const shows = {
-  list:        ()              => req('GET',    '/shows'),
-  add:         (body)          => req('POST',   '/shows', body),
-  update:      (id, body)      => req('PUT',    `/shows/${id}`, body),
-  remove:      (id)            => req('DELETE', `/shows/${id}`),
-  episodes:    (id)            => req('GET',    `/shows/${id}/episodes`),
-  redoEpisode: (showId, epId)  => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
+  list:        ()                    => req('GET',    '/shows'),
+  add:         (body)                => req('POST',   '/shows', body),
+  update:      (id, body)            => req('PUT',    `/shows/${id}`, body),
+  remove:      (id)                  => req('DELETE', `/shows/${id}`),
+  episodes:    (id)                  => req('GET',    `/shows/${id}/episodes`),
+  redoEpisode: (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
+  skipEpisode: (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/skip`),
+  retryFailed: ()                    => req('POST',   '/shows/retry-failed'),
 };
 
 export const search = {
@@ -43,4 +46,8 @@ export const settings = {
 
 export const scheduler = {
   run: () => req('POST', '/scheduler/run'),
+};
+
+export const timeline = {
+  get: () => req('GET', '/timeline'),
 };

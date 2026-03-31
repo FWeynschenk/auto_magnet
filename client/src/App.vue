@@ -11,15 +11,19 @@
         ● {{ txStatus.connected ? 'Transmission' : 'No Transmission' }}
       </span>
     </nav>
+
     <main>
       <RouterView />
     </main>
+
+    <TimelineStrip />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
 import { settings } from './api.js';
+import TimelineStrip from './components/TimelineStrip.vue';
 
 const txStatus = ref({ connected: false });
 
@@ -30,6 +34,11 @@ async function checkStatus() {
 onMounted(() => {
   checkStatus();
   setInterval(checkStatus, 30000);
+
+  // Request browser notification permission on first load
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
 });
 </script>
 
@@ -62,15 +71,11 @@ body {
 a { color: inherit; text-decoration: none; }
 
 button {
-  cursor: pointer;
-  border: none;
-  border-radius: var(--radius);
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
+  cursor: pointer; border: none; border-radius: var(--radius);
+  padding: 6px 14px; font-size: 13px; font-weight: 500;
   transition: opacity .15s;
 }
-button:hover { opacity: .85; }
+button:hover   { opacity: .85; }
 button:disabled { opacity: .4; cursor: default; }
 
 .btn-primary { background: var(--accent); color: #fff; }
@@ -83,29 +88,21 @@ button:disabled { opacity: .4; cursor: default; }
 #shell { display: flex; flex-direction: column; min-height: 100vh; }
 
 .navbar {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 0 24px;
-  height: 56px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 100;
+  display: flex; align-items: center; gap: 24px;
+  padding: 0 24px; height: 56px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
 }
 
 .nav-brand { font-weight: 700; font-size: 16px; color: var(--accent); letter-spacing: .5px; }
 
 .nav-links { display: flex; gap: 4px; }
 .nav-links a {
-  padding: 6px 14px;
-  border-radius: var(--radius);
-  color: var(--muted);
-  font-weight: 500;
+  padding: 6px 14px; border-radius: var(--radius);
+  color: var(--muted); font-weight: 500;
   transition: color .15s, background .15s;
 }
-.nav-links a:hover      { color: var(--text); background: var(--border); }
+.nav-links a:hover              { color: var(--text); background: var(--border); }
 .nav-links a.router-link-active { color: var(--accent); }
 
 .tx-status { margin-left: auto; font-size: 12px; font-weight: 500; }

@@ -4,6 +4,7 @@ const express = require('express');
 const router  = express.Router();
 const { shows, episodes } = require('../db');
 const { getTvDetails } = require('../tmdb');
+const { run: runScheduler } = require('../scheduler');
 
 router.get('/', (_req, res) => {
   const allShows = shows.all();
@@ -53,14 +54,39 @@ router.get('/:id/episodes', (req, res) => {
   res.json(episodes.forShow(req.params.id));
 });
 
-// Reset an episode so it can be re-grabbed (clears torrent info + cached results)
+// Reset an episode so it can be re-grabbed
 router.post('/:id/episodes/:epId/redo', (req, res) => {
   const ep = episodes.byId(req.params.epId);
   if (!ep || String(ep.show_id) !== String(req.params.id)) {
     return res.status(404).json({ error: 'Episode not found' });
   }
-  episodes.update(ep.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null });
+  episodes.update(ep.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null, progress: 0 });
   res.json(episodes.byId(ep.id));
+});
+
+// Skip an episode so the scheduler advances past it
+router.post('/:id/episodes/:epId/skip', (req, res) => {
+  const ep = episodes.byId(req.params.epId);
+  if (!ep || String(ep.show_id) !== String(req.params.id)) {
+    return res.status(404).json({ error: 'Episode not found' });
+  }
+  episodes.update(ep.id, { status: 'skipped' });
+  res.json(episodes.byId(ep.id));
+});
+
+// Reset all failed episodes across all shows to pending
+router.post('/retry-failed', (req, res) => {
+  const allShows   = shows.all();
+  let resetCount   = 0;
+  for (const show of allShows) {
+    const failed = episodes.failed(show.id);
+    for (const ep of failed) {
+      episodes.update(ep.id, { status: 'pending', results_cache: null, progress: 0 });
+      resetCount++;
+    }
+  }
+  if (resetCount > 0) runScheduler().catch(() => {});
+  res.json({ reset: resetCount });
 });
 
 module.exports = router;

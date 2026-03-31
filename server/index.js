@@ -16,6 +16,7 @@ app.use('/api/movies',   require('./api/movies'));
 app.use('/api/shows',    require('./api/shows'));
 app.use('/api/search',   require('./api/search'));
 app.use('/api/settings', require('./api/settings'));
+app.use('/api/timeline', require('./api/timeline'));
 
 app.get('/api/status', async (_req, res) => {
   const { testConnection } = require('./transmission');

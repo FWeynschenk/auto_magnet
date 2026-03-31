@@ -21,7 +21,8 @@ router.post('/', async (req, res) => {
     const details = await getTvDetails(tmdb_id);
     if (!details) return res.status(404).json({ error: 'Show not found on TMDB' });
 
-    const result = shows.insert({ ...details, quality, mode });
+    const { tmdb_id: tid, imdb_id, title, poster_url } = details;
+    const result = shows.insert({ tmdb_id: tid, imdb_id, title, poster_url, quality, mode });
     const show   = shows.byId(result.lastInsertRowid);
     res.status(201).json({ ...show, episodes: [] });
   } catch (err) {

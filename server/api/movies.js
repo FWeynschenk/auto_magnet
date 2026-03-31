@@ -17,7 +17,8 @@ router.post('/', async (req, res) => {
     const details = await getMovieDetails(tmdb_id);
     if (!details) return res.status(404).json({ error: 'Movie not found on TMDB' });
 
-    const result = movies.insert({ ...details, quality, mode });
+    const { tmdb_id: tid, imdb_id, title, year, poster_url } = details;
+    const result = movies.insert({ tmdb_id: tid, imdb_id, title, year, poster_url, quality, mode });
     res.status(201).json(movies.byId(result.lastInsertRowid));
   } catch (err) {
     if (err.message?.includes('UNIQUE')) {

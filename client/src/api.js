@@ -34,7 +34,11 @@ export const search = {
 };
 
 export const settings = {
-  get:    ()     => req('GET', '/settings'),
-  save:   (body) => req('PUT', '/settings', body),
-  status: ()     => req('GET', '/settings/status'),
+  get:    ()     => req('GET',  '/settings'),
+  save:   (body) => req('PUT',  '/settings', body),
+  status: ()     => req('GET',  '/settings/status'),
+};
+
+export const scheduler = {
+  run: () => req('POST', '/scheduler/run'),
 };

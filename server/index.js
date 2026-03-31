@@ -22,6 +22,11 @@ app.get('/api/status', async (_req, res) => {
   res.json(await testConnection());
 });
 
+app.post('/api/scheduler/run', async (_req, res) => {
+  res.json({ started: true });
+  require('./scheduler').run(); // fire and forget
+});
+
 // Serve Vue SPA (production build)
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientDist));

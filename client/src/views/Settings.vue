@@ -91,12 +91,25 @@
         </button>
       </div>
     </form>
+
+    <div class="run-section">
+      <div class="run-header">
+        <div>
+          <div class="run-title">Scheduler</div>
+          <div class="run-sub">Runs automatically every hour. Trigger a manual run below.</div>
+        </div>
+        <button class="btn-primary" :disabled="running" @click="runNow">
+          {{ running ? 'Running…' : '▶ Run Now' }}
+        </button>
+      </div>
+      <div v-if="runMsg" class="saved-msg">{{ runMsg }}</div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { settings as api } from '../api.js';
+import { settings as api, scheduler } from '../api.js';
 
 const form      = ref({});
 const loading   = ref(true);
@@ -104,6 +117,8 @@ const saving    = ref(false);
 const saved     = ref(false);
 const saveError = ref('');
 const status    = ref({ connected: false });
+const running   = ref(false);
+const runMsg    = ref('');
 
 onMounted(async () => {
   try {
@@ -112,6 +127,18 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+async function runNow() {
+  running.value = true;
+  runMsg.value  = '';
+  try {
+    await scheduler.run();
+    runMsg.value = 'Scheduler started — check back in a moment.';
+    setTimeout(() => { runMsg.value = ''; }, 4000);
+  } finally {
+    running.value = false;
+  }
+}
 
 async function save() {
   saving.value    = true;
@@ -182,4 +209,18 @@ input:focus, select:focus { border-color: var(--accent); }
 .error-msg { color: var(--red);   font-size: 13px; }
 
 .form-footer { padding-top: 4px; }
+
+.run-section {
+  margin-top: 32px;
+  max-width: 640px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.run-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+}
+.run-title { font-weight: 600; font-size: 14px; }
+.run-sub   { color: var(--muted); font-size: 12px; margin-top: 3px; }
 </style>

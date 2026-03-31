@@ -116,9 +116,9 @@ const movies = {
   downloading: () => db.prepare("SELECT * FROM movies WHERE status = 'downloading' AND torrent_id IS NOT NULL").all(),
 
   insert: (data) => db.prepare(`
-    INSERT INTO movies (tmdb_id, imdb_id, title, year, poster_url, quality, mode)
-    VALUES ($tmdb_id, $imdb_id, $title, $year, $poster_url, $quality, $mode)
-  `).run(p(data)),
+    INSERT INTO movies (tmdb_id, imdb_id, title, year, poster_url, quality, mode, release_date)
+    VALUES ($tmdb_id, $imdb_id, $title, $year, $poster_url, $quality, $mode, $release_date)
+  `).run(p({ release_date: null, ...data })),
 
   update: (id, data) => {
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');

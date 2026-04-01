@@ -126,8 +126,46 @@ async function runShows() {
   }
 }
 
+/**
+ * Insert 'upcoming' placeholder rows for episodes airing within the next 60 days.
+ * Uses INSERT OR IGNORE so existing rows (grabbed, downloading, done, etc.) are never overwritten.
+ */
+async function populateUpcoming(show) {
+  const horizon = Date.now() + 60 * 24 * 3600 * 1000; // 60 days out
+  const latest = episodes.latest(show.id); // excludes 'upcoming' rows
+  const startSeason = latest ? latest.season : (show.start_season || 1);
+
+  // Scan the current season frontier and the next two, to catch cross-season upcoming eps
+  for (let s = startSeason; s <= startSeason + 2; s++) {
+    let seasonInfo;
+    try { seasonInfo = await getSeasonDetails(show.tmdb_id, s); } catch (_) { continue; }
+    if (!seasonInfo?.episodes?.length) continue;
+
+    for (const ep of seasonInfo.episodes) {
+      if (!ep.air_date) continue;
+      const airMs = new Date(ep.air_date + 'T23:59:00Z').getTime();
+      if (airMs <= Date.now()) continue; // already aired — normal grab handles it
+      if (airMs > horizon) continue;    // too far out
+
+      // INSERT OR IGNORE: won't touch rows that have already been grabbed
+      episodes.insert({
+        show_id:    show.id,
+        season:     s,
+        episode:    ep.episode_number,
+        status:     'upcoming',
+        magnet:     null,
+        torrent_id: null,
+        air_date:   ep.air_date,
+      });
+    }
+  }
+}
+
 async function processShow(show) {
-  const latest = episodes.latest(show.id);
+  // Populate upcoming timeline placeholders (errors are non-fatal)
+  try { await populateUpcoming(show); } catch (_) {}
+
+  const latest = episodes.latest(show.id); // excludes 'upcoming'
   let nextSeason  = latest ? latest.season  : (show.start_season  || 1);
   let nextEpisode = latest ? latest.episode + 1 : (show.start_episode || 1);
 
@@ -145,9 +183,6 @@ async function processShow(show) {
     }
   }
 
-  // Already grabbed?
-  if (episodes.exists(show.id, nextSeason, nextEpisode)) return;
-
   // Get air date for this specific episode from TMDB season data
   const epInfo = seasonInfo?.episodes?.find(e => e.episode_number === nextEpisode);
   const airDate = epInfo?.air_date || null;
@@ -157,6 +192,10 @@ async function processShow(show) {
     console.log(`[scheduler] "${show.title}" S${nextSeason}E${nextEpisode} airs ${airDate}, skipping`);
     return;
   }
+
+  // Check for an existing row — skip unless it's an 'upcoming' placeholder ready to upgrade
+  const existingRow = episodes.get(show.id, nextSeason, nextEpisode);
+  if (existingRow && existingRow.status !== 'upcoming') return;
 
   const epStr = `S${String(nextSeason).padStart(2, '0')}E${String(nextEpisode).padStart(2, '0')}`;
   const quality = show.quality || settings.get('default_quality') || '1080p';
@@ -169,7 +208,11 @@ async function processShow(show) {
     ]);
     const top5 = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', limit: 5 });
     const resultsCache = top5.length > 0 ? JSON.stringify(top5) : null;
-    episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'pending', magnet: null, torrent_id: null, results_cache: resultsCache, air_date: airDate });
+    if (existingRow) {
+      episodes.update(existingRow.id, { status: 'pending', results_cache: resultsCache, air_date: airDate });
+    } else {
+      episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'pending', magnet: null, torrent_id: null, results_cache: resultsCache, air_date: airDate });
+    }
     console.log(`[scheduler] "${show.title}" ${epStr}: awaiting manual approval (cached ${top5.length} results)`);
     return;
   }
@@ -188,7 +231,11 @@ async function processShow(show) {
 
   const downloadDir = `${settings.get('shows_path')}/${show.title}`;
   const result = await addTorrent(torrentUrl, downloadDir);
-  episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
+  if (existingRow) {
+    episodes.update(existingRow.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
+  } else {
+    episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
+  }
   console.log(`[scheduler] added "${show.title}" ${epStr} — torrent #${result.id}`);
 }
 

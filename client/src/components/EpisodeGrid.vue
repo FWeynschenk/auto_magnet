@@ -7,10 +7,12 @@
           <span
             v-for="ep in season.episodes"
             :key="ep.episode"
-            class="ep-bubble clickable"
-            :class="ep.status"
-            :title="`S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''} · click to redo · shift+click to skip`"
-            @click="handleClick(ep, $event)"
+            class="ep-bubble"
+            :class="[ep.status, ep.status !== 'upcoming' ? 'clickable' : '']"
+            :title="ep.status === 'upcoming'
+              ? `S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — upcoming${ep.air_date ? ' · airs ' + ep.air_date : ''}`
+              : `S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''} · click to redo · shift+click to skip`"
+            @click="ep.status !== 'upcoming' && handleClick(ep, $event)"
           >
             <template v-if="ep.status === 'downloading' && ep.progress > 0">
               {{ ep.progress }}
@@ -76,6 +78,7 @@ function handleClick(ep, event) {
 .ep-bubble.pending     { background: #1e3a5f; color: #93c5fd; }
 .ep-bubble.failed      { background: #7f1d1d; color: #fca5a5; }
 .ep-bubble.skipped     { background: #1f2937; color: #6b7280; }
+.ep-bubble.upcoming    { background: #1e1b4b; color: #818cf8; }
 
 .empty { font-size: 12px; color: var(--muted); }
 </style>

@@ -26,6 +26,8 @@ router.post('/', async (req, res) => {
     const result = shows.insert({ tmdb_id: tid, imdb_id, title, poster_url, quality, mode, start_season, start_episode });
     const show   = shows.byId(result.lastInsertRowid);
     res.status(201).json({ ...show, episodes: [] });
+    // Populate upcoming timeline placeholders without blocking the response
+    runScheduler().catch(() => {});
   } catch (err) {
     if (err.message?.includes('UNIQUE')) {
       return res.status(409).json({ error: 'Show already added' });

@@ -7,9 +7,9 @@
       </button>
     </div>
 
-    <div v-if="!collapsed" class="timeline-scroll">
+    <div v-if="!collapsed" class="timeline-scroll" ref="scrollEl">
       <div v-if="loading" class="tl-empty">Loading…</div>
-      <div v-else-if="groups.length === 0" class="tl-empty">No upcoming releases in the next 60 days</div>
+      <div v-else-if="groups.length === 0" class="tl-empty">No releases in the past 30 days or next 60 days</div>
 
       <div v-for="group in groups" :key="group.date" class="day-col">
         <div class="day-label" :class="{ today: group.isToday, past: group.isPast }">
@@ -38,17 +38,25 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import { timeline as api } from '../api.js';
 
 const items     = ref([]);
 const loading   = ref(true);
 const collapsed = ref(false);
+const scrollEl  = ref(null);
 let pollTimer   = null;
 
 async function load() {
   try { items.value = await api.get(); } catch (_) {}
   loading.value = false;
+  // Scroll so "Today" is visible (with a little past context on the left)
+  await nextTick();
+  const todayEl = scrollEl.value?.querySelector('.day-label.today');
+  if (todayEl) {
+    const col = todayEl.closest('.day-col');
+    if (col) col.scrollIntoView({ inline: 'center', behavior: 'smooth' });
+  }
 }
 
 const today = new Date().toISOString().slice(0, 10);

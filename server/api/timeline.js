@@ -5,7 +5,7 @@ const router  = express.Router();
 const { db }  = require('../db');
 
 router.get('/', (_req, res) => {
-  const past   = "date('now', '-7 days')";
+  const past   = "date('now', '-30 days')";
   const future = "date('now', '+60 days')";
 
   const movieRows = db.prepare(`

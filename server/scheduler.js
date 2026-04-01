@@ -183,13 +183,21 @@ async function processShow(show) {
     }
   }
 
-  // Get air date for this specific episode from TMDB season data
-  const epInfo = seasonInfo?.episodes?.find(e => e.episode_number === nextEpisode);
-  const airDate = epInfo?.air_date || null;
+  // Get air date for this specific episode from TMDB season data.
+  // Fall back to the season premiere date when individual episode dates aren't set yet
+  // (common for announced-but-not-detailed future seasons).
+  const epInfo  = seasonInfo?.episodes?.find(e => e.episode_number === nextEpisode);
+  const airDate = epInfo?.air_date || seasonInfo?.season_air_date || null;
 
-  // Skip if episode hasn't aired yet
+  // Skip if episode hasn't aired yet.
+  // Also skip when airDate is null AND the season itself looks future
+  // (episode_count === 0 means TMDB has the season placeholder but no episodes yet).
   if (airDate && !hasAired(airDate)) {
     console.log(`[scheduler] "${show.title}" S${nextSeason}E${nextEpisode} airs ${airDate}, skipping`);
+    return;
+  }
+  if (!airDate && seasonInfo?.episode_count === 0) {
+    console.log(`[scheduler] "${show.title}" S${nextSeason} has no episode data yet, skipping`);
     return;
   }
 

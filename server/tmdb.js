@@ -68,12 +68,13 @@ async function getSeasonDetails(tmdbId, seasonNumber) {
   if (!res.ok) return null;
   const r = await res.json();
   return {
-    season_number: r.season_number,
-    episode_count: (r.episodes || []).length,
+    season_number:   r.season_number,
+    season_air_date: r.air_date || null,   // season premiere date (fallback when episode dates are missing)
+    episode_count:   (r.episodes || []).length,
     episodes: (r.episodes || []).map(e => ({
       episode_number: e.episode_number,
       name:           e.name,
-      air_date:       e.air_date,
+      air_date:       e.air_date || null,
     })),
   };
 }

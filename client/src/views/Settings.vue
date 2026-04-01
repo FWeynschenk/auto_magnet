@@ -74,7 +74,7 @@
           <label>Check interval (minutes) <span class="hint">min 5</span>
             <input v-model.number="form.scheduler_interval_mins" type="number" min="5" max="1440" />
           </label>
-          <label>Air date buffer (hours) <span class="hint">wait this long after air date before searching</span>
+          <label>Air date buffer (hours) <span class="hint">wait this long after air date before searching (recommended: 4+)</span>
             <input v-model.number="form.air_date_buffer_hours" type="number" min="0" max="48" />
           </label>
         </div>

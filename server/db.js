@@ -90,7 +90,7 @@ const defaultSettings = {
   scheduler_interval_mins:   '60',
   min_size_mb:               '200',
   max_size_gb:               '60',
-  air_date_buffer_hours:     '2',
+  air_date_buffer_hours:     '4',
   tmdb_region:               'US',
   preferred_movie_groups:    'yts,yify',
   preferred_show_groups:     'eztv,tgx,ettv,rartv',

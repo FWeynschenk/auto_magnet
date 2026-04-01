@@ -2,13 +2,53 @@
 
 const { settings } = require('./db');
 
+// ─── Hard-reject lists ────────────────────────────────────────────────────────
+
 const MALWARE_EXTS = ['.exe', '.bat', '.cmd', '.scr', '.msi', '.pif', '.vbs', '.ps1', '.com'];
+
+/**
+ * CAM / pre-release sources that are always rejected.
+ * TS and CAM use separator context ([.\-_[\s]) to avoid false positives
+ * in regular title words like "CAMDEN" or "ITS".
+ */
+const LOW_QUALITY_SOURCES = [
+  /\bTELESYNC\b/i,
+  /\bHDTS\b/i,
+  /\bHDCAM\b/i,
+  /\bCAMRIP\b/i,
+  /\bDVDSCR(?:EENER)?\b/i,
+  /\bSCREENER\b/i,
+  /(?:^|[.\-_[\s])TS(?:[.\-_\]\s]|$)/i,  // .TS. / [TS] etc — TELESYNC shorthand
+  /(?:^|[.\-_[\s])CAM(?:[.\-_\]\s]|$)/i, // .CAM. / [CAM] etc
+  /(?:^|[.\-_[\s])R5(?:[.\-_\]\s]|$)/i,  // .R5. — Russian DVD pre-release
+];
+
+/**
+ * Foreign-language tokens that indicate a non-English dub/sub release.
+ * Penalised rather than hard-blocked so a foreign user can still get results.
+ */
+const FOREIGN_LANG_RE =
+  /\b(?:FRENCH|GERMAN|DEUTSCH|SPANISH|HINDI|ITALIAN|PORTUGUESE|DUTCH|VOSTFR|TRUEFRENCH|ARABIC|TURKISH|RUSSIAN|KOREAN|CHINESE|JAPANESE)\b/i;
+
+// ─── Quality detection ────────────────────────────────────────────────────────
 
 const QUALITY_PATTERNS = [
   { pattern: /2160p|4k\b|uhd\b/i, label: '2160p', bonus: 40 },
   { pattern: /1080p/i,             label: '1080p', bonus: 30 },
   { pattern: /720p/i,              label: '720p',  bonus: 10 },
 ];
+
+// ─── Source-type scoring ──────────────────────────────────────────────────────
+
+const SOURCE_BONUSES = [
+  { pattern: /\bWEB[-.]?DL\b/i,              bonus: 25 },
+  { pattern: /\bWEBRIP\b/i,                  bonus: 15 },
+  { pattern: /\b(?:BLURAY|BDR(?:IP)?)\b/i,  bonus: 10 },
+  { pattern: /\bHDTV\b/i,                    bonus:  5 },
+  // DVDRip: 0 — baseline
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getTrustedGroups(type) {
   const key = type === 'movie' ? 'preferred_movie_groups' : 'preferred_show_groups';
@@ -28,16 +68,57 @@ function hasMalware(title) {
   return MALWARE_EXTS.some(ext => lower.includes(ext));
 }
 
+function isLowQualitySource(title) {
+  return LOW_QUALITY_SOURCES.some(re => re.test(title));
+}
+
 function isTrustedGroup(result, type) {
   const groups = getTrustedGroups(type);
-  // Source name matches (e.g. source === 'yts')
   if (groups.includes(result.source)) return true;
-  // Group tag in title (e.g. [ETTV] or -rartv)
   const lower = result.title.toLowerCase();
   return groups.some(g => lower.includes(`[${g}]`) || lower.includes(`-${g}`));
 }
 
-function passesHardFilters(result, minSeeds) {
+/** Returns true if title looks like a full-season pack (S01 but no E01). */
+function isSeasonPack(title) {
+  return /\bS\d{1,2}\b/i.test(title) && !/\bE\d{1,2}\b/i.test(title);
+}
+
+/** Returns true if title bundles multiple episodes (S01E01E02 or S01E01-E02). */
+function isMultiEpisode(title) {
+  return /S\d{1,2}E\d{1,2}[-_+]?E\d{1,2}/i.test(title);
+}
+
+/** Returns true if the title contains a user-defined blocked tag. */
+function isUserBlocked(title) {
+  const raw = settings.get('blocked_tags') || '';
+  const tags = raw.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+  const lower = title.toLowerCase();
+  return tags.some(tag => lower.includes(tag));
+}
+
+function getSourceBonus(title) {
+  for (const s of SOURCE_BONUSES) {
+    if (s.pattern.test(title)) return s.bonus;
+  }
+  return 0;
+}
+
+function getHdrBonus(title) {
+  return /\b(?:HDR(?:10\+?)?|DV\b|DOVI|DOLBY\.?VISION)\b/i.test(title) ? 10 : 0;
+}
+
+function getProperBonus(title) {
+  return /\b(?:PROPER|REPACK|REAL\.PROPER)\b/i.test(title) ? 15 : 0;
+}
+
+function getForeignPenalty(title) {
+  return FOREIGN_LANG_RE.test(title) ? -30 : 0;
+}
+
+// ─── Core filter / score ──────────────────────────────────────────────────────
+
+function passesHardFilters(result, minSeeds, type) {
   if (result.seeders < minSeeds) return false;
   if (result.size > 0) {
     const minBytes = parseInt(settings.get('min_size_mb') || '200') * 1024 * 1024;
@@ -45,7 +126,14 @@ function passesHardFilters(result, minSeeds) {
     if (result.size < minBytes) return false;
     if (result.size > maxBytes) return false;
   }
-  if (hasMalware(result.title)) return false;
+  if (hasMalware(result.title))        return false;
+  if (isLowQualitySource(result.title)) return false;
+  if (isUserBlocked(result.title))      return false;
+  // For show episode grabs, reject season packs and multi-episode bundles
+  if (type === 'show') {
+    if (isSeasonPack(result.title))   return false;
+    if (isMultiEpisode(result.title)) return false;
+  }
   return true;
 }
 
@@ -53,14 +141,24 @@ function scoreResult(result, preferredQuality, type) {
   const q = result.quality
     ? { label: result.quality, bonus: QUALITY_PATTERNS.find(p => p.label === result.quality)?.bonus || 0 }
     : detectQuality(result.title);
+
   let s = result.seeders * 2;
   s += q.bonus;
   if (preferredQuality && q.label === preferredQuality) s += 50;
   if (isTrustedGroup(result, type)) s += 20;
   if (result.magnet) s += 150;
+
+  // Source type and encoding bonuses
+  s += getSourceBonus(result.title);
+  s += getHdrBonus(result.title);
+  s += getProperBonus(result.title);
+  s += getForeignPenalty(result.title);
+
   result._quality = q.label;
   return s;
 }
+
+// ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Select the best torrent(s) from a merged list of results.
@@ -72,11 +170,11 @@ function scoreResult(result, preferredQuality, type) {
  * @param {number} opts.limit             1 = return single winner, N = return top N array
  */
 function select(results, { preferredQuality = '1080p', type = 'movie', limit = 1 } = {}) {
-  const minSeeds   = parseInt(settings.get('min_seeds') || '10');
-  const strict     = settings.get('quality_strict') === '1';
+  const minSeeds = parseInt(settings.get('min_seeds') || '10');
+  const strict   = settings.get('quality_strict') === '1';
 
   let scored = results
-    .filter(r => passesHardFilters(r, minSeeds))
+    .filter(r => passesHardFilters(r, minSeeds, type))
     .map(r => ({ ...r, _score: scoreResult(r, preferredQuality, type), _quality: detectQuality(r.title).label }))
     .sort((a, b) => b._score - a._score);
 

@@ -14,6 +14,7 @@ const ALLOWED_KEYS = [
   'scheduler_interval_mins', 'min_size_mb', 'max_size_gb',
   'air_date_buffer_hours', 'tmdb_region',
   'preferred_movie_groups', 'preferred_show_groups', 'quality_strict',
+  'blocked_tags',
 ];
 
 router.get('/', (_req, res) => {

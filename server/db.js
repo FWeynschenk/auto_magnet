@@ -95,6 +95,7 @@ const defaultSettings = {
   preferred_movie_groups:    'yts,yify',
   preferred_show_groups:     'eztv,tgx,ettv,rartv',
   quality_strict:            '0',
+  blocked_tags:              '',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -154,8 +155,13 @@ const episodes = {
   downloading: () => db.prepare("SELECT * FROM episodes WHERE status = 'downloading' AND torrent_id IS NOT NULL").all(),
   failed:      (showId) => db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'failed'").all(showId),
 
+  // Latest episode that has actually been grabbed (excludes 'upcoming' placeholders)
   latest: (showId) =>
-    db.prepare('SELECT * FROM episodes WHERE show_id = ? ORDER BY season DESC, episode DESC LIMIT 1').get(showId),
+    db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status != 'upcoming' ORDER BY season DESC, episode DESC LIMIT 1").get(showId),
+
+  // All upcoming placeholders for a show
+  upcoming: (showId) =>
+    db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'upcoming' ORDER BY season, episode").all(showId),
 
   exists: (showId, season, episode) =>
     db.prepare('SELECT id FROM episodes WHERE show_id = ? AND season = ? AND episode = ?').get(showId, season, episode),

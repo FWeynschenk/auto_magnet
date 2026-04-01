@@ -106,6 +106,9 @@
           <label class="span2">Preferred show groups <span class="hint">comma-separated, e.g. eztv,tgx,ettv,rartv</span>
             <input v-model="form.preferred_show_groups" type="text" placeholder="eztv,tgx,ettv,rartv" />
           </label>
+          <label class="span2">Blocked tags <span class="hint">comma-separated tokens always rejected, e.g. EXTENDED,DC (CAM/TELESYNC blocked by default)</span>
+            <input v-model="form.blocked_tags" type="text" placeholder="EXTENDED,DC,DUBBED" />
+          </label>
           <label class="check-label span2">
             <input v-model="qualityStrictBool" type="checkbox" class="checkbox" />
             Strict quality mode — only grab results that exactly match preferred quality

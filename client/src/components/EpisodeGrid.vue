@@ -8,11 +8,8 @@
             v-for="ep in season.episodes"
             :key="ep.episode"
             class="ep-bubble"
-            :class="[ep.status, ep.status !== 'upcoming' ? 'clickable' : '']"
-            :title="ep.status === 'upcoming'
-              ? `S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — upcoming${ep.air_date ? ' · airs ' + ep.air_date : ''}`
-              : `S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''} · click to redo · shift+click to skip`"
-            @click="ep.status !== 'upcoming' && handleClick(ep, $event)"
+            :class="ep.status"
+            :title="`S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''}`"
           >
             <template v-if="ep.status === 'downloading' && ep.progress > 0">
               {{ ep.progress }}
@@ -32,7 +29,6 @@
 import { computed } from 'vue';
 
 const props = defineProps({ episodes: Array });
-const emit  = defineEmits(['redo-episode', 'skip-episode']);
 
 const seasons = computed(() => {
   const map = {};
@@ -45,13 +41,6 @@ const seasons = computed(() => {
     .map(([num, episodes]) => ({ num: Number(num), episodes: episodes.sort((a, b) => a.episode - b.episode) }));
 });
 
-function handleClick(ep, event) {
-  if (event.shiftKey) {
-    emit('skip-episode', ep);
-  } else {
-    emit('redo-episode', ep);
-  }
-}
 </script>
 
 <style scoped>
@@ -70,8 +59,6 @@ function handleClick(ep, event) {
   background: var(--border); color: var(--muted);
   cursor: default;
 }
-.ep-bubble.clickable  { cursor: pointer; }
-.ep-bubble.clickable:hover { filter: brightness(1.4); }
 
 .ep-bubble.done        { background: #14532d; color: #86efac; }
 .ep-bubble.downloading { background: #92400e; color: #fde68a; }

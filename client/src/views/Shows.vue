@@ -33,9 +33,7 @@
         @remove="remove"
         @update="update"
         @preview="openPreview"
-        @redo-episode="redoEpisode"
-        @skip-episode="skipEpisode"
-        @stats="statsItem = $event"
+        @manage="manageShow = $event"
       />
     </div>
 
@@ -56,10 +54,12 @@
       @grabbed="reload"
     />
 
-    <StatsDialog
-      v-if="statsItem"
-      :item="statsItem"
-      @close="statsItem = null"
+    <ShowManageDialog
+      v-if="manageShow"
+      :show="manageShow"
+      @close="manageShow = null"
+      @redo-episode="manageRedo"
+      @skip-episode="manageSkip"
     />
   </div>
 </template>
@@ -67,16 +67,16 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { shows as api } from '../api.js';
-import ShowCard    from '../components/ShowCard.vue';
-import AddDialog   from '../components/AddDialog.vue';
-import PreviewDialog from '../components/PreviewDialog.vue';
-import StatsDialog  from '../components/StatsDialog.vue';
+import ShowCard         from '../components/ShowCard.vue';
+import AddDialog        from '../components/AddDialog.vue';
+import PreviewDialog    from '../components/PreviewDialog.vue';
+import ShowManageDialog from '../components/ShowManageDialog.vue';
 
 const list         = ref([]);
 const loading      = ref(true);
 const showAdd      = ref(false);
 const previewItem  = ref(null);
-const statsItem    = ref(null);
+const manageShow   = ref(null);
 const filterActive = ref('');
 const retrying     = ref(false);
 let pollTimer      = null;
@@ -133,6 +133,31 @@ async function update(id, data) {
 
 function onAdded(show) { list.value.unshift(show); }
 
+// Called from ShowManageDialog — keep the dialog open, refresh its data
+async function manageRedo(episode) {
+  const show = manageShow.value;
+  await api.redoEpisode(show.id, episode.id);
+  list.value = await api.list();
+  // Refresh the dialog with updated show data
+  manageShow.value = list.value.find(s => s.id === show.id) || null;
+  // If manual mode, also open the browse dialog
+  if (show.mode === 'manual') {
+    previewItem.value = {
+      show:       { ...show, type: 'tv' },
+      season:     episode.season,
+      episode:    episode.episode,
+      episode_id: episode.id,
+    };
+  }
+}
+
+async function manageSkip(episode) {
+  const show = manageShow.value;
+  await api.skipEpisode(show.id, episode.id);
+  list.value = await api.list();
+  manageShow.value = list.value.find(s => s.id === show.id) || null;
+}
+
 function openPreview(show, epStr, episodeId) {
   const match = epStr?.match(/S(\d+)E(\d+)/i);
   previewItem.value = {
@@ -141,22 +166,6 @@ function openPreview(show, epStr, episodeId) {
     episode:    match ? parseInt(match[2]) : null,
     episode_id: episodeId || null,
   };
-}
-
-async function redoEpisode(show, episode) {
-  await api.redoEpisode(show.id, episode.id);
-  list.value = await api.list();
-  previewItem.value = {
-    show:       { ...show, type: 'tv' },
-    season:     episode.season,
-    episode:    episode.episode,
-    episode_id: episode.id,
-  };
-}
-
-async function skipEpisode(show, episode) {
-  await api.skipEpisode(show.id, episode.id);
-  await silentReload();
 }
 
 async function retryFailed() {

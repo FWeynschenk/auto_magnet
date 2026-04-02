@@ -1,9 +1,9 @@
 <template>
   <div class="card">
-    <img v-if="show.poster_url" :src="show.poster_url" class="poster clickable" alt="" @click="$emit('stats', show)" />
-    <div v-else class="poster poster-placeholder clickable" @click="$emit('stats', show)">📺</div>
+    <img v-if="show.poster_url" :src="show.poster_url" class="poster clickable" alt="" @click="$emit('manage', show)" />
+    <div v-else class="poster poster-placeholder clickable" @click="$emit('manage', show)">📺</div>
 
-    <div class="info">
+    <div class="info clickable" @click="$emit('manage', show)">
       <div class="title">{{ show.title }}</div>
       <div class="meta">
         <span :class="show.active ? 'active' : 'paused'">{{ show.active ? 'Active' : 'Paused' }}</span>
@@ -17,11 +17,7 @@
         </template>
       </div>
 
-      <EpisodeGrid
-        :episodes="show.episodes"
-        @redo-episode="ep => $emit('redo-episode', show, ep)"
-        @skip-episode="ep => $emit('skip-episode', show, ep)"
-      />
+      <EpisodeGrid :episodes="show.episodes" />
 
       <div v-if="pendingEpisode && show.mode === 'manual'" class="preview-hint">
         {{ pendingEpStr }} awaiting approval
@@ -50,7 +46,7 @@ import { computed } from 'vue';
 import EpisodeGrid from './EpisodeGrid.vue';
 
 const props = defineProps({ show: Object });
-const emit  = defineEmits(['remove', 'update', 'preview', 'redo-episode', 'skip-episode', 'stats']);
+const emit  = defineEmits(['remove', 'update', 'preview', 'manage']);
 
 const pendingEpisode = computed(() =>
   (props.show.episodes || []).find(e => e.status === 'pending') || null

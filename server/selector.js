@@ -169,12 +169,19 @@ function scoreResult(result, preferredQuality, type) {
  * @param {string} opts.type              'movie' | 'show'
  * @param {number} opts.limit             1 = return single winner, N = return top N array
  */
-function select(results, { preferredQuality = '1080p', type = 'movie', limit = 1 } = {}) {
+function select(results, { preferredQuality = '1080p', type = 'movie', limit = 1, exclude = [] } = {}) {
   const minSeeds = parseInt(settings.get('min_seeds') || '10');
   const strict   = settings.get('quality_strict') === '1';
 
   let scored = results
-    .filter(r => passesHardFilters(r, minSeeds, type))
+    .filter(r => {
+      // Exclude previously tried magnets/URLs
+      if (exclude.length > 0) {
+        const url = r.magnet || r.download_url || '';
+        if (url && exclude.includes(url)) return false;
+      }
+      return passesHardFilters(r, minSeeds, type);
+    })
     .map(r => ({ ...r, _score: scoreResult(r, preferredQuality, type), _quality: detectQuality(r.title).label }))
     .sort((a, b) => b._score - a._score);
 

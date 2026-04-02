@@ -35,6 +35,7 @@
         @preview="openPreview"
         @redo-episode="redoEpisode"
         @skip-episode="skipEpisode"
+        @stats="statsItem = $event"
       />
     </div>
 
@@ -54,6 +55,12 @@
       @close="previewItem = null"
       @grabbed="reload"
     />
+
+    <StatsDialog
+      v-if="statsItem"
+      :item="statsItem"
+      @close="statsItem = null"
+    />
   </div>
 </template>
 
@@ -63,11 +70,13 @@ import { shows as api } from '../api.js';
 import ShowCard    from '../components/ShowCard.vue';
 import AddDialog   from '../components/AddDialog.vue';
 import PreviewDialog from '../components/PreviewDialog.vue';
+import StatsDialog  from '../components/StatsDialog.vue';
 
 const list         = ref([]);
 const loading      = ref(true);
 const showAdd      = ref(false);
 const previewItem  = ref(null);
+const statsItem    = ref(null);
 const filterActive = ref('');
 const retrying     = ref(false);
 let pollTimer      = null;

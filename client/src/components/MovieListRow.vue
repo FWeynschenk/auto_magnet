@@ -2,7 +2,7 @@
   <div class="row">
     <span class="status-dot" :class="statusClass" :title="movie.status" />
 
-    <div class="title-col">
+    <div class="title-col clickable" @click="$emit('stats', movie)">
       <span class="title">{{ movie.title }}</span>
       <span class="year">{{ movie.year }}</span>
     </div>
@@ -38,7 +38,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ movie: Object });
-defineEmits(['remove', 'update', 'preview', 'redo']);
+defineEmits(['remove', 'update', 'preview', 'redo', 'stats']);
 
 const statusClass = computed(() => ({
   pending:     'status-pending',
@@ -71,6 +71,7 @@ const statusClass = computed(() => ({
 .status-dot.status-failed      { background: var(--red); }
 
 .title-col { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
+.clickable { cursor: pointer; }
 .title { font-weight: 500; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .year  { color: var(--muted); font-size: 12px; flex-shrink: 0; }
 

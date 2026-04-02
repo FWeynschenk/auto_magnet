@@ -45,6 +45,7 @@
         @update="update"
         @preview="openPreview"
         @redo="redo"
+        @stats="statsItem = $event"
       />
     </div>
 
@@ -57,6 +58,7 @@
         @update="update"
         @preview="openPreview"
         @redo="redo"
+        @stats="statsItem = $event"
       />
     </div>
 
@@ -73,6 +75,12 @@
       @close="previewItem = null"
       @grabbed="reload"
     />
+
+    <StatsDialog
+      v-if="statsItem"
+      :item="statsItem"
+      @close="statsItem = null"
+    />
   </div>
 </template>
 
@@ -83,11 +91,13 @@ import MovieCard    from '../components/MovieCard.vue';
 import MovieListRow from '../components/MovieListRow.vue';
 import AddDialog    from '../components/AddDialog.vue';
 import PreviewDialog from '../components/PreviewDialog.vue';
+import StatsDialog  from '../components/StatsDialog.vue';
 
 const list        = ref([]);
 const loading     = ref(true);
 const showAdd     = ref(false);
 const previewItem = ref(null);
+const statsItem   = ref(null);
 const sortBy      = ref('added');
 const filterStatus = ref('');
 const retrying    = ref(false);

@@ -1,9 +1,9 @@
 <template>
   <div class="card">
-    <img v-if="movie.poster_url" :src="movie.poster_url" class="poster" alt="" />
-    <div v-else class="poster poster-placeholder">🎬</div>
+    <img v-if="movie.poster_url" :src="movie.poster_url" class="poster clickable" alt="" @click="$emit('stats', movie)" />
+    <div v-else class="poster poster-placeholder clickable" @click="$emit('stats', movie)">🎬</div>
 
-    <div class="info">
+    <div class="info clickable" @click="$emit('stats', movie)">
       <div class="title">{{ movie.title }}</div>
       <div class="meta">{{ movie.year }}</div>
 
@@ -54,7 +54,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ movie: Object });
-const emit  = defineEmits(['remove', 'update', 'preview', 'redo']);
+const emit  = defineEmits(['remove', 'update', 'preview', 'redo', 'stats']);
 
 const statusClass = computed(() => ({
   pending:     'status-pending',
@@ -103,6 +103,7 @@ function toggleMode() {
 }
 
 .info { flex: 1; min-width: 0; }
+.clickable { cursor: pointer; }
 
 .title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta  { color: var(--muted); font-size: 12px; margin-top: 2px; }

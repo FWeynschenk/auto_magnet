@@ -143,4 +143,13 @@ async function getTorrentProgress() {
   }
 }
 
-module.exports = { addTorrent, getTorrents, getTorrentProgress, testConnection };
+function removeTorrent(id) {
+  return new Promise((resolve, reject) => {
+    getClient().remove([id], false, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+module.exports = { addTorrent, getTorrents, getTorrentProgress, testConnection, removeTorrent };

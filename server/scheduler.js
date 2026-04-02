@@ -1,12 +1,16 @@
 'use strict';
 
 const { movies, shows, episodes, settings } = require('./db');
-const { addTorrent, getTorrentProgress } = require('./transmission');
+const { addTorrent, getTorrentProgress, removeTorrent } = require('./transmission');
 const { getSeasonDetails }    = require('./tmdb');
 const prowlarr = require('./sources/prowlarr');
 const yts      = require('./sources/yts');
 const eztv     = require('./sources/eztv');
 const { select } = require('./selector');
+
+// --- Constants ---
+
+const STALE_DOWNLOAD_HOURS = 24;
 
 // --- Air date check ---
 
@@ -24,6 +28,11 @@ function hasAired(airDate) {
 
 // --- Transmission sync ---
 
+function isStale(startedAt) {
+  if (!startedAt) return false;
+  return Date.now() - new Date(startedAt).getTime() > STALE_DOWNLOAD_HOURS * 3600 * 1000;
+}
+
 async function syncDownloading() {
   try {
     const progressMap = await getTorrentProgress();
@@ -36,8 +45,18 @@ async function syncDownloading() {
       if (t.done) {
         movies.update(movie.id, { status: 'done', progress: 100 });
         console.log(`[scheduler] movie "${movie.title}" download complete`);
-      } else if (t.progress !== movie.progress) {
-        movies.update(movie.id, { progress: t.progress });
+      } else {
+        if (t.progress !== movie.progress) movies.update(movie.id, { progress: t.progress });
+        if (isStale(movie.download_started_at)) {
+          console.log(`[scheduler] movie "${movie.title}" stale after ${STALE_DOWNLOAD_HOURS}h, retrying`);
+          const tried = JSON.parse(movie.tried_magnets || '[]');
+          if (movie.magnet) tried.push(movie.magnet);
+          movies.update(movie.id, {
+            status: 'pending', magnet: null, torrent_id: null,
+            progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
+          });
+          try { await removeTorrent(movie.torrent_id); } catch (_) {}
+        }
       }
     }
 
@@ -48,8 +67,18 @@ async function syncDownloading() {
       if (t.done) {
         episodes.update(ep.id, { status: 'done', progress: 100 });
         console.log(`[scheduler] episode #${ep.id} S${ep.season}E${ep.episode} download complete`);
-      } else if (t.progress !== ep.progress) {
-        episodes.update(ep.id, { progress: t.progress });
+      } else {
+        if (t.progress !== ep.progress) episodes.update(ep.id, { progress: t.progress });
+        if (isStale(ep.download_started_at)) {
+          console.log(`[scheduler] episode #${ep.id} S${ep.season}E${ep.episode} stale, retrying`);
+          const tried = JSON.parse(ep.tried_magnets || '[]');
+          if (ep.magnet) tried.push(ep.magnet);
+          episodes.update(ep.id, {
+            status: 'pending', magnet: null, torrent_id: null,
+            progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
+          });
+          try { await removeTorrent(ep.torrent_id); } catch (_) {}
+        }
       }
     }
   } catch (err) {
@@ -102,14 +131,15 @@ async function processMovie(movie) {
     yts.search(movie.title, quality),
   ]);
 
-  const winner = select([...prowlarrResults, ...ytsResults], { preferredQuality: quality, type: 'movie' });
+  const exclude = JSON.parse(movie.tried_magnets || '[]');
+  const winner = select([...prowlarrResults, ...ytsResults], { preferredQuality: quality, type: 'movie', exclude });
   if (!winner) { console.log(`[scheduler] no result for: ${movie.title}`); return; }
 
   const torrentUrl = winner.magnet || winner.download_url;
   if (!torrentUrl) { console.log(`[scheduler] no magnet/url for: ${movie.title}`); return; }
 
   const result = await addTorrent(torrentUrl, settings.get('movie_path'));
-  movies.update(movie.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id });
+  movies.update(movie.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, download_started_at: new Date().toISOString() });
   console.log(`[scheduler] added "${movie.title}" — torrent #${result.id}`);
 }
 
@@ -231,7 +261,8 @@ async function processShow(show) {
     eztv.search(show.imdb_id, nextSeason, nextEpisode),
   ]);
 
-  const winner = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show' });
+  const exclude = JSON.parse(existingRow?.tried_magnets || '[]');
+  const winner = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', exclude });
   if (!winner) { console.log(`[scheduler] no result for "${show.title}" ${epStr}`); return; }
 
   const torrentUrl = winner.magnet || winner.download_url;
@@ -240,9 +271,12 @@ async function processShow(show) {
   const downloadDir = `${settings.get('shows_path')}/${show.title}`;
   const result = await addTorrent(torrentUrl, downloadDir);
   if (existingRow) {
-    episodes.update(existingRow.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
+    episodes.update(existingRow.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate, download_started_at: new Date().toISOString() });
   } else {
     episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
+    // Set download_started_at on the newly inserted row
+    const inserted = episodes.get(show.id, nextSeason, nextEpisode);
+    if (inserted) episodes.update(inserted.id, { download_started_at: new Date().toISOString() });
   }
   console.log(`[scheduler] added "${show.title}" ${epStr} — torrent #${result.id}`);
 }

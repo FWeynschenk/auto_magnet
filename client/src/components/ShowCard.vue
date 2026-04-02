@@ -1,7 +1,7 @@
 <template>
   <div class="card">
-    <img v-if="show.poster_url" :src="show.poster_url" class="poster" alt="" />
-    <div v-else class="poster poster-placeholder">📺</div>
+    <img v-if="show.poster_url" :src="show.poster_url" class="poster clickable" alt="" @click="$emit('stats', show)" />
+    <div v-else class="poster poster-placeholder clickable" @click="$emit('stats', show)">📺</div>
 
     <div class="info">
       <div class="title">{{ show.title }}</div>
@@ -50,7 +50,7 @@ import { computed } from 'vue';
 import EpisodeGrid from './EpisodeGrid.vue';
 
 const props = defineProps({ show: Object });
-const emit  = defineEmits(['remove', 'update', 'preview', 'redo-episode', 'skip-episode']);
+const emit  = defineEmits(['remove', 'update', 'preview', 'redo-episode', 'skip-episode', 'stats']);
 
 const pendingEpisode = computed(() =>
   (props.show.episodes || []).find(e => e.status === 'pending') || null
@@ -90,6 +90,7 @@ function toggleMode() {
 }
 
 .info { flex: 1; min-width: 0; }
+.clickable { cursor: pointer; }
 .title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; margin-top: 4px; }

@@ -64,10 +64,14 @@ const migrations = [
   'ALTER TABLE episodes ADD COLUMN results_cache TEXT',
   'ALTER TABLE shows    ADD COLUMN start_season  INTEGER DEFAULT 1',
   'ALTER TABLE shows    ADD COLUMN start_episode INTEGER DEFAULT 1',
-  'ALTER TABLE movies   ADD COLUMN release_date  TEXT',
-  'ALTER TABLE movies   ADD COLUMN progress      INTEGER DEFAULT 0',
-  'ALTER TABLE episodes ADD COLUMN air_date      TEXT',
-  'ALTER TABLE episodes ADD COLUMN progress      INTEGER DEFAULT 0',
+  'ALTER TABLE movies   ADD COLUMN release_date         TEXT',
+  'ALTER TABLE movies   ADD COLUMN progress             INTEGER DEFAULT 0',
+  'ALTER TABLE episodes ADD COLUMN air_date             TEXT',
+  'ALTER TABLE episodes ADD COLUMN progress             INTEGER DEFAULT 0',
+  'ALTER TABLE movies   ADD COLUMN download_started_at  TEXT',
+  'ALTER TABLE episodes ADD COLUMN download_started_at  TEXT',
+  'ALTER TABLE movies   ADD COLUMN tried_magnets        TEXT',
+  'ALTER TABLE episodes ADD COLUMN tried_magnets        TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}

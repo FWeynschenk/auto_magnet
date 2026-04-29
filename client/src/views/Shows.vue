@@ -57,9 +57,13 @@
     <ShowManageDialog
       v-if="manageShow"
       :show="manageShow"
+      :refreshing="refreshing"
+      :refresh-msg="refreshMsg"
       @close="manageShow = null"
       @redo-episode="manageRedo"
       @skip-episode="manageSkip"
+      @refresh-tmdb="manageRefreshTmdb"
+      @add-episode="manageAddEpisode"
     />
   </div>
 </template>
@@ -79,6 +83,9 @@ const previewItem  = ref(null);
 const manageShow   = ref(null);
 const filterActive = ref('');
 const retrying     = ref(false);
+const refreshing   = ref(false);
+const refreshMsg   = ref('');
+let refreshMsgTimer = null;
 let pollTimer      = null;
 let initialDone    = false;
 
@@ -171,6 +178,37 @@ function openPreview(show, epStr, episodeId) {
 async function retryFailed() {
   retrying.value = true;
   try { await api.retryFailed(); await silentReload(); } finally { retrying.value = false; }
+}
+
+async function manageRefreshTmdb() {
+  if (!manageShow.value) return;
+  const show = manageShow.value;
+  refreshing.value = true;
+  refreshMsg.value = '';
+  clearTimeout(refreshMsgTimer);
+  try {
+    const result = await api.refreshTmdb(show.id);
+    list.value = await api.list();
+    manageShow.value = list.value.find(s => s.id === show.id) || null;
+    const parts = [];
+    if (result.added)   parts.push(`${result.added} added`);
+    if (result.updated) parts.push(`${result.updated} updated`);
+    refreshMsg.value = parts.length ? parts.join(', ') : 'Up to date';
+    refreshMsgTimer = setTimeout(() => { refreshMsg.value = ''; }, 4000);
+  } catch (err) {
+    refreshMsg.value = err.message || 'Refresh failed';
+    refreshMsgTimer = setTimeout(() => { refreshMsg.value = ''; }, 4000);
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+async function manageAddEpisode({ season, episode, air_date }) {
+  if (!manageShow.value) return;
+  const show = manageShow.value;
+  await api.addEpisode(show.id, { season, episode, air_date });
+  list.value = await api.list();
+  manageShow.value = list.value.find(s => s.id === show.id) || null;
 }
 
 onMounted(() => {

@@ -22,14 +22,16 @@ export const movies = {
 };
 
 export const shows = {
-  list:        ()                    => req('GET',    '/shows'),
-  add:         (body)                => req('POST',   '/shows', body),
-  update:      (id, body)            => req('PUT',    `/shows/${id}`, body),
-  remove:      (id)                  => req('DELETE', `/shows/${id}`),
-  episodes:    (id)                  => req('GET',    `/shows/${id}/episodes`),
-  redoEpisode: (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
-  skipEpisode: (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/skip`),
-  retryFailed: ()                    => req('POST',   '/shows/retry-failed'),
+  list:         ()                    => req('GET',    '/shows'),
+  add:          (body)                => req('POST',   '/shows', body),
+  update:       (id, body)            => req('PUT',    `/shows/${id}`, body),
+  remove:       (id)                  => req('DELETE', `/shows/${id}`),
+  episodes:     (id)                  => req('GET',    `/shows/${id}/episodes`),
+  redoEpisode:  (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
+  skipEpisode:  (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/skip`),
+  retryFailed:  ()                    => req('POST',   '/shows/retry-failed'),
+  refreshTmdb:  (id)                  => req('POST',   `/shows/${id}/refresh-tmdb`),
+  addEpisode:   (id, body)            => req('POST',   `/shows/${id}/episodes/manual`, body),
 };
 
 export const search = {

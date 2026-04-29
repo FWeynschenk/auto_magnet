@@ -10,7 +10,8 @@ const { select } = require('./selector');
 
 // --- Constants ---
 
-const STALE_DOWNLOAD_HOURS = 24;
+const STALE_DOWNLOAD_HOURS  = 24;
+const MAX_EPISODES_PER_RUN  = 15; // max episodes to grab per show per scheduler run
 
 // --- Air date check ---
 
@@ -24,6 +25,23 @@ function hasAired(airDate) {
   // Use end-of-day UTC on the air date as the base time
   const base = new Date(airDate + 'T23:59:00Z').getTime();
   return base + bufferHours * 3600 * 1000 <= Date.now();
+}
+
+/**
+ * Smarter aired check: if any later episode in the same season has a confirmed past
+ * air date, all preceding episodes are also considered aired — even if TMDB hasn't
+ * populated their individual dates yet.
+ */
+function effectivelyAired(epNumber, seasonEpisodes) {
+  // Find the highest episode number that has definitively aired
+  const latestConfirmed = (seasonEpisodes || [])
+    .filter(e => e.air_date && hasAired(e.air_date))
+    .reduce((max, e) => Math.max(max, e.episode_number), 0);
+  if (epNumber <= latestConfirmed) return true;
+
+  // Fall back to the episode's own air date
+  const ep = (seasonEpisodes || []).find(e => e.episode_number === epNumber);
+  return hasAired(ep?.air_date ?? null);
 }
 
 // --- Transmission sync ---
@@ -191,54 +209,56 @@ async function populateUpcoming(show) {
   }
 }
 
-async function processShow(show) {
-  // Populate upcoming timeline placeholders (errors are non-fatal)
-  try { await populateUpcoming(show); } catch (_) {}
-
-  const latest = episodes.latest(show.id); // excludes 'upcoming'
+/**
+ * Try to grab the next due episode for a show.
+ * Returns true if an episode was successfully grabbed (caller should loop to try the next),
+ * false if there is nothing more to do right now.
+ */
+async function grabNextEpisode(show, fetchSeason) {
+  const latest = episodes.latest(show.id);
   let nextSeason  = latest ? latest.season  : (show.start_season  || 1);
   let nextEpisode = latest ? latest.episode + 1 : (show.start_episode || 1);
 
-  // Fetch season info from TMDB
-  let seasonInfo = null;
-  try { seasonInfo = await getSeasonDetails(show.tmdb_id, nextSeason); } catch (_) {}
+  let seasonInfo = await fetchSeason(nextSeason);
 
   if (seasonInfo && nextEpisode > seasonInfo.episode_count) {
     nextSeason  += 1;
     nextEpisode  = 1;
-    try { seasonInfo = await getSeasonDetails(show.tmdb_id, nextSeason); } catch (_) {}
+    seasonInfo = await fetchSeason(nextSeason);
     if (!seasonInfo || seasonInfo.episode_count === 0) {
       console.log(`[scheduler] "${show.title}": no S${nextSeason} on TMDB, stopping`);
-      return;
+      return false;
     }
   }
 
-  // Get air date for this specific episode from TMDB season data.
-  // Fall back to the season premiere date when individual episode dates aren't set yet
-  // (common for announced-but-not-detailed future seasons).
   const epInfo  = seasonInfo?.episodes?.find(e => e.episode_number === nextEpisode);
   const airDate = epInfo?.air_date || seasonInfo?.season_air_date || null;
 
-  // Skip if episode hasn't aired yet.
-  // Also skip when airDate is null AND the season itself looks future
-  // (episode_count === 0 means TMDB has the season placeholder but no episodes yet).
-  if (airDate && !hasAired(airDate)) {
-    console.log(`[scheduler] "${show.title}" S${nextSeason}E${nextEpisode} airs ${airDate}, skipping`);
-    return;
+  // Use smarter inference: a confirmed later-episode air date implies earlier ones too
+  if (!effectivelyAired(nextEpisode, seasonInfo?.episodes)) {
+    if (airDate) {
+      console.log(`[scheduler] "${show.title}" S${nextSeason}E${nextEpisode} airs ${airDate}, skipping`);
+    } else if (!seasonInfo?.episode_count) {
+      console.log(`[scheduler] "${show.title}" S${nextSeason} has no episode data yet, skipping`);
+    }
+    return false;
   }
   if (!airDate && seasonInfo?.episode_count === 0) {
     console.log(`[scheduler] "${show.title}" S${nextSeason} has no episode data yet, skipping`);
-    return;
+    return false;
   }
 
   // Check for an existing row — skip unless it's an 'upcoming' placeholder ready to upgrade
   const existingRow = episodes.get(show.id, nextSeason, nextEpisode);
-  if (existingRow && existingRow.status !== 'upcoming') return;
+  if (existingRow && existingRow.status !== 'upcoming') return false;
 
   const epStr = `S${String(nextSeason).padStart(2, '0')}E${String(nextEpisode).padStart(2, '0')}`;
   const quality = show.quality || settings.get('default_quality') || '1080p';
 
   if (show.mode === 'manual') {
+    // In manual mode: create one pending row at a time (user approves before next shows up)
+    if (existingRow?.results_cache) return false;
+
     console.log(`[scheduler] "${show.title}" ${epStr}: caching preview results`);
     const [prowlarrResults, eztvResults] = await Promise.all([
       prowlarr.search(`${show.title} ${epStr}`, 'show'),
@@ -252,7 +272,7 @@ async function processShow(show) {
       episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'pending', magnet: null, torrent_id: null, results_cache: resultsCache, air_date: airDate });
     }
     console.log(`[scheduler] "${show.title}" ${epStr}: awaiting manual approval (cached ${top5.length} results)`);
-    return;
+    return false; // one pending at a time in manual mode
   }
 
   console.log(`[scheduler] show: "${show.title}" ${epStr}`);
@@ -263,10 +283,10 @@ async function processShow(show) {
 
   const exclude = JSON.parse(existingRow?.tried_magnets || '[]');
   const winner = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', exclude });
-  if (!winner) { console.log(`[scheduler] no result for "${show.title}" ${epStr}`); return; }
+  if (!winner) { console.log(`[scheduler] no result for "${show.title}" ${epStr}`); return false; }
 
   const torrentUrl = winner.magnet || winner.download_url;
-  if (!torrentUrl) { console.log(`[scheduler] no magnet/url for "${show.title}" ${epStr}`); return; }
+  if (!torrentUrl) { console.log(`[scheduler] no magnet/url for "${show.title}" ${epStr}`); return false; }
 
   const downloadDir = `${settings.get('shows_path')}/${show.title}`;
   const result = await addTorrent(torrentUrl, downloadDir);
@@ -274,11 +294,32 @@ async function processShow(show) {
     episodes.update(existingRow.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate, download_started_at: new Date().toISOString() });
   } else {
     episodes.insert({ show_id: show.id, season: nextSeason, episode: nextEpisode, status: 'downloading', magnet: torrentUrl, torrent_id: result.id, air_date: airDate });
-    // Set download_started_at on the newly inserted row
     const inserted = episodes.get(show.id, nextSeason, nextEpisode);
     if (inserted) episodes.update(inserted.id, { download_started_at: new Date().toISOString() });
   }
   console.log(`[scheduler] added "${show.title}" ${epStr} — torrent #${result.id}`);
+  return true; // successfully grabbed — caller should loop to try the next episode
+}
+
+async function processShow(show) {
+  // Populate upcoming timeline placeholders (errors are non-fatal)
+  try { await populateUpcoming(show); } catch (_) {}
+
+  // Cache TMDB season API responses within this show's processing to avoid redundant calls
+  const seasonCache = new Map();
+  async function fetchSeason(s) {
+    if (seasonCache.has(s)) return seasonCache.get(s);
+    let info = null;
+    try { info = await getSeasonDetails(show.tmdb_id, s); } catch (_) {}
+    seasonCache.set(s, info);
+    return info;
+  }
+
+  // Process all aired episodes in one pass instead of waiting for the next scheduler tick
+  for (let i = 0; i < MAX_EPISODES_PER_RUN; i++) {
+    const grabbed = await grabNextEpisode(show, fetchSeason);
+    if (!grabbed) break;
+  }
 }
 
 // --- Entry point ---
@@ -314,4 +355,4 @@ function start() {
   scheduleNext();
 }
 
-module.exports = { start, run };
+module.exports = { start, run, hasAired, effectivelyAired };

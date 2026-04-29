@@ -24,7 +24,19 @@
             <span v-if="counts.upcoming"    class="count count-upcoming">{{ counts.upcoming }} upcoming</span>
           </div>
         </div>
-        <button class="close-btn" @click="$emit('close')">✕</button>
+        <div class="header-btns">
+          <button
+            class="btn-ghost btn-xs refresh-btn"
+            :disabled="refreshing"
+            :title="refreshMsg || 'Re-fetch episode data from TMDB'"
+            @click="$emit('refresh-tmdb')"
+          >
+            <span :class="{ spinning: refreshing }">↻</span>
+            {{ refreshing ? 'Refreshing…' : 'Refresh TMDB' }}
+          </button>
+          <span v-if="refreshMsg" class="refresh-msg">{{ refreshMsg }}</span>
+          <button class="close-btn" @click="$emit('close')">✕</button>
+        </div>
       </div>
 
       <!-- Episode list -->
@@ -84,6 +96,28 @@
             </div>
           </div>
         </template>
+
+        <!-- Add episode manually -->
+        <div class="add-ep-section">
+          <div class="add-ep-heading">Add episode manually</div>
+          <div class="add-ep-form">
+            <label class="add-ep-label">Season
+              <input v-model.number="manualSeason" type="number" min="1" class="add-ep-input" placeholder="1" />
+            </label>
+            <label class="add-ep-label">Episode
+              <input v-model.number="manualEpisode" type="number" min="1" class="add-ep-input" placeholder="1" />
+            </label>
+            <label class="add-ep-label">Air date <span class="add-ep-optional">(optional)</span>
+              <input v-model="manualAirDate" type="date" class="add-ep-input add-ep-date" />
+            </label>
+            <button
+              class="btn-ghost btn-xs add-ep-btn"
+              :disabled="!manualSeason || !manualEpisode || addingEp"
+              @click="submitAddEpisode"
+            >{{ addingEp ? 'Adding…' : '+ Add' }}</button>
+          </div>
+          <div v-if="addEpError" class="add-ep-error">{{ addEpError }}</div>
+        </div>
       </div>
 
     </div>
@@ -93,10 +127,19 @@
 <script setup>
 import { ref, computed } from 'vue';
 
-const props = defineProps({ show: Object });
-const emit  = defineEmits(['close', 'redo-episode', 'skip-episode']);
+const props = defineProps({
+  show:       Object,
+  refreshing: { type: Boolean, default: false },
+  refreshMsg: { type: String, default: '' },
+});
+const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode']);
 
-const busy = ref(null);
+const busy         = ref(null);
+const manualSeason  = ref(null);
+const manualEpisode = ref(null);
+const manualAirDate = ref('');
+const addingEp      = ref(false);
+const addEpError    = ref('');
 
 const seasons = computed(() => {
   const map = {};
@@ -140,6 +183,26 @@ async function redo(ep) {
 async function skip(ep) {
   busy.value = ep.id;
   try { emit('skip-episode', ep); } finally { busy.value = null; }
+}
+
+async function submitAddEpisode() {
+  if (!manualSeason.value || !manualEpisode.value) return;
+  addingEp.value = true;
+  addEpError.value = '';
+  try {
+    await emit('add-episode', {
+      season:   manualSeason.value,
+      episode:  manualEpisode.value,
+      air_date: manualAirDate.value || undefined,
+    });
+    manualSeason.value  = null;
+    manualEpisode.value = null;
+    manualAirDate.value = '';
+  } catch (err) {
+    addEpError.value = err.message || 'Failed to add episode';
+  } finally {
+    addingEp.value = false;
+  }
 }
 </script>
 
@@ -194,8 +257,25 @@ async function skip(ep) {
 .count-failed   { color: var(--red); }
 .count-upcoming { color: #818cf8; }
 
+.header-btns {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  flex-shrink: 0;
+}
+
+.refresh-btn {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; padding: 3px 8px;
+  white-space: nowrap;
+}
+.refresh-btn .spinning { display: inline-block; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.refresh-msg {
+  font-size: 10px; color: var(--green);
+  max-width: 120px; text-align: right; line-height: 1.3;
+}
+
 .close-btn {
-  position: absolute; top: 14px; right: 14px;
   background: none; border: none; color: var(--muted);
   font-size: 14px; cursor: pointer; padding: 4px 6px;
 }
@@ -266,4 +346,36 @@ async function skip(ep) {
 .btn-xs:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .btn-xs:disabled { opacity: .4; cursor: default; }
 .btn-skip:hover:not(:disabled) { border-color: var(--yellow); color: var(--yellow); }
+
+/* ── Add episode section ── */
+.add-ep-section {
+  margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.add-ep-heading {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--muted); margin-bottom: 8px;
+}
+.add-ep-form {
+  display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap;
+}
+.add-ep-label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 10px; color: var(--muted); font-weight: 600; text-transform: uppercase;
+}
+.add-ep-optional { font-weight: 400; text-transform: none; }
+.add-ep-input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); padding: 4px 7px; font-size: 12px;
+  width: 60px; outline: none;
+}
+.add-ep-input:focus { border-color: var(--accent); }
+.add-ep-date { width: 120px; }
+.add-ep-btn {
+  align-self: flex-end; padding: 4px 12px; font-size: 12px;
+}
+.add-ep-btn:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.add-ep-error {
+  margin-top: 6px; font-size: 11px; color: var(--red);
+}
 </style>

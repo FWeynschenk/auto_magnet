@@ -3,8 +3,8 @@
 const express = require('express');
 const router  = express.Router();
 const { shows, episodes } = require('../db');
-const { getTvDetails } = require('../tmdb');
-const { run: runScheduler } = require('../scheduler');
+const { getTvDetails, getSeasonDetails } = require('../tmdb');
+const { run: runScheduler, hasAired, effectivelyAired } = require('../scheduler');
 
 router.get('/', (_req, res) => {
   const allShows = shows.all();
@@ -54,6 +54,98 @@ router.delete('/:id', (req, res) => {
 
 router.get('/:id/episodes', (req, res) => {
   res.json(episodes.forShow(req.params.id));
+});
+
+// Re-fetch all season data from TMDB: update air dates, upgrade upcoming→pending, insert missing episodes
+router.post('/:id/refresh-tmdb', async (req, res) => {
+  const show = shows.byId(req.params.id);
+  if (!show) return res.status(404).json({ error: 'Show not found' });
+
+  try {
+    const existingEps = episodes.forShow(show.id);
+    const existingSeasons = [...new Set(existingEps.map(e => e.season))].sort((a, b) => a - b);
+    const startSeason = show.start_season || 1;
+    const maxExisting = existingSeasons.length > 0 ? Math.max(...existingSeasons) : startSeason;
+
+    // Build the set of seasons to refresh: all existing + up to 2 ahead of the max
+    const toFetch = new Set(existingSeasons);
+    for (let s = startSeason; s <= maxExisting + 2; s++) toFetch.add(s);
+
+    let updated = 0, added = 0;
+
+    for (const s of [...toFetch].sort((a, b) => a - b)) {
+      const seasonInfo = await getSeasonDetails(show.tmdb_id, s);
+      if (!seasonInfo?.episodes?.length) continue;
+
+      for (const epData of seasonInfo.episodes) {
+        // Respect the configured start point
+        if (s < startSeason) continue;
+        if (s === startSeason && epData.episode_number < (show.start_episode || 1)) continue;
+
+        const existingEp = existingEps.find(e => e.season === s && e.episode === epData.episode_number);
+
+        if (existingEp) {
+          const changes = {};
+          if (existingEp.air_date !== epData.air_date) changes.air_date = epData.air_date;
+          // Upgrade 'upcoming' rows to 'pending' if the episode has now aired
+          if (existingEp.status === 'upcoming' &&
+              effectivelyAired(epData.episode_number, seasonInfo.episodes)) {
+            changes.status = 'pending';
+          }
+          if (Object.keys(changes).length > 0) {
+            episodes.update(existingEp.id, changes);
+            updated++;
+          }
+        } else {
+          const aired = effectivelyAired(epData.episode_number, seasonInfo.episodes);
+          const result = episodes.insert({
+            show_id:    show.id,
+            season:     s,
+            episode:    epData.episode_number,
+            status:     aired ? 'pending' : 'upcoming',
+            air_date:   epData.air_date || null,
+          });
+          if (result.changes > 0) added++;
+        }
+      }
+    }
+
+    if (added > 0 || updated > 0) runScheduler().catch(() => {});
+
+    const updatedShow = { ...shows.byId(show.id), episodes: episodes.forShow(show.id) };
+    res.json({ updated, added, show: updatedShow });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manually insert a specific episode as pending (for when TMDB is missing data)
+router.post('/:id/episodes/manual', (req, res) => {
+  const show = shows.byId(req.params.id);
+  if (!show) return res.status(404).json({ error: 'Show not found' });
+
+  const season  = parseInt(req.body.season);
+  const episode = parseInt(req.body.episode);
+  if (!season || !episode || season < 1 || episode < 1) {
+    return res.status(400).json({ error: 'Valid season and episode numbers required' });
+  }
+
+  const existing = episodes.get(show.id, season, episode);
+  if (existing) {
+    return res.status(409).json({ error: `S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')} already exists`, episode: existing });
+  }
+
+  episodes.insert({
+    show_id:    show.id,
+    season,
+    episode,
+    status:     'pending',
+    air_date:   req.body.air_date || null,
+  });
+
+  const inserted = episodes.get(show.id, season, episode);
+  runScheduler().catch(() => {});
+  res.status(201).json(inserted);
 });
 
 // Reset an episode so it can be re-grabbed

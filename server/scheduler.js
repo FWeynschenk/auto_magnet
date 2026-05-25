@@ -221,6 +221,11 @@ async function grabNextEpisode(show, fetchSeason) {
 
   let seasonInfo = await fetchSeason(nextSeason);
 
+  if (!seasonInfo) {
+    console.log(`[scheduler] "${show.title}": S${nextSeason} not found on TMDB, stopping`);
+    return false;
+  }
+
   if (seasonInfo && nextEpisode > seasonInfo.episode_count) {
     nextSeason  += 1;
     nextEpisode  = 1;

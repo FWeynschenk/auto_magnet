@@ -4,12 +4,15 @@
       <div class="season-row">
         <span class="season-label">S{{ String(season.num).padStart(2, '0') }}</span>
         <div class="ep-bubbles">
-          <span
+          <button
             v-for="ep in season.episodes"
             :key="ep.episode"
+            type="button"
             class="ep-bubble"
             :class="ep.status"
             :title="`S${String(season.num).padStart(2,'0')}E${String(ep.episode).padStart(2,'0')} — ${ep.status}${ep.air_date ? ' · ' + ep.air_date : ''}`"
+            :aria-label="`Season ${season.num} episode ${ep.episode}, ${ep.status}`"
+            @click.stop="$emit('select', ep)"
           >
             <template v-if="ep.status === 'downloading' && ep.progress > 0">
               {{ ep.progress }}
@@ -17,7 +20,7 @@
             <template v-else>
               {{ String(ep.episode).padStart(2, '0') }}
             </template>
-          </span>
+          </button>
         </div>
       </div>
     </template>
@@ -29,6 +32,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ episodes: Array });
+defineEmits(['select']);
 
 const seasons = computed(() => {
   const map = {};
@@ -57,8 +61,12 @@ const seasons = computed(() => {
   font-size: 10px; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
   background: var(--border); color: var(--muted);
-  cursor: default;
+  border: 1px solid transparent; padding: 0;
+  cursor: pointer;
+  transition: transform .1s, border-color .1s;
 }
+.ep-bubble:hover { transform: translateY(-1px); border-color: var(--accent); opacity: 1; }
+.ep-bubble:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .ep-bubble.done        { background: #14532d; color: #86efac; }
 .ep-bubble.downloading { background: #92400e; color: #fde68a; }

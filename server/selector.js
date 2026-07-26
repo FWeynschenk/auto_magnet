@@ -1,10 +1,18 @@
 'use strict';
 
 const { settings } = require('./db');
+const { screenFiles, EXECUTABLE_RE } = require('./screen');
 
 // ─── Hard-reject lists ────────────────────────────────────────────────────────
 
-const MALWARE_EXTS = ['.exe', '.bat', '.cmd', '.scr', '.msi', '.pif', '.vbs', '.ps1', '.com'];
+/**
+ * Executable extension appearing in a *title*. Anchored to an extension boundary:
+ * an unanchored substring check rejects "The.Batman" (.bat), "Series.Complete"
+ * (.com) and every indexer that prefixes titles with its own domain.
+ * The real defence is file-list screening in screen.js — this only catches the
+ * rare release that advertises a payload in its name.
+ */
+const MALWARE_TITLE_RE = EXECUTABLE_RE;
 
 /**
  * CAM / pre-release sources that are always rejected.
@@ -64,8 +72,7 @@ function detectQuality(title) {
 }
 
 function hasMalware(title) {
-  const lower = title.toLowerCase();
-  return MALWARE_EXTS.some(ext => lower.includes(ext));
+  return MALWARE_TITLE_RE.test(title || '');
 }
 
 function isLowQualitySource(title) {
@@ -133,6 +140,18 @@ function passesHardFilters(result, minSeeds, type) {
   if (type === 'show') {
     if (isSeasonPack(result.title))   return false;
     if (isMultiEpisode(result.title)) return false;
+  }
+  // Optional hard gate: only accept known release groups. Off by default, since
+  // otherwise the trusted-group bonus is just a nudge a high-seed unknown can beat.
+  if (settings.get('trusted_only') === '1' && !isTrustedGroup(result, type)) return false;
+  // When the source gave us a file list (resolved from .torrent bytes), screen the
+  // real contents. This is the check that actually catches droppers.
+  if (result.files?.length) {
+    const verdict = screenFiles(result.files, { type });
+    if (!verdict.ok) {
+      console.log(`[selector] rejected "${result.title}": ${verdict.reason}`);
+      return false;
+    }
   }
   return true;
 }

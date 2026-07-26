@@ -1,6 +1,6 @@
 <template>
   <div class="overlay" @click.self="$emit('close')">
-    <div class="dialog">
+    <div ref="dialogEl" class="dialog" role="dialog" aria-modal="true" :aria-label="`Manage ${show.title}`">
 
       <!-- Header -->
       <div class="dlg-header">
@@ -102,10 +102,10 @@
           <div class="add-ep-heading">Add episode manually</div>
           <div class="add-ep-form">
             <label class="add-ep-label">Season
-              <input v-model.number="manualSeason" type="number" min="1" class="add-ep-input" placeholder="1" />
+              <input v-model.number="manualSeason" type="number" min="1" max="100" step="1" class="add-ep-input" placeholder="1" />
             </label>
             <label class="add-ep-label">Episode
-              <input v-model.number="manualEpisode" type="number" min="1" class="add-ep-input" placeholder="1" />
+              <input v-model.number="manualEpisode" type="number" min="1" max="999" step="1" class="add-ep-input" placeholder="1" />
             </label>
             <label class="add-ep-label">Air date <span class="add-ep-optional">(optional)</span>
               <input v-model="manualAirDate" type="date" class="add-ep-input add-ep-date" />
@@ -126,13 +126,22 @@
 
 <script setup>
 import { ref, computed } from 'vue';
+import { useDialog } from '../composables/useDialog.js';
 
 const props = defineProps({
   show:       Object,
   refreshing: { type: Boolean, default: false },
   refreshMsg: { type: String, default: '' },
+  /**
+   * Parent handler for adding an episode. Passed as a prop rather than an event
+   * because emit() is synchronous and never surfaces a rejection — awaiting it
+   * silently swallowed every failure.
+   */
+  onAddEpisode: { type: Function, default: null },
 });
 const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode']);
+
+const { dialogEl } = useDialog(() => emit('close'));
 
 const busy         = ref(null);
 const manualSeason  = ref(null);
@@ -186,15 +195,27 @@ async function skip(ep) {
 }
 
 async function submitAddEpisode() {
-  if (!manualSeason.value || !manualEpisode.value) return;
+  const season  = Number(manualSeason.value);
+  const episode = Number(manualEpisode.value);
+  if (!Number.isInteger(season) || !Number.isInteger(episode) || season < 1 || episode < 1) {
+    addEpError.value = 'Season and episode must be whole numbers of 1 or more';
+    return;
+  }
+  if (season > 100 || episode > 999) {
+    addEpError.value = 'Season or episode number is out of range';
+    return;
+  }
+
   addingEp.value = true;
   addEpError.value = '';
   try {
-    await emit('add-episode', {
-      season:   manualSeason.value,
-      episode:  manualEpisode.value,
-      air_date: manualAirDate.value || undefined,
-    });
+    const payload = { season, episode, air_date: manualAirDate.value || undefined };
+    if (props.onAddEpisode) {
+      // Awaitable path — real errors reach the banner below
+      await props.onAddEpisode(payload);
+    } else {
+      emit('add-episode', payload);
+    }
     manualSeason.value  = null;
     manualEpisode.value = null;
     manualAirDate.value = '';

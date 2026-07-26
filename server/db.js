@@ -56,6 +56,18 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT
   );
+
+  -- Cached TMDB season responses. A season whose episodes have all aired never
+  -- changes, so it is stored with immutable = 1 and never re-fetched.
+  -- payload IS NULL records a confirmed 404 (season does not exist).
+  CREATE TABLE IF NOT EXISTS tmdb_season_cache (
+    tmdb_id       INTEGER NOT NULL,
+    season_number INTEGER NOT NULL,
+    payload       TEXT,
+    immutable     INTEGER NOT NULL DEFAULT 0,
+    fetched_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tmdb_id, season_number)
+  );
 `);
 
 // Schema migrations — safe to run on every startup
@@ -72,9 +84,38 @@ const migrations = [
   'ALTER TABLE episodes ADD COLUMN download_started_at  TEXT',
   'ALTER TABLE movies   ADD COLUMN tried_magnets        TEXT',
   'ALTER TABLE episodes ADD COLUMN tried_magnets        TEXT',
+  // Cached from TMDB so the scheduler knows the season range without an extra
+  // API call per run, and can auto-pause shows TMDB reports as finished.
+  'ALTER TABLE shows    ADD COLUMN number_of_seasons    INTEGER',
+  'ALTER TABLE shows    ADD COLUMN show_status          TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status)',
+  'CREATE INDEX IF NOT EXISTS idx_episodes_show_status ON episodes(show_id, status)',
+  'CREATE INDEX IF NOT EXISTS idx_movies_status   ON movies(status)',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
+}
+
+// Real column sets, read back after migrations. The update() helpers below build
+// SQL from object keys, so keys are validated against these to keep a future
+// unfiltered caller from turning into SQL injection.
+function columnsOf(table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+}
+const COLUMNS = {
+  movies:   columnsOf('movies'),
+  shows:    columnsOf('shows'),
+  episodes: columnsOf('episodes'),
+};
+
+function assertColumns(table, data) {
+  const keys = Object.keys(data);
+  if (keys.length === 0) throw new Error(`${table}.update called with no fields`);
+  for (const k of keys) {
+    if (!COLUMNS[table].has(k)) {
+      throw new Error(`Refusing to update unknown column "${k}" on ${table}`);
+    }
+  }
 }
 
 // Seed defaults from .env on first run (INSERT OR IGNORE = won't overwrite saved settings)
@@ -100,6 +141,7 @@ const defaultSettings = {
   preferred_show_groups:     'eztv,tgx,ettv,rartv',
   quality_strict:            '0',
   blocked_tags:              '',
+  trusted_only:              '0',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -126,6 +168,7 @@ const movies = {
   `).run(p({ release_date: null, ...data })),
 
   update: (id, data) => {
+    assertColumns('movies', data);
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');
     db.prepare(`UPDATE movies SET ${fields}, updated_at = datetime('now') WHERE id = $id`)
       .run(p({ ...data, id }));
@@ -140,11 +183,14 @@ const shows = {
   active: () => db.prepare('SELECT * FROM shows WHERE active = 1').all(),
 
   insert: (data) => db.prepare(`
-    INSERT INTO shows (tmdb_id, imdb_id, title, poster_url, quality, mode, start_season, start_episode)
-    VALUES ($tmdb_id, $imdb_id, $title, $poster_url, $quality, $mode, $start_season, $start_episode)
-  `).run(p({ start_season: 1, start_episode: 1, ...data })),
+    INSERT INTO shows (tmdb_id, imdb_id, title, poster_url, quality, mode,
+                       start_season, start_episode, number_of_seasons, show_status)
+    VALUES ($tmdb_id, $imdb_id, $title, $poster_url, $quality, $mode,
+            $start_season, $start_episode, $number_of_seasons, $show_status)
+  `).run(p({ start_season: 1, start_episode: 1, number_of_seasons: null, show_status: null, ...data })),
 
   update: (id, data) => {
+    assertColumns('shows', data);
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');
     db.prepare(`UPDATE shows SET ${fields} WHERE id = $id`).run(p({ ...data, id }));
   },
@@ -184,9 +230,51 @@ const episodes = {
   remove: (id) => db.prepare('DELETE FROM episodes WHERE id = ?').run(id),
 
   update: (id, data) => {
+    assertColumns('episodes', data);
     const fields = Object.keys(data).map(k => `${k} = $${k}`).join(', ');
     db.prepare(`UPDATE episodes SET ${fields} WHERE id = $id`).run(p({ ...data, id }));
   },
+
+  // The scheduler's work queue. sync() owns the aired/unaired decision, so a row
+  // being 'pending' already means it has aired and is ready to grab. 'failed' is
+  // deliberately excluded — it stays terminal until Redo or Retry Failed.
+  pending: (showId) =>
+    db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'pending' ORDER BY season, episode").all(showId),
+
+  // First pending episode only — manual mode queues one approval at a time.
+  firstPending: (showId) =>
+    db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'pending' ORDER BY season, episode LIMIT 1").get(showId),
+};
+
+// --- TMDB season cache ---
+
+const REFRESH_TTL_HOURS = 12;
+
+const seasonCache = {
+  get: (tmdbId, season) =>
+    db.prepare('SELECT * FROM tmdb_season_cache WHERE tmdb_id = ? AND season_number = ?')
+      .get(tmdbId, season),
+
+  set: (tmdbId, season, payload, isImmutable) =>
+    db.prepare(`
+      INSERT INTO tmdb_season_cache (tmdb_id, season_number, payload, immutable, fetched_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT (tmdb_id, season_number) DO UPDATE SET
+        payload    = excluded.payload,
+        immutable  = excluded.immutable,
+        fetched_at = excluded.fetched_at
+    `).run(tmdbId, season, payload === null ? null : JSON.stringify(payload), isImmutable ? 1 : 0),
+
+  /** True when a cached row is still usable: immutable, or fetched within the TTL. */
+  isFresh: (row) => {
+    if (!row) return false;
+    if (row.immutable) return true;
+    const age = Date.now() - new Date(row.fetched_at.replace(' ', 'T') + 'Z').getTime();
+    return age < REFRESH_TTL_HOURS * 3600 * 1000;
+  },
+
+  clear: (tmdbId) =>
+    db.prepare('DELETE FROM tmdb_season_cache WHERE tmdb_id = ?').run(tmdbId),
 };
 
 const settings = {
@@ -209,4 +297,4 @@ const settings = {
   },
 };
 
-module.exports = { db, movies, shows, episodes, settings };
+module.exports = { db, movies, shows, episodes, settings, seasonCache };

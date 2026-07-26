@@ -2,9 +2,11 @@
 
 const express = require('express');
 const router  = express.Router();
-const { shows, episodes } = require('../db');
-const { getTvDetails, getSeasonDetails } = require('../tmdb');
-const { run: runScheduler, hasAired, effectivelyAired } = require('../scheduler');
+const { shows, episodes, seasonCache } = require('../db');
+const { getTvDetails } = require('../tmdb');
+const {
+  run: runScheduler, syncEpisodes, syncShowMeta, makeSeasonFetcher,
+} = require('../scheduler');
 
 router.get('/', (_req, res) => {
   const allShows = shows.all();
@@ -23,10 +25,23 @@ router.post('/', async (req, res) => {
     if (!details) return res.status(404).json({ error: 'Show not found on TMDB' });
 
     const { tmdb_id: tid, imdb_id, title, poster_url } = details;
-    const result = shows.insert({ tmdb_id: tid, imdb_id, title, poster_url, quality, mode, start_season, start_episode });
-    const show   = shows.byId(result.lastInsertRowid);
-    res.status(201).json({ ...show, episodes: [] });
-    // Populate upcoming timeline placeholders without blocking the response
+    const result = shows.insert({
+      tmdb_id: tid, imdb_id, title, poster_url, quality, mode, start_season, start_episode,
+      number_of_seasons: details.number_of_seasons ?? null,
+      show_status:       details.show_status ?? null,
+    });
+    const show = shows.byId(result.lastInsertRowid);
+
+    // Populate the full episode list from TMDB up front so the grid is complete
+    // immediately rather than filling in over successive scheduler runs.
+    try {
+      const { added } = await syncEpisodes(show, makeSeasonFetcher(show.tmdb_id));
+      console.log(`[shows] "${title}": seeded ${added} episode(s) from TMDB`);
+    } catch (err) {
+      console.error(`[shows] "${title}" initial episode sync failed:`, err.message);
+    }
+
+    res.status(201).json({ ...shows.byId(show.id), episodes: episodes.forShow(show.id) });
     runScheduler().catch(() => {});
   } catch (err) {
     if (err.message?.includes('UNIQUE')) {
@@ -62,53 +77,12 @@ router.post('/:id/refresh-tmdb', async (req, res) => {
   if (!show) return res.status(404).json({ error: 'Show not found' });
 
   try {
-    const existingEps = episodes.forShow(show.id);
-    const existingSeasons = [...new Set(existingEps.map(e => e.season))].sort((a, b) => a - b);
-    const startSeason = show.start_season || 1;
-    const maxExisting = existingSeasons.length > 0 ? Math.max(...existingSeasons) : startSeason;
+    // An explicit refresh must bypass the season cache, otherwise it would just
+    // re-read whatever was cached and report "up to date".
+    seasonCache.clear(show.tmdb_id);
 
-    // Build the set of seasons to refresh: all existing + up to 2 ahead of the max
-    const toFetch = new Set(existingSeasons);
-    for (let s = startSeason; s <= maxExisting + 2; s++) toFetch.add(s);
-
-    let updated = 0, added = 0;
-
-    for (const s of [...toFetch].sort((a, b) => a - b)) {
-      const seasonInfo = await getSeasonDetails(show.tmdb_id, s);
-      if (!seasonInfo?.episodes?.length) continue;
-
-      for (const epData of seasonInfo.episodes) {
-        // Respect the configured start point
-        if (s < startSeason) continue;
-        if (s === startSeason && epData.episode_number < (show.start_episode || 1)) continue;
-
-        const existingEp = existingEps.find(e => e.season === s && e.episode === epData.episode_number);
-
-        if (existingEp) {
-          const changes = {};
-          if (existingEp.air_date !== epData.air_date) changes.air_date = epData.air_date;
-          // Upgrade 'upcoming' rows to 'pending' if the episode has now aired
-          if (existingEp.status === 'upcoming' &&
-              effectivelyAired(epData.episode_number, seasonInfo.episodes)) {
-            changes.status = 'pending';
-          }
-          if (Object.keys(changes).length > 0) {
-            episodes.update(existingEp.id, changes);
-            updated++;
-          }
-        } else {
-          const aired = effectivelyAired(epData.episode_number, seasonInfo.episodes);
-          const result = episodes.insert({
-            show_id:    show.id,
-            season:     s,
-            episode:    epData.episode_number,
-            status:     aired ? 'pending' : 'upcoming',
-            air_date:   epData.air_date || null,
-          });
-          if (result.changes > 0) added++;
-        }
-      }
-    }
+    const withMeta = await syncShowMeta(show);
+    const { added, updated } = await syncEpisodes(withMeta, makeSeasonFetcher(show.tmdb_id));
 
     if (added > 0 || updated > 0) runScheduler().catch(() => {});
 
@@ -154,7 +128,13 @@ router.post('/:id/episodes/:epId/redo', (req, res) => {
   if (!ep || String(ep.show_id) !== String(req.params.id)) {
     return res.status(404).json({ error: 'Episode not found' });
   }
-  episodes.update(ep.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null, progress: 0 });
+  // tried_magnets must be cleared too — otherwise the selector still excludes every
+  // previously attempted torrent and the redo fails instantly with no candidates.
+  episodes.update(ep.id, {
+    status: 'pending', magnet: null, torrent_id: null,
+    results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+  });
+  runScheduler().catch(() => {});
   res.json(episodes.byId(ep.id));
 });
 
@@ -175,7 +155,10 @@ router.post('/retry-failed', (req, res) => {
   for (const show of allShows) {
     const failed = episodes.failed(show.id);
     for (const ep of failed) {
-      episodes.update(ep.id, { status: 'pending', results_cache: null, progress: 0 });
+      episodes.update(ep.id, {
+        status: 'pending', magnet: null, torrent_id: null,
+        results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+      });
       resetCount++;
     }
   }

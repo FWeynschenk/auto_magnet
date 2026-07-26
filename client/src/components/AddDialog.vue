@@ -1,6 +1,6 @@
 <template>
   <div class="overlay" @click.self="$emit('close')">
-    <div class="dialog">
+    <div ref="dialogEl" class="dialog" role="dialog" aria-modal="true" :aria-label="`Add ${type === 'movie' ? 'movie' : 'show'}`">
       <div class="dialog-header">
         <h2>Add {{ type === 'movie' ? 'Movie' : 'Show' }}</h2>
         <button class="close-btn" @click="$emit('close')">✕</button>
@@ -91,9 +91,12 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { search as searchApi, movies as moviesApi, shows as showsApi } from '../api.js';
+import { useDialog } from '../composables/useDialog.js';
 
 const props = defineProps({ type: { type: String, default: 'movie' } });
 const emit  = defineEmits(['close', 'added']);
+
+const { dialogEl } = useDialog(() => emit('close'));
 
 const query    = ref('');
 const results  = ref([]);
@@ -157,13 +160,14 @@ async function add() {
   position: fixed; inset: 0;
   background: rgba(0,0,0,.7);
   display: flex; align-items: center; justify-content: center;
-  z-index: 200;
+  z-index: 200; padding: 16px;
 }
 .dialog {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
   width: 520px;
+  max-width: calc(100vw - 32px);   /* fixed width alone overflowed narrow screens */
   max-height: 85vh;
   display: flex;
   flex-direction: column;

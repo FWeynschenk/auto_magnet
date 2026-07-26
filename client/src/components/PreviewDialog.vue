@@ -1,6 +1,6 @@
 <template>
   <div class="overlay" @click.self="$emit('close')">
-    <div class="dialog">
+    <div ref="dialogEl" class="dialog" role="dialog" aria-modal="true" aria-label="Choose torrent">
       <div class="dialog-header">
         <div>
           <h2>Choose Torrent</h2>
@@ -49,6 +49,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue';
 import { search as searchApi } from '../api.js';
+import { useDialog } from '../composables/useDialog.js';
 
 const props = defineProps({
   item:       Object,   // { tmdb_id, title, type, quality, id } for movie / show
@@ -57,6 +58,8 @@ const props = defineProps({
   episodeId:  { type: Number, default: null },  // episode DB id — used to load cached results
 });
 const emit = defineEmits(['close', 'grabbed']);
+
+const { dialogEl } = useDialog(() => emit('close'));
 
 const results  = ref([]);
 const loading  = ref(true);

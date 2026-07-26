@@ -54,7 +54,12 @@ router.delete('/:id', (req, res) => {
 router.post('/:id/redo', (req, res) => {
   const movie = movies.byId(req.params.id);
   if (!movie) return res.status(404).json({ error: 'Movie not found' });
-  movies.update(req.params.id, { status: 'pending', magnet: null, torrent_id: null, results_cache: null, progress: 0 });
+  // tried_magnets must be cleared too — otherwise the selector still excludes every
+  // previously attempted torrent and the redo fails instantly with no candidates.
+  movies.update(req.params.id, {
+    status: 'pending', magnet: null, torrent_id: null,
+    results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+  });
   runScheduler().catch(() => {});
   res.json(movies.byId(req.params.id));
 });
@@ -63,7 +68,10 @@ router.post('/:id/redo', (req, res) => {
 router.post('/retry-failed', (req, res) => {
   const failed = movies.all().filter(m => m.status === 'failed');
   for (const m of failed) {
-    movies.update(m.id, { status: 'pending', results_cache: null, progress: 0 });
+    movies.update(m.id, {
+      status: 'pending', magnet: null, torrent_id: null,
+      results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+    });
   }
   if (failed.length > 0) runScheduler().catch(() => {});
   res.json({ reset: failed.length });

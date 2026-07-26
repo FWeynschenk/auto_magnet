@@ -1,6 +1,6 @@
 <template>
   <div class="overlay" @click.self="$emit('close')">
-    <div class="dialog">
+    <div ref="dialogEl" class="dialog" role="dialog" aria-modal="true" :aria-label="`${item.title} details`">
       <div class="dialog-header">
         <img v-if="item.poster_url" :src="item.poster_url" class="dlg-poster" alt="" />
         <div v-else class="dlg-poster dlg-poster-ph">{{ isMovie ? '🎬' : '📺' }}</div>
@@ -107,7 +107,7 @@
             <div class="section-label">Failed</div>
             <div v-for="ep in failedEpisodes" :key="ep.id" class="ep-fail-row">
               <span class="ep-label">S{{ pad(ep.season) }}E{{ pad(ep.episode) }}</span>
-              <span class="ep-retries" v-if="ep.tried_magnets">{{ JSON.parse(ep.tried_magnets).length }} tried</span>
+              <span class="ep-retries" v-if="ep.tried_magnets">{{ safeParseList(ep.tried_magnets).length }} tried</span>
             </div>
           </div>
         </template>
@@ -119,11 +119,24 @@
 
 <script setup>
 import { computed } from 'vue';
+import { useDialog } from '../composables/useDialog.js';
 
 const props = defineProps({ item: Object });
-defineEmits(['close']);
+const emit = defineEmits(['close']);
+
+const { dialogEl } = useDialog(() => emit('close'));
 
 const isMovie = computed(() => !('episodes' in props.item));
+
+/** tried_magnets is user-influenced JSON — never let a bad value break the dialog. */
+function safeParseList(raw) {
+  try {
+    const v = JSON.parse(raw || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch (_) {
+    return [];
+  }
+}
 
 const statusClass = computed(() => ({
   pending:     'status-pending',
@@ -134,7 +147,7 @@ const statusClass = computed(() => ({
   ended:       'status-pending',
 }[props.item.status] || 'status-pending'));
 
-const triedList  = computed(() => JSON.parse(props.item.tried_magnets || '[]'));
+const triedList  = computed(() => safeParseList(props.item.tried_magnets));
 const retriesCount = computed(() => triedList.value.length);
 
 const epStats = computed(() => {

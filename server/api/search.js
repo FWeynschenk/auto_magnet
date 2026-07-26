@@ -10,6 +10,19 @@ const { select } = require('../selector');
 const { settings, movies, shows, episodes } = require('../db');
 const { addTorrent } = require('../transmission');
 
+/** Cached scheduler results for a movie/episode, filtered to grabbable rows. */
+function cachedResults(movieId, episodeId) {
+  const row = movieId   ? movies.byId(movieId)
+            : episodeId ? episodes.byId(episodeId)
+            : null;
+  if (!row?.results_cache) return null;
+  try {
+    return JSON.parse(row.results_cache).filter(r => r.magnet);
+  } catch (_) {
+    return null; // malformed cache — fall through to a live search
+  }
+}
+
 // TMDB type-ahead for the Add dialog
 router.get('/tmdb', async (req, res) => {
   const { q } = req.query;
@@ -26,15 +39,12 @@ router.post('/preview', async (req, res) => {
   const { tmdb_id, type, season, episode: ep, quality = '1080p', movie_id, episode_id } = req.body;
   if (!tmdb_id || !type) return res.status(400).json({ error: 'tmdb_id and type required' });
 
-  // Return cached results if available (scheduler pre-searched for manual-mode items)
-  if (movie_id) {
-    const movie = movies.byId(movie_id);
-    if (movie?.results_cache) return res.json(JSON.parse(movie.results_cache));
-  }
-  if (episode_id) {
-    const epRow = episodes.byId(episode_id);
-    if (epRow?.results_cache) return res.json(JSON.parse(epRow.results_cache));
-  }
+  // Return cached results if available (scheduler pre-searched for manual-mode items).
+  // Only rows that carry a magnet are served: anything the user can click must be
+  // immediately grabbable, and caches written before magnet-only filtering may still
+  // hold download-URL-only rows. If nothing survives, fall through to a live search.
+  const cached = cachedResults(movie_id, episode_id);
+  if (cached?.length) return res.json(cached);
 
   try {
     let title, imdbId, year;
@@ -81,21 +91,34 @@ router.post('/grab', async (req, res) => {
   if (!media_id)   return res.status(400).json({ error: 'media_id required' });
 
   try {
+    const startedAt = new Date().toISOString();
+
     if (media_type === 'movie') {
       const downloadDir = settings.get('movie_path');
-      const result = await addTorrent(torrentUrl, downloadDir);
-      movies.update(media_id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id });
+      const result = await addTorrent(torrentUrl, downloadDir, {
+        screen: { type: 'movie', title: torrent.title },
+      });
+      // download_started_at is required for stale-download recovery to ever kick in
+      movies.update(media_id, {
+        status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
+        results_cache: null, download_started_at: startedAt,
+      });
       res.json({ success: true, torrent_id: result.id });
     } else {
       const show = shows.byId(media_id);
       if (!show) return res.status(404).json({ error: 'Show not found' });
       const downloadDir = `${settings.get('shows_path')}/${show.title}`;
-      const result = await addTorrent(torrentUrl, downloadDir);
+      const result = await addTorrent(torrentUrl, downloadDir, {
+        screen: { type: 'show', title: torrent.title },
+      });
       const epSeason  = season || 1;
       const epEpisode = ep     || 1;
       const existing  = episodes.get(media_id, epSeason, epEpisode);
       if (existing) {
-        episodes.update(existing.id, { status: 'downloading', magnet: torrentUrl, torrent_id: result.id, results_cache: null });
+        episodes.update(existing.id, {
+          status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
+          results_cache: null, download_started_at: startedAt,
+        });
       } else {
         episodes.insert({
           show_id:    media_id,
@@ -105,10 +128,14 @@ router.post('/grab', async (req, res) => {
           magnet:     torrentUrl,
           torrent_id: result.id,
         });
+        const inserted = episodes.get(media_id, epSeason, epEpisode);
+        if (inserted) episodes.update(inserted.id, { download_started_at: startedAt });
       }
       res.json({ success: true, torrent_id: result.id });
     }
   } catch (err) {
+    // A content-screen rejection is a client-actionable 422, not a server fault
+    if (err.screened) return res.status(422).json({ error: err.message });
     res.status(500).json({ error: err.message });
   }
 });

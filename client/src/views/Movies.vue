@@ -3,28 +3,38 @@
     <div class="view-header">
       <h1>Movies</h1>
       <div class="header-actions">
+        <input
+          v-model="search"
+          type="search"
+          class="ctrl-search"
+          placeholder="Filter movies…"
+          aria-label="Filter movies by title"
+        />
         <button
           v-if="hasFailed"
           class="btn-ghost btn-sm"
           :disabled="retrying"
           @click="retryFailed"
         >{{ retrying ? 'Retrying…' : '↺ Retry Failed' }}</button>
-        <select v-model="sortBy" class="ctrl-select">
+        <select v-model="sortBy" class="ctrl-select" aria-label="Sort movies">
           <option value="added">Recently added</option>
           <option value="title">Title</option>
           <option value="year">Year</option>
           <option value="status">Status</option>
         </select>
-        <select v-model="filterStatus" class="ctrl-select">
+        <select v-model="filterStatus" class="ctrl-select" aria-label="Filter movies by status">
           <option value="">All statuses</option>
           <option value="pending">Pending</option>
           <option value="downloading">Downloading</option>
           <option value="done">Done</option>
           <option value="failed">Failed</option>
         </select>
-        <button class="btn-ghost btn-sm icon-btn" @click="toggleView" :title="viewMode === 'grid' ? 'Switch to list' : 'Switch to grid'">
-          {{ viewMode === 'grid' ? '☰' : '⊞' }}
-        </button>
+        <button
+          class="btn-ghost btn-sm icon-btn"
+          :aria-label="viewMode === 'grid' ? 'Switch to list view' : 'Switch to grid view'"
+          :title="viewMode === 'grid' ? 'Switch to list' : 'Switch to grid'"
+          @click="toggleView"
+        >{{ viewMode === 'grid' ? '☰' : '⊞' }}</button>
         <button class="btn-primary" @click="showAdd = true">+ Add Movie</button>
       </div>
     </div>
@@ -41,7 +51,7 @@
         v-for="m in displayList"
         :key="m.id"
         :movie="m"
-        @remove="remove"
+        @remove="askRemove"
         @update="update"
         @preview="openPreview"
         @redo="redo"
@@ -54,7 +64,7 @@
         v-for="m in displayList"
         :key="m.id"
         :movie="m"
-        @remove="remove"
+        @remove="askRemove"
         @update="update"
         @preview="openPreview"
         @redo="redo"
@@ -81,28 +91,42 @@
       :item="statsItem"
       @close="statsItem = null"
     />
+
+    <ConfirmDialog
+      v-if="pendingRemove"
+      title="Remove this movie?"
+      :message="`“${pendingRemove.title}” will be removed from auto_magnet.`"
+      :details="['Files already downloaded are not deleted from disk']"
+      confirm-label="Remove movie"
+      @cancel="pendingRemove = null"
+      @confirm="confirmRemove"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { movies as api } from '../api.js';
-import MovieCard    from '../components/MovieCard.vue';
-import MovieListRow from '../components/MovieListRow.vue';
-import AddDialog    from '../components/AddDialog.vue';
+import { guard, notifySuccess } from '../toast.js';
+import { usePolling } from '../composables/usePolling.js';
+import MovieCard     from '../components/MovieCard.vue';
+import MovieListRow  from '../components/MovieListRow.vue';
+import AddDialog     from '../components/AddDialog.vue';
 import PreviewDialog from '../components/PreviewDialog.vue';
-import StatsDialog  from '../components/StatsDialog.vue';
+import StatsDialog   from '../components/StatsDialog.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
 
-const list        = ref([]);
-const loading     = ref(true);
-const showAdd     = ref(false);
-const previewItem = ref(null);
-const statsItem   = ref(null);
-const sortBy      = ref('added');
-const filterStatus = ref('');
-const retrying    = ref(false);
-let pollTimer     = null;
-let initialDone   = false;
+const list          = ref([]);
+const loading       = ref(true);
+const showAdd       = ref(false);
+const previewItem   = ref(null);
+const statsItem     = ref(null);
+const pendingRemove = ref(null);
+const search        = ref('');
+const sortBy        = ref(localStorage.getItem('movies_sort')   || 'added');
+const filterStatus  = ref(localStorage.getItem('movies_filter') || '');
+const retrying      = ref(false);
+let initialDone     = false;
 
 const viewMode = ref(localStorage.getItem('movies_view') || 'grid');
 function toggleView() {
@@ -110,10 +134,17 @@ function toggleView() {
   localStorage.setItem('movies_view', viewMode.value);
 }
 
+watch([sortBy, filterStatus], () => {
+  localStorage.setItem('movies_sort', sortBy.value);
+  localStorage.setItem('movies_filter', filterStatus.value);
+});
+
 const hasFailed = computed(() => list.value.some(m => m.status === 'failed'));
 
 const displayList = computed(() => {
   let items = [...list.value];
+  const q = search.value.trim().toLowerCase();
+  if (q) items = items.filter(m => m.title.toLowerCase().includes(q));
   if (filterStatus.value) items = items.filter(m => m.status === filterStatus.value);
   switch (sortBy.value) {
     case 'title':  items.sort((a, b) => a.title.localeCompare(b.title)); break;
@@ -126,7 +157,13 @@ const displayList = computed(() => {
 
 async function reload() {
   loading.value = true;
-  try { list.value = await api.list(); } finally { loading.value = false; initialDone = true; }
+  try {
+    const data = await guard(() => api.list(), 'Failed to load movies');
+    if (data) list.value = data;
+  } finally {
+    loading.value = false;
+    initialDone = true;
+  }
 }
 
 async function silentReload() {
@@ -140,43 +177,61 @@ async function silentReload() {
         }
       }
     }
-  } catch (_) {}
+  } catch (_) { /* transient poll failure — the next tick retries */ }
 }
 
-async function remove(id) {
-  await api.remove(id);
-  list.value = list.value.filter(m => m.id !== id);
+function askRemove(id) {
+  pendingRemove.value = list.value.find(m => m.id === id) || null;
+}
+
+async function confirmRemove() {
+  const movie = pendingRemove.value;
+  pendingRemove.value = null;
+  if (!movie) return;
+  const ok = await guard(() => api.remove(movie.id), `Could not remove “${movie.title}”`);
+  if (ok !== undefined) {
+    list.value = list.value.filter(m => m.id !== movie.id);
+    notifySuccess(`Removed “${movie.title}”`);
+  }
 }
 
 async function update(id, data) {
-  const updated = await api.update(id, data);
+  const updated = await guard(() => api.update(id, data), 'Could not update movie');
+  if (!updated) return;
   const idx = list.value.findIndex(m => m.id === id);
   if (idx !== -1) list.value[idx] = updated;
 }
 
-function onAdded(movie) { list.value.unshift(movie); }
+function onAdded(movie) {
+  list.value.unshift(movie);
+  notifySuccess(`Added “${movie.title}”`);
+}
 
 function openPreview(movie) {
   previewItem.value = { ...movie, type: 'movie' };
 }
 
 async function redo(movie) {
-  const updated = await api.redo(movie.id);
+  const updated = await guard(() => api.redo(movie.id), 'Redo failed');
+  if (!updated) return;
   const idx = list.value.findIndex(m => m.id === movie.id);
   if (idx !== -1) list.value[idx] = updated;
-  previewItem.value = { ...updated, type: 'movie' };
+  if (updated.mode === 'manual') previewItem.value = { ...updated, type: 'movie' };
 }
 
 async function retryFailed() {
   retrying.value = true;
-  try { await api.retryFailed(); await silentReload(); } finally { retrying.value = false; }
+  try {
+    const res = await guard(() => api.retryFailed(), 'Retry failed');
+    if (res) notifySuccess(`${res.reset} movie(s) queued for retry`);
+    await silentReload();
+  } finally {
+    retrying.value = false;
+  }
 }
 
-onMounted(() => {
-  reload();
-  pollTimer = setInterval(silentReload, 30000);
-});
-onUnmounted(() => clearInterval(pollTimer));
+usePolling(silentReload, 30000);
+onMounted(reload);
 </script>
 
 <style scoped>
@@ -188,12 +243,14 @@ h1 { font-size: 22px; font-weight: 700; }
 
 .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.ctrl-select {
+.ctrl-select, .ctrl-search {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text);
-  padding: 5px 8px; font-size: 12px; outline: none; cursor: pointer;
+  padding: 5px 8px; font-size: 12px; outline: none;
 }
-.ctrl-select:focus { border-color: var(--accent); }
+.ctrl-select { cursor: pointer; }
+.ctrl-search { width: 150px; }
+.ctrl-select:focus, .ctrl-search:focus { border-color: var(--accent); }
 
 .icon-btn { font-size: 16px; padding: 4px 10px; }
 
@@ -209,4 +266,11 @@ h1 { font-size: 22px; font-weight: 700; }
 }
 
 .list-view { display: flex; flex-direction: column; gap: 6px; }
+
+@media (max-width: 640px) {
+  .view-header { flex-direction: column; align-items: stretch; }
+  .header-actions { justify-content: flex-start; }
+  .ctrl-search { width: 100%; }
+  .cards-grid { grid-template-columns: 1fr; }
+}
 </style>

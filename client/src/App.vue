@@ -17,13 +17,16 @@
     </main>
 
     <TimelineStrip />
+    <ToastHost />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
 import { settings } from './api.js';
+import { usePolling } from './composables/usePolling.js';
 import TimelineStrip from './components/TimelineStrip.vue';
+import ToastHost     from './components/ToastHost.vue';
 
 const txStatus = ref({ connected: false });
 
@@ -31,15 +34,10 @@ async function checkStatus() {
   try { txStatus.value = await settings.status(); } catch (_) {}
 }
 
-onMounted(() => {
-  checkStatus();
-  setInterval(checkStatus, 30000);
-
-  // Request browser notification permission on first load
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
-});
+// Notification permission is requested from Settings on an explicit click, not
+// on load — browsers penalise (and some suppress) unprompted permission requests.
+usePolling(checkStatus, 30000);
+onMounted(checkStatus);
 </script>
 
 <style>
@@ -105,9 +103,21 @@ button:disabled { opacity: .4; cursor: default; }
 .nav-links a:hover              { color: var(--text); background: var(--border); }
 .nav-links a.router-link-active { color: var(--accent); }
 
-.tx-status { margin-left: auto; font-size: 12px; font-weight: 500; }
+.tx-status { margin-left: auto; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .tx-status.ok  { color: var(--green); }
 .tx-status.err { color: var(--red); }
 
 main { flex: 1; padding: 24px; max-width: 1400px; margin: 0 auto; width: 100%; }
+
+@media (max-width: 640px) {
+  .navbar {
+    height: auto; flex-wrap: wrap; gap: 8px 12px;
+    padding: 10px 14px; position: static;
+  }
+  .nav-brand { font-size: 15px; }
+  .nav-links { flex: 1 1 100%; order: 3; }
+  .nav-links a { padding: 6px 10px; font-size: 13px; }
+  .tx-status { margin-left: auto; }
+  main { padding: 16px 14px; }
+}
 </style>

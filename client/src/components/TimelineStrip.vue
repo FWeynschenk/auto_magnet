@@ -2,7 +2,7 @@
   <div class="timeline-wrap">
     <div class="timeline-header">
       <span class="timeline-title">📅 Release Timeline</span>
-      <button class="toggle-btn" @click="collapsed = !collapsed">
+      <button class="toggle-btn" :aria-expanded="String(!collapsed)" @click="toggle">
         {{ collapsed ? 'Show' : 'Hide' }}
       </button>
     </div>
@@ -38,14 +38,20 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, computed, onMounted, nextTick } from 'vue';
 import { timeline as api } from '../api.js';
+import { usePolling } from '../composables/usePolling.js';
 
 const items     = ref([]);
 const loading   = ref(true);
-const collapsed = ref(false);
+// Persisted like the grid/list preference, so it survives a reload
+const collapsed = ref(localStorage.getItem('timeline_collapsed') === '1');
 const scrollEl  = ref(null);
-let pollTimer   = null;
+
+function toggle() {
+  collapsed.value = !collapsed.value;
+  localStorage.setItem('timeline_collapsed', collapsed.value ? '1' : '0');
+}
 
 async function load() {
   try { items.value = await api.get(); } catch (_) {}
@@ -80,11 +86,8 @@ const groups = computed(() => {
     });
 });
 
-onMounted(() => {
-  load();
-  pollTimer = setInterval(load, 5 * 60 * 1000); // refresh every 5 min
-});
-onUnmounted(() => clearInterval(pollTimer));
+usePolling(load, 5 * 60 * 1000);
+onMounted(load);
 </script>
 
 <style scoped>

@@ -1,6 +1,6 @@
 'use strict';
 
-const { settings } = require('./db');
+const { settings, seasonCache } = require('./db');
 
 const BASE = 'https://api.themoviedb.org/3';
 const IMG_BASE = 'https://image.tmdb.org/t/p/w500';
@@ -62,12 +62,54 @@ async function getTvDetails(tmdbId) {
   };
 }
 
+/**
+ * A season is immutable once it is fully in the past: every episode has an air
+ * date and the last one aired more than IMMUTABLE_AFTER_DAYS ago. Such a season
+ * is cached forever, which is where nearly all the API savings come from.
+ */
+const IMMUTABLE_AFTER_DAYS = 14;
+
+function isSeasonFinished(season) {
+  const eps = season?.episodes || [];
+  if (eps.length === 0) return false;
+  if (eps.some(e => !e.air_date)) return false;
+  const last = eps.reduce((max, e) => (e.air_date > max ? e.air_date : max), '');
+  const cutoff = Date.now() - IMMUTABLE_AFTER_DAYS * 24 * 3600 * 1000;
+  return new Date(last + 'T23:59:59Z').getTime() < cutoff;
+}
+
+/**
+ * Season details, served from the persistent cache when possible.
+ * Returns null when the season does not exist — that negative result is cached
+ * too (with a TTL) so probing past the end of a series isn't a request per run.
+ */
 async function getSeasonDetails(tmdbId, seasonNumber) {
+  const cached = seasonCache.get(tmdbId, seasonNumber);
+  if (seasonCache.isFresh(cached)) {
+    return cached.payload ? JSON.parse(cached.payload) : null;
+  }
+
   const url = `${BASE}/tv/${tmdbId}/season/${seasonNumber}?api_key=${apiKey()}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-  if (!res.ok) return null;
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  } catch (err) {
+    // Network failure: fall back to a stale cache entry rather than losing data
+    if (cached) return cached.payload ? JSON.parse(cached.payload) : null;
+    throw err;
+  }
+
+  if (res.status === 404) {
+    seasonCache.set(tmdbId, seasonNumber, null, false);
+    return null;
+  }
+  if (!res.ok) {
+    if (cached) return cached.payload ? JSON.parse(cached.payload) : null;
+    return null;
+  }
+
   const r = await res.json();
-  return {
+  const season = {
     season_number:   r.season_number,
     season_air_date: r.air_date || null,   // season premiere date (fallback when episode dates are missing)
     episode_count:   (r.episodes || []).length,
@@ -77,6 +119,9 @@ async function getSeasonDetails(tmdbId, seasonNumber) {
       air_date:       e.air_date || null,
     })),
   };
+
+  seasonCache.set(tmdbId, seasonNumber, season, isSeasonFinished(season));
+  return season;
 }
 
 /**

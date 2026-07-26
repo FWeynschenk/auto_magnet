@@ -113,6 +113,35 @@
             <input v-model="qualityStrictBool" type="checkbox" class="checkbox" />
             Strict quality mode — only grab results that exactly match preferred quality
           </label>
+          <label class="check-label span2">
+            <input v-model="trustedOnlyBool" type="checkbox" class="checkbox" />
+            Trusted groups only — reject releases not from the groups listed above
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Dashboard access</h2>
+        <div class="fields">
+          <label class="span2">API token <span class="hint">only needed if the server runs with AMAGNET_TOKEN set</span>
+            <input v-model="apiToken" type="password" placeholder="leave blank if auth is disabled" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Notifications</h2>
+        <div class="notif-row">
+          <div>
+            <div class="notif-title">Browser notifications</div>
+            <div class="notif-sub">{{ notifStatusText }}</div>
+          </div>
+          <button
+            v-if="notifPermission === 'default'"
+            type="button"
+            class="btn-ghost btn-sm"
+            @click="enableNotifications"
+          >Enable</button>
         </div>
       </section>
 
@@ -143,7 +172,27 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { settings as api, scheduler } from '../api.js';
+import { settings as api, scheduler, getToken, setToken } from '../api.js';
+import { notifyError, notifySuccess } from '../toast.js';
+
+const apiToken = ref(getToken());
+
+const supportsNotifications = 'Notification' in window;
+const notifPermission = ref(supportsNotifications ? Notification.permission : 'unsupported');
+
+const notifStatusText = computed(() => ({
+  granted:     'Enabled — you will be notified when downloads finish.',
+  denied:      'Blocked. Re-enable it in your browser’s site settings.',
+  default:     'Not enabled yet.',
+  unsupported: 'This browser does not support notifications.',
+}[notifPermission.value]));
+
+async function enableNotifications() {
+  if (!supportsNotifications) return;
+  // Must be called from a user gesture, which is why this lives here and not on load
+  notifPermission.value = await Notification.requestPermission();
+  if (notifPermission.value === 'granted') notifySuccess('Notifications enabled');
+}
 
 const form      = ref({});
 const loading   = ref(true);
@@ -158,6 +207,11 @@ const runMsg    = ref('');
 const qualityStrictBool = computed({
   get: () => form.value.quality_strict === '1',
   set: (v) => { form.value.quality_strict = v ? '1' : '0'; },
+});
+
+const trustedOnlyBool = computed({
+  get: () => form.value.trusted_only === '1',
+  set: (v) => { form.value.trusted_only = v ? '1' : '0'; },
 });
 
 onMounted(async () => {
@@ -175,6 +229,8 @@ async function runNow() {
     await scheduler.run();
     runMsg.value = 'Scheduler started — check back in a moment.';
     setTimeout(() => { runMsg.value = ''; }, 4000);
+  } catch (err) {
+    notifyError(`Could not start the scheduler: ${err.message}`);
   } finally {
     running.value = false;
   }
@@ -185,6 +241,8 @@ async function save() {
   saved.value     = false;
   saveError.value = '';
   try {
+    // Stored locally only — the token authenticates this browser, it isn't a server setting
+    setToken(apiToken.value.trim());
     await api.save(form.value);
     saved.value   = true;
     status.value  = await api.status();
@@ -221,6 +279,13 @@ section h2 {
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .span2  { grid-column: span 2; }
 
+.notif-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap;
+}
+.notif-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.notif-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
 label {
   display: flex; flex-direction: column; gap: 5px;
   font-size: 13px; color: var(--muted);
@@ -247,7 +312,15 @@ input:focus, select:focus { border-color: var(--accent); }
   padding: 16px 20px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
 }
-.run-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.run-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .run-title  { font-weight: 600; font-size: 14px; }
 .run-sub    { color: var(--muted); font-size: 12px; margin-top: 3px; }
+
+/* The two-column field grid was applied at every width and overflowed phones */
+@media (max-width: 640px) {
+  .fields { grid-template-columns: 1fr; }
+  .span2  { grid-column: span 1; }
+  .view-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .run-section { padding: 14px; }
+}
 </style>

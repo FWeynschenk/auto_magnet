@@ -49,6 +49,24 @@
             </div>
           </div>
 
+          <div v-if="item.last_error" class="error-section">
+            <div class="section-label">Last problem</div>
+            <div class="error-text">{{ item.last_error }}</div>
+          </div>
+
+          <div v-if="targets.length > 1" class="target-section">
+            <div class="section-label">Download to</div>
+            <select
+              class="target-select"
+              :value="item.transmission_target || 'default'"
+              @change="$emit('update', item.id, { transmission_target: $event.target.value === 'default' ? null : $event.target.value })"
+            >
+              <option v-for="t in targets" :key="t.name" :value="t.name">
+                {{ t.name === 'default' ? `Default (${t.host})` : `${t.name} (${t.host})` }}
+              </option>
+            </select>
+          </div>
+
           <div v-if="item.magnet" class="magnet-section">
             <div class="section-label">Current torrent</div>
             <div class="magnet-text">{{ truncateMagnet(item.magnet) }}</div>
@@ -118,11 +136,17 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { useDialog } from '../composables/useDialog.js';
+import { settings as settingsApi } from '../api.js';
 
 const props = defineProps({ item: Object });
-const emit = defineEmits(['close']);
+const emit = defineEmits(['close', 'update']);
+
+const targets = ref([]);
+onMounted(async () => {
+  try { targets.value = await settingsApi.targets(); } catch (_) { targets.value = []; }
+});
 
 const { dialogEl } = useDialog(() => emit('close'));
 
@@ -276,6 +300,15 @@ function truncateMagnet(m) {
   display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12px;
 }
 .ep-retries { color: var(--muted); font-size: 11px; }
+
+.error-section { margin-top: 14px; }
+.error-text { font-size: 12px; color: var(--red); word-break: break-word; }
+.target-section { margin-top: 14px; }
+.target-select {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  padding: 5px 8px; font-size: 12px; cursor: pointer; margin-top: 4px;
+}
 
 .magnet-text {
   font-family: monospace; font-size: 11px; color: var(--muted);

@@ -48,6 +48,9 @@ services:
       # App
       - AMAGNET_PORT=62201
       - DB_PATH=/data/auto_magnet.db
+      # Set to 1 for a test instance: starts with the scheduler off so nothing
+      # is searched for or pushed to Transmission. Leave 0 in production.
+      - AMAGNET_NO_SCHEDULER=${AMAGNET_NO_SCHEDULER:-0}
     volumes:
       - auto-magnet-data:/data
     ports:

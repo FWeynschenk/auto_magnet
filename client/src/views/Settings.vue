@@ -30,6 +30,31 @@
       </section>
 
       <section>
+        <h2>Extra Transmission instances</h2>
+        <p class="section-note">
+          Optional. Give each one a name, then pick it per movie or show with “Download to”.
+          Items with nothing chosen use the default instance above.
+        </p>
+        <div v-if="instances.length > 0" class="instance-list">
+          <div v-for="(inst, i) in instances" :key="i" class="instance-row">
+            <input v-model="inst.name" type="text" placeholder="Name (e.g. nas)" aria-label="Instance name" />
+            <input v-model="inst.host" type="text" placeholder="Host or IP" aria-label="Instance host" />
+            <input v-model="inst.port" type="text" placeholder="9091" class="port-input" aria-label="Instance port" />
+            <input v-model="inst.user" type="text" placeholder="user" aria-label="Instance username" />
+            <input v-model="inst.pw" type="password" placeholder="password" aria-label="Instance password" />
+            <button type="button" class="btn-danger btn-sm" @click="instances.splice(i, 1)">✕</button>
+          </div>
+        </div>
+        <button type="button" class="btn-ghost btn-sm add-instance" @click="addInstance">+ Add instance</button>
+
+        <div v-if="status.instances?.length > 1" class="instance-status">
+          <span v-for="inst in status.instances" :key="inst.name" :class="inst.connected ? 'ok' : 'err'">
+            ● {{ inst.name }}
+          </span>
+        </div>
+      </section>
+
+      <section>
         <h2>Download Paths</h2>
         <div class="fields">
           <label>Movies directory
@@ -116,6 +141,34 @@
           <label class="check-label span2">
             <input v-model="trustedOnlyBool" type="checkbox" class="checkbox" />
             Trusted groups only — reject releases not from the groups listed above
+          </label>
+          <label>Reuse results for (minutes) <span class="hint">how long a search stays instant on reopen; 0 disables</span>
+            <input v-model.number="form.search_cache_mins" type="number" min="0" max="720" />
+          </label>
+          <label>Title match strictness <span class="hint">share of the title's words a release must contain (0.7 = 70%)</span>
+            <input v-model.number="form.title_match_min" type="number" min="0" max="1" step="0.05" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>Safety</h2>
+        <p class="section-note">
+          Releases are checked against their real file list before anything starts downloading.
+          Anything carrying an executable, a crack/keygen folder, a password-protected archive,
+          or a video file that is suspiciously small for its claimed quality is rejected outright.
+        </p>
+        <div class="fields">
+          <label class="check-label span2">
+            <input v-model="allowDiscImagesBool" type="checkbox" class="checkbox" />
+            Allow disc images (.iso/.img) — off by default, since a disc image hides its own contents
+          </label>
+          <label class="span2">Magnets whose contents never load
+            <span class="hint">some magnets never deliver a file list, so there is nothing to check</span>
+            <select v-model="form.unverified_policy">
+              <option value="start">Start anyway — keeps good torrents, skips the content check</option>
+              <option value="block">Block and delete — never run anything unverified</option>
+            </select>
           </label>
         </div>
       </section>
@@ -214,9 +267,26 @@ const trustedOnlyBool = computed({
   set: (v) => { form.value.trusted_only = v ? '1' : '0'; },
 });
 
+// Edited as an array, stored as a JSON string — the shape the server wants.
+const instances = ref([]);
+function addInstance() {
+  instances.value.push({ name: '', host: '', port: '9091', user: '', pw: '' });
+}
+
+const allowDiscImagesBool = computed({
+  get: () => form.value.allow_disc_images === '1',
+  set: (v) => { form.value.allow_disc_images = v ? '1' : '0'; },
+});
+
 onMounted(async () => {
   try {
     [form.value, status.value] = await Promise.all([api.get(), api.status()]);
+    try {
+      const parsed = JSON.parse(form.value.transmission_extra || '[]');
+      instances.value = Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      instances.value = [];
+    }
   } finally {
     loading.value = false;
   }
@@ -243,7 +313,13 @@ async function save() {
   try {
     // Stored locally only — the token authenticates this browser, it isn't a server setting
     setToken(apiToken.value.trim());
-    await api.save(form.value);
+    const payload = {
+      ...form.value,
+      transmission_extra: JSON.stringify(
+        instances.value.filter(i => i.name.trim() && i.host.trim())
+      ),
+    };
+    await api.save(payload);
     saved.value   = true;
     status.value  = await api.status();
     setTimeout(() => { saved.value = false; }, 3000);
@@ -302,6 +378,30 @@ input, select {
 }
 input:focus, select:focus { border-color: var(--accent); }
 
+.instance-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.instance-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr 70px 1fr 1fr auto;
+  gap: 6px;
+}
+.instance-row input {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  padding: 5px 8px; font-size: 12px; outline: none; min-width: 0;
+}
+.instance-row input:focus { border-color: var(--accent); }
+.add-instance { margin-top: 2px; }
+.instance-status { display: flex; gap: 12px; margin-top: 10px; font-size: 11px; }
+.instance-status .ok  { color: var(--green); }
+.instance-status .err { color: var(--red); }
+
+@media (max-width: 720px) {
+  .instance-row { grid-template-columns: 1fr 1fr auto; }
+}
+
+.section-note {
+  color: var(--muted); font-size: 12px; margin: -4px 0 12px; max-width: 70ch; line-height: 1.5;
+}
 .saved-msg { color: var(--green); font-size: 13px; }
 .error-msg { color: var(--red);   font-size: 13px; }
 

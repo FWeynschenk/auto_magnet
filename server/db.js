@@ -60,6 +60,17 @@ db.exec(`
   -- Cached TMDB season responses. A season whose episodes have all aired never
   -- changes, so it is stored with immutable = 1 and never re-fetched.
   -- payload IS NULL records a confirmed 404 (season does not exist).
+  -- What the scheduler and manual grabs actually did, so "why didn't this
+  -- download?" has an answer that outlives the process's stdout.
+  CREATE TABLE IF NOT EXISTS scheduler_log (
+    id          INTEGER PRIMARY KEY,
+    run_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    level       TEXT NOT NULL DEFAULT 'info',
+    entity_type TEXT,
+    entity_id   INTEGER,
+    message     TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS tmdb_season_cache (
     tmdb_id       INTEGER NOT NULL,
     season_number INTEGER NOT NULL,
@@ -88,9 +99,24 @@ const migrations = [
   // API call per run, and can auto-pause shows TMDB reports as finished.
   'ALTER TABLE shows    ADD COLUMN number_of_seasons    INTEGER',
   'ALTER TABLE shows    ADD COLUMN show_status          TEXT',
+  // When the candidate list was built. The UI shows its age, and a stale cache
+  // is refreshed instead of being served silently.
+  'ALTER TABLE movies   ADD COLUMN results_cached_at    TEXT',
+  'ALTER TABLE episodes ADD COLUMN results_cached_at    TEXT',
+  // Why the last attempt failed — content screen verdict, indexer error, etc.
+  // Screening now finishes after the grab request returns, so this is the only
+  // way the outcome ever reaches the user.
+  'ALTER TABLE movies   ADD COLUMN last_error           TEXT',
+  'ALTER TABLE episodes ADD COLUMN last_error           TEXT',
   'CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status)',
   'CREATE INDEX IF NOT EXISTS idx_episodes_show_status ON episodes(show_id, status)',
   'CREATE INDEX IF NOT EXISTS idx_movies_status   ON movies(status)',
+  'CREATE INDEX IF NOT EXISTS idx_log_run_at ON scheduler_log(run_at DESC)',
+  // Opt-in: grab a whole season in one torrent instead of episode by episode.
+  'ALTER TABLE shows    ADD COLUMN prefer_season_pack INTEGER DEFAULT 0',
+  // Which Transmission instance this item downloads to, by name. NULL = default.
+  'ALTER TABLE movies   ADD COLUMN transmission_target TEXT',
+  'ALTER TABLE shows    ADD COLUMN transmission_target TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -142,11 +168,38 @@ const defaultSettings = {
   quality_strict:            '0',
   blocked_tags:              '',
   trusted_only:              '0',
+  // How long a source search stays reusable. Keeps the Choose Torrent dialog
+  // instant on reopen instead of re-querying every indexer.
+  search_cache_mins:         '20',
+  // Disc images (.iso/.img) hide their own contents from the file screen.
+  allow_disc_images:         '0',
+  // Minimum share of the requested title's words a release must contain.
+  title_match_min:           '0.7',
+  // What to do with a magnet whose metadata never arrives, so its contents
+  // cannot be screened: 'start' it anyway, or 'block' and purge it.
+  unverified_policy:         'start',
+  // Extra named Transmission instances, as JSON: [{ name, host, port, user, pw }].
+  // The transmission_* keys above describe the default one.
+  transmission_extra:        '[]',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [key, value] of Object.entries(defaultSettings)) {
   insertSetting.run(key, value);
+}
+
+/**
+ * Drop server-only bulk from a row before it goes over the wire.
+ *
+ * `results_cache` holds up to 20 scored candidates, each with a parsed file
+ * list. The list endpoints are polled every 30 seconds by both views and no
+ * client code reads the field — the Choose Torrent dialog fetches it through
+ * /api/search/preview instead.
+ */
+function publicRow(row) {
+  if (!row) return row;
+  const { results_cache, ...rest } = row;
+  return rest;
 }
 
 // Helper: convert a plain object { key: val } → { '$key': val } for named params
@@ -163,9 +216,11 @@ const movies = {
   downloading: () => db.prepare("SELECT * FROM movies WHERE status = 'downloading' AND torrent_id IS NOT NULL").all(),
 
   insert: (data) => db.prepare(`
-    INSERT INTO movies (tmdb_id, imdb_id, title, year, poster_url, quality, mode, release_date)
-    VALUES ($tmdb_id, $imdb_id, $title, $year, $poster_url, $quality, $mode, $release_date)
-  `).run(p({ release_date: null, ...data })),
+    INSERT INTO movies (tmdb_id, imdb_id, title, year, poster_url, quality, mode,
+                        release_date, transmission_target)
+    VALUES ($tmdb_id, $imdb_id, $title, $year, $poster_url, $quality, $mode,
+            $release_date, $transmission_target)
+  `).run(p({ release_date: null, transmission_target: null, ...data })),
 
   update: (id, data) => {
     assertColumns('movies', data);
@@ -184,10 +239,15 @@ const shows = {
 
   insert: (data) => db.prepare(`
     INSERT INTO shows (tmdb_id, imdb_id, title, poster_url, quality, mode,
-                       start_season, start_episode, number_of_seasons, show_status)
+                       start_season, start_episode, number_of_seasons, show_status,
+                       prefer_season_pack, transmission_target)
     VALUES ($tmdb_id, $imdb_id, $title, $poster_url, $quality, $mode,
-            $start_season, $start_episode, $number_of_seasons, $show_status)
-  `).run(p({ start_season: 1, start_episode: 1, number_of_seasons: null, show_status: null, ...data })),
+            $start_season, $start_episode, $number_of_seasons, $show_status,
+            $prefer_season_pack, $transmission_target)
+  `).run(p({
+    start_season: 1, start_episode: 1, number_of_seasons: null, show_status: null,
+    prefer_season_pack: 0, transmission_target: null, ...data,
+  })),
 
   update: (id, data) => {
     assertColumns('shows', data);
@@ -241,6 +301,10 @@ const episodes = {
   pending: (showId) =>
     db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'pending' ORDER BY season, episode").all(showId),
 
+  forSeason: (showId, season) =>
+    db.prepare('SELECT * FROM episodes WHERE show_id = ? AND season = ? ORDER BY episode')
+      .all(showId, season),
+
   // First pending episode only — manual mode queues one approval at a time.
   firstPending: (showId) =>
     db.prepare("SELECT * FROM episodes WHERE show_id = ? AND status = 'pending' ORDER BY season, episode LIMIT 1").get(showId),
@@ -277,6 +341,42 @@ const seasonCache = {
     db.prepare('DELETE FROM tmdb_season_cache WHERE tmdb_id = ?').run(tmdbId),
 };
 
+// --- Activity log ---
+
+const logs = {
+  add: (level, entityType, entityId, message) =>
+    db.prepare(`
+      INSERT INTO scheduler_log (level, entity_type, entity_id, message)
+      VALUES (?, ?, ?, ?)
+    `).run(level, entityType, entityId, message),
+
+  /**
+   * Most recent entries, newest first. Filters are optional and bound as
+   * parameters — never interpolated — so a crafted query string cannot reach
+   * the SQL.
+   */
+  recent: ({ limit = 200, level = null, entityType = null, entityId = null } = {}) => {
+    const where = [];
+    const args  = [];
+    if (level)      { where.push('level = ?');       args.push(level); }
+    if (entityType) { where.push('entity_type = ?'); args.push(entityType); }
+    if (entityId)   { where.push('entity_id = ?');   args.push(Number(entityId)); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    args.push(Math.min(Math.max(Number(limit) || 200, 1), 1000));
+    return db.prepare(`
+      SELECT * FROM scheduler_log ${clause} ORDER BY id DESC LIMIT ?
+    `).all(...args);
+  },
+
+  prune: (days = 30) =>
+    db.prepare(`DELETE FROM scheduler_log WHERE run_at < datetime('now', ?)`)
+      .run(`-${Math.max(1, Number(days) || 30)} days`),
+
+  clear: () => db.prepare('DELETE FROM scheduler_log').run(),
+
+  count: () => db.prepare('SELECT COUNT(*) AS c FROM scheduler_log').get().c,
+};
+
 const settings = {
   all: () => {
     const rows = db.prepare('SELECT key, value FROM settings').all();
@@ -297,4 +397,4 @@ const settings = {
   },
 };
 
-module.exports = { db, movies, shows, episodes, settings, seasonCache };
+module.exports = { db, movies, shows, episodes, settings, seasonCache, logs, publicRow };

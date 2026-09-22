@@ -41,6 +41,12 @@
       <div v-if="pendingEpisode && show.mode === 'manual'" class="preview-hint">
         {{ pendingEpStr }} awaiting approval
       </div>
+
+      <!-- Screening finishes after a grab returns, so an episode blocked for its
+           contents would otherwise just look like it silently failed. -->
+      <div v-if="lastError" class="last-error" :title="lastError.text">
+        ⚠ {{ lastError.label }}: {{ lastError.text }}
+      </div>
     </div>
 
     <div class="actions">
@@ -82,6 +88,18 @@ const pendingEpStr = computed(() => {
   const ep = pendingEpisode.value;
   if (!ep) return null;
   return `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
+});
+
+/** The most recent episode-level failure reason, if any. */
+const lastError = computed(() => {
+  const withError = (props.show.episodes || []).filter(e => e.last_error);
+  if (withError.length === 0) return null;
+  const ep = withError.sort((a, b) =>
+    (b.season - a.season) || (b.episode - a.episode))[0];
+  return {
+    label: `S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`,
+    text:  ep.last_error,
+  };
 });
 
 const downloadingCount = computed(() =>
@@ -156,6 +174,10 @@ function toggleMode() {
 .pending-count { color: #93c5fd; font-weight: 600; }
 
 .next-air     { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.last-error {
+  margin-top: 6px; font-size: 11px; color: var(--red);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .preview-hint { margin-top: 8px; font-size: 12px; color: var(--yellow); }
 
 .actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }

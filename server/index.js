@@ -43,13 +43,28 @@ app.use('/api/shows',    require('./api/shows'));
 app.use('/api/search',   require('./api/search'));
 app.use('/api/settings', require('./api/settings'));
 app.use('/api/timeline', require('./api/timeline'));
+app.use('/api/log',      require('./api/log'));
 
 app.get('/api/status', async (_req, res) => {
   const { testConnection } = require('./transmission');
   res.json(await testConnection());
 });
 
+// Development kill switch.
+//
+// A server booted against a database seeded with auto-mode items will grab them
+// — that is the whole point of it — and it grabs them into whatever Transmission
+// and download paths the settings name. When those settings came from a real
+// .env, a "demo" run downloads real episodes to a real NAS. Set this for any
+// throwaway or test boot and nothing can reach Transmission automatically.
+const SCHEDULER_DISABLED = process.env.AMAGNET_NO_SCHEDULER === '1';
+
 app.post('/api/scheduler/run', (_req, res) => {
+  // The manual trigger has to honour the flag too, or the UI walks straight
+  // around it with one click.
+  if (SCHEDULER_DISABLED) {
+    return res.status(503).json({ error: 'Scheduler disabled (AMAGNET_NO_SCHEDULER=1)' });
+  }
   res.json({ started: true });
   require('./scheduler').run().catch(err => {
     console.error('[scheduler] manual run error:', err.message);
@@ -75,5 +90,9 @@ app.get('*', (_req, res) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`auto_magnet v2 on ${HOST}:${PORT}`);
+  if (SCHEDULER_DISABLED) {
+    console.warn('auto_magnet: AMAGNET_NO_SCHEDULER=1 — scheduler is OFF, nothing will be grabbed');
+    return;
+  }
   require('./scheduler').start();
 });

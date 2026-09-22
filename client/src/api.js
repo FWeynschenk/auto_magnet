@@ -63,9 +63,10 @@ export const search = {
 };
 
 export const settings = {
-  get:    ()     => req('GET',  '/settings'),
-  save:   (body) => req('PUT',  '/settings', body),
-  status: ()     => req('GET',  '/settings/status'),
+  get:     ()     => req('GET',  '/settings'),
+  save:    (body) => req('PUT',  '/settings', body),
+  status:  ()     => req('GET',  '/settings/status'),
+  targets: ()     => req('GET',  '/settings/targets'),
 };
 
 export const scheduler = {
@@ -74,4 +75,14 @@ export const scheduler = {
 
 export const timeline = {
   get: () => req('GET', '/timeline'),
+};
+
+export const activity = {
+  list: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== '' && v != null)
+    ).toString();
+    return req('GET', `/log${qs ? `?${qs}` : ''}`);
+  },
+  clear: () => req('DELETE', '/log'),
 };

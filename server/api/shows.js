@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const { shows, episodes, seasonCache } = require('../db');
+const { shows, episodes, seasonCache, publicRow } = require('../db');
 const { getTvDetails } = require('../tmdb');
 const {
   run: runScheduler, syncEpisodes, syncShowMeta, makeSeasonFetcher,
@@ -12,12 +12,16 @@ router.get('/', (_req, res) => {
   const allShows = shows.all();
   res.json(allShows.map(show => ({
     ...show,
-    episodes: episodes.forShow(show.id),
+    episodes: episodes.forShow(show.id).map(publicRow),
   })));
 });
 
 router.post('/', async (req, res) => {
-  const { tmdb_id, quality = '1080p', mode = 'auto', start_season = 1, start_episode = 1 } = req.body;
+  const {
+    tmdb_id, quality = '1080p', mode = 'auto',
+    start_season = 1, start_episode = 1, prefer_season_pack = 0,
+    transmission_target = null,
+  } = req.body;
   if (!tmdb_id) return res.status(400).json({ error: 'tmdb_id required' });
 
   try {
@@ -27,6 +31,8 @@ router.post('/', async (req, res) => {
     const { tmdb_id: tid, imdb_id, title, poster_url } = details;
     const result = shows.insert({
       tmdb_id: tid, imdb_id, title, poster_url, quality, mode, start_season, start_episode,
+      prefer_season_pack: prefer_season_pack ? 1 : 0,
+      transmission_target: transmission_target || null,
       number_of_seasons: details.number_of_seasons ?? null,
       show_status:       details.show_status ?? null,
     });
@@ -41,7 +47,7 @@ router.post('/', async (req, res) => {
       console.error(`[shows] "${title}" initial episode sync failed:`, err.message);
     }
 
-    res.status(201).json({ ...shows.byId(show.id), episodes: episodes.forShow(show.id) });
+    res.status(201).json({ ...shows.byId(show.id), episodes: episodes.forShow(show.id).map(publicRow) });
     runScheduler().catch(() => {});
   } catch (err) {
     if (err.message?.includes('UNIQUE')) {
@@ -52,14 +58,14 @@ router.post('/', async (req, res) => {
 });
 
 router.put('/:id', (req, res) => {
-  const allowed = ['quality', 'mode', 'active', 'status'];
+  const allowed = ['quality', 'mode', 'active', 'status', 'prefer_season_pack', 'transmission_target'];
   const data = Object.fromEntries(
     Object.entries(req.body).filter(([k]) => allowed.includes(k))
   );
   if (Object.keys(data).length === 0) return res.status(400).json({ error: 'No valid fields' });
   shows.update(req.params.id, data);
   const show = shows.byId(req.params.id);
-  res.json({ ...show, episodes: episodes.forShow(req.params.id) });
+  res.json({ ...show, episodes: episodes.forShow(req.params.id).map(publicRow) });
 });
 
 router.delete('/:id', (req, res) => {
@@ -68,7 +74,7 @@ router.delete('/:id', (req, res) => {
 });
 
 router.get('/:id/episodes', (req, res) => {
-  res.json(episodes.forShow(req.params.id));
+  res.json(episodes.forShow(req.params.id).map(publicRow));
 });
 
 // Re-fetch all season data from TMDB: update air dates, upgrade upcoming→pending, insert missing episodes
@@ -86,7 +92,7 @@ router.post('/:id/refresh-tmdb', async (req, res) => {
 
     if (added > 0 || updated > 0) runScheduler().catch(() => {});
 
-    const updatedShow = { ...shows.byId(show.id), episodes: episodes.forShow(show.id) };
+    const updatedShow = { ...shows.byId(show.id), episodes: episodes.forShow(show.id).map(publicRow) };
     res.json({ updated, added, show: updatedShow });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -132,7 +138,8 @@ router.post('/:id/episodes/:epId/redo', (req, res) => {
   // previously attempted torrent and the redo fails instantly with no candidates.
   episodes.update(ep.id, {
     status: 'pending', magnet: null, torrent_id: null,
-    results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+    results_cache: null, results_cached_at: null, last_error: null,
+    progress: 0, tried_magnets: null, download_started_at: null,
   });
   runScheduler().catch(() => {});
   res.json(episodes.byId(ep.id));
@@ -157,7 +164,8 @@ router.post('/retry-failed', (req, res) => {
     for (const ep of failed) {
       episodes.update(ep.id, {
         status: 'pending', magnet: null, torrent_id: null,
-        results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+        results_cache: null, results_cached_at: null, last_error: null,
+        progress: 0, tried_magnets: null, download_started_at: null,
       });
       resetCount++;
     }

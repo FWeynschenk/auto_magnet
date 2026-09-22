@@ -39,6 +39,30 @@
         </div>
       </div>
 
+      <!-- Per-show options -->
+      <div class="show-options">
+        <label class="opt-label" :title="packHint">
+          <input
+            type="checkbox"
+            class="checkbox"
+            :checked="!!show.prefer_season_pack"
+            @change="$emit('update-show', { prefer_season_pack: $event.target.checked ? 1 : 0 })"
+          />
+          Prefer packs
+        </label>
+        <span class="opt-hint">{{ packHint }}</span>
+        <label v-if="targets.length > 1" class="opt-label">
+          Download to
+          <select
+            class="opt-select"
+            :value="show.transmission_target || 'default'"
+            @change="$emit('update-show', { transmission_target: $event.target.value === 'default' ? null : $event.target.value })"
+          >
+            <option v-for="t in targets" :key="t.name" :value="t.name">{{ t.name }}</option>
+          </select>
+        </label>
+      </div>
+
       <!-- Episode list -->
       <div class="ep-body">
         <div v-if="seasons.length === 0" class="empty-msg">No episodes tracked yet.</div>
@@ -93,7 +117,17 @@
                 :disabled="busy === ep.id"
                 @click="redo(ep)"
               >Restore</button>
+              <button
+                v-if="ep.status !== 'upcoming'"
+                class="btn-ghost btn-xs"
+                title="Pick a release for this episode yourself"
+                @click="$emit('choose-episode', ep)"
+              >Choose…</button>
             </div>
+
+            <!-- Why the last attempt did not stick. Screening finishes after the
+                 grab request returns, so without this the failure is invisible. -->
+            <div v-if="ep.last_error" class="ep-error" :title="ep.last_error">⚠ {{ ep.last_error }}</div>
           </div>
         </template>
 
@@ -125,8 +159,9 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useDialog } from '../composables/useDialog.js';
+import { settings as settingsApi } from '../api.js';
 
 const props = defineProps({
   show:       Object,
@@ -139,7 +174,17 @@ const props = defineProps({
    */
   onAddEpisode: { type: Function, default: null },
 });
-const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode']);
+const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode', 'choose-episode', 'update-show']);
+
+const targets = ref([]);
+onMounted(async () => {
+  try { targets.value = await settingsApi.targets(); } catch (_) { targets.value = []; }
+});
+
+const packHint = 'Tries the biggest sensible torrent first: the complete series '
+  + '(ended shows with nothing grabbed yet), then a season at a time, then '
+  + 'individual episodes. Only ever used where it covers episodes you do not '
+  + 'already have.';
 
 const { dialogEl } = useDialog(() => emit('close'));
 
@@ -319,6 +364,7 @@ async function submitAddEpisode() {
 
 .ep-row {
   display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
   padding: 5px 8px; border-radius: 6px;
   transition: background .1s;
 }
@@ -336,6 +382,27 @@ async function submitAddEpisode() {
 
 .ep-id   { font-size: 12px; font-weight: 700; flex-shrink: 0; width: 56px; font-family: monospace; }
 .ep-date { font-size: 11px; color: var(--muted); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.show-options {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.opt-label { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; }
+.opt-hint  { font-size: 11px; color: var(--muted); flex: 1; min-width: 160px; }
+.opt-select {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text);
+  padding: 3px 6px; font-size: 12px; cursor: pointer;
+}
+
+/* Its own line under the row, not squeezed in beside the buttons. */
+.ep-error {
+  flex-basis: 100%;
+  font-size: 11px; color: var(--red);
+  padding: 0 0 2px 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .ep-status-badge {
   font-size: 10px; font-weight: 600; text-transform: uppercase;

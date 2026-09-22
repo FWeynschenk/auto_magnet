@@ -1,12 +1,10 @@
 'use strict';
 
 const { movies, shows, episodes, settings } = require('./db');
-const { addTorrent, getTorrentProgress, removeTorrent } = require('./transmission');
+const { addTorrent, getTorrentProgress, removeTorrent, progressKey } = require('./transmission');
 const { getSeasonDetails, getTvDetails } = require('./tmdb');
-const prowlarr = require('./sources/prowlarr');
-const yts      = require('./sources/yts');
-const eztv     = require('./sources/eztv');
-const { select } = require('./selector');
+const { findCandidates } = require('./pipeline');
+const log = require('./log');
 
 // --- Constants ---
 
@@ -148,59 +146,71 @@ async function syncShowMeta(show) {
 
 // --- Transmission sync ---
 
+/** Episodes don't carry an instance of their own — they follow their show. */
+const _showTargetCache = new Map();
+function episodeTarget(ep) {
+  if (!_showTargetCache.has(ep.show_id)) {
+    _showTargetCache.set(ep.show_id, shows.byId(ep.show_id)?.transmission_target || null);
+  }
+  return _showTargetCache.get(ep.show_id);
+}
+
 function isStale(startedAt) {
   if (!startedAt) return false;
   return Date.now() - new Date(startedAt).getTime() > STALE_DOWNLOAD_HOURS * 3600 * 1000;
 }
 
 async function syncDownloading() {
+  _showTargetCache.clear();
   try {
     const progressMap = await getTorrentProgress();
     if (progressMap.size === 0) return;
 
     for (const movie of movies.downloading()) {
-      const t = progressMap.get(movie.torrent_id);
+      const t = progressMap.get(progressKey(movie.transmission_target, movie.torrent_id));
       if (!t) continue;
       if (t.done) {
-        movies.update(movie.id, { status: 'done', progress: 100 });
-        console.log(`[scheduler] movie "${movie.title}" download complete`);
+        // Clear last_error too: a completed download makes the previous
+        // rejection history, not a standing warning on the card.
+        movies.update(movie.id, { status: 'done', progress: 100, last_error: null });
+        log.info(`"${movie.title}" download complete`, { type: 'movie', id: movie.id });
       } else {
         if (t.progress !== movie.progress) movies.update(movie.id, { progress: t.progress });
         if (isStale(movie.download_started_at)) {
-          console.log(`[scheduler] movie "${movie.title}" stale after ${STALE_DOWNLOAD_HOURS}h, retrying`);
+          log.warn(`"${movie.title}" stalled for ${STALE_DOWNLOAD_HOURS}h — retrying with the next candidate`, { type: 'movie', id: movie.id });
           const tried = JSON.parse(movie.tried_magnets || '[]');
           if (movie.magnet) tried.push(movie.magnet);
           movies.update(movie.id, {
             status: 'pending', magnet: null, torrent_id: null,
             progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
           });
-          try { await removeTorrent(movie.torrent_id); } catch (_) {}
+          try { await removeTorrent(movie.torrent_id, movie.transmission_target); } catch (_) {}
         }
       }
     }
 
     for (const ep of episodes.downloading()) {
-      const t = progressMap.get(ep.torrent_id);
+      const t = progressMap.get(progressKey(episodeTarget(ep), ep.torrent_id));
       if (!t) continue;
       if (t.done) {
-        episodes.update(ep.id, { status: 'done', progress: 100 });
-        console.log(`[scheduler] episode #${ep.id} S${ep.season}E${ep.episode} download complete`);
+        episodes.update(ep.id, { status: 'done', progress: 100, last_error: null });
+        log.info(`${epLabel(ep.season, ep.episode)} download complete`, { type: 'episode', id: ep.id });
       } else {
         if (t.progress !== ep.progress) episodes.update(ep.id, { progress: t.progress });
         if (isStale(ep.download_started_at)) {
-          console.log(`[scheduler] episode #${ep.id} S${ep.season}E${ep.episode} stale, retrying`);
+          log.warn(`${epLabel(ep.season, ep.episode)} stalled for ${STALE_DOWNLOAD_HOURS}h — retrying`, { type: 'episode', id: ep.id });
           const tried = JSON.parse(ep.tried_magnets || '[]');
           if (ep.magnet) tried.push(ep.magnet);
           episodes.update(ep.id, {
             status: 'pending', magnet: null, torrent_id: null,
             progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
           });
-          try { await removeTorrent(ep.torrent_id); } catch (_) {}
+          try { await removeTorrent(ep.torrent_id, episodeTarget(ep)); } catch (_) {}
         }
       }
     }
   } catch (err) {
-    console.error('[scheduler] sync error:', err.message);
+    log.error(`Transmission sync failed: ${err.message}`);
   }
 }
 
@@ -208,66 +218,74 @@ async function syncDownloading() {
 
 async function runMovies(deadline) {
   for (const movie of movies.pending()) {
-    if (Date.now() > deadline) { console.warn('[scheduler] deadline reached, deferring remaining movies'); return; }
+    if (Date.now() > deadline) { log.warn('run deadline reached — deferring the remaining movies'); return; }
     try {
       await processMovie(movie);
     } catch (err) {
-      console.error(`[scheduler] movie error "${movie.title}":`, err.message);
-      movies.update(movie.id, { status: 'failed' });
+      log.error(`movie "${movie.title}" failed: ${err.message}`, { type: 'movie', id: movie.id });
+      movies.update(movie.id, { status: 'failed', last_error: err.message });
     }
   }
 }
 
+function parseList(json) {
+  try { const v = JSON.parse(json || '[]'); return Array.isArray(v) ? v : []; }
+  catch (_) { return []; }
+}
+
 async function processMovie(movie) {
   if (movie.release_date && !hasAired(movie.release_date)) {
-    console.log(`[scheduler] "${movie.title}" not yet released (${movie.release_date}), skipping`);
+    log.info(`"${movie.title}" not yet released (${movie.release_date}), skipping`, { type: 'movie', id: movie.id });
     return;
   }
 
-  const query   = `${movie.title} ${movie.year || ''}`.trim();
   const quality = movie.quality || settings.get('default_quality') || '1080p';
+  const search  = {
+    type: 'movie', title: movie.title, year: movie.year, imdbId: movie.imdb_id,
+    quality, exclude: parseList(movie.tried_magnets),
+  };
 
   if (movie.mode === 'manual') {
     if (movie.results_cache) return; // already searched, awaiting user approval
-    console.log(`[scheduler] movie (manual): ${movie.title} — caching preview results`);
-    const [prowlarrResults, ytsResults] = await Promise.all([
-      prowlarr.search(query, 'movie'),
-      yts.search(movie.title, quality),
-    ]);
-    const top5 = select([...prowlarrResults, ...ytsResults], { preferredQuality: quality, type: 'movie', limit: 5 });
-    if (top5.length > 0) {
-      movies.update(movie.id, { results_cache: JSON.stringify(top5) });
-      console.log(`[scheduler] cached ${top5.length} results for manual movie "${movie.title}"`);
+    log.info(`"${movie.title}" (manual): searching for candidates`, { type: 'movie', id: movie.id });
+    const { accepted } = await findCandidates({ ...search, limit: 20 });
+    if (accepted.length > 0) {
+      movies.update(movie.id, {
+        results_cache: JSON.stringify(accepted),
+        results_cached_at: new Date().toISOString(),
+      });
+      log.info(`"${movie.title}": ${accepted.length} candidate(s) awaiting your approval`, { type: 'movie', id: movie.id });
     }
     return;
   }
 
-  console.log(`[scheduler] movie: ${movie.title} (${movie.year || '?'})`);
-  const [prowlarrResults, ytsResults] = await Promise.all([
-    prowlarr.search(query, 'movie'),
-    yts.search(movie.title, quality),
-  ]);
+  log.info(`searching for "${movie.title}" (${movie.year || '?'})`, { type: 'movie', id: movie.id });
+  const { accepted } = await findCandidates({ ...search, limit: 1 });
+  const winner = accepted[0];
+  if (!winner) {
+    log.warn(`no usable result for "${movie.title}"`, { type: 'movie', id: movie.id });
+    return;
+  }
 
-  const exclude = JSON.parse(movie.tried_magnets || '[]');
-  const winner = select([...prowlarrResults, ...ytsResults], { preferredQuality: quality, type: 'movie', exclude });
-  if (!winner) { console.log(`[scheduler] no result for: ${movie.title}`); return; }
-
-  const torrentUrl = winner.magnet || winner.download_url;
-  if (!torrentUrl) { console.log(`[scheduler] no magnet/url for: ${movie.title}`); return; }
-
+  const torrentUrl = winner.magnet;
   let result;
   try {
     result = await addTorrent(torrentUrl, settings.get('movie_path'), {
       screen: { type: 'movie', title: winner.title },
+      files:  winner.files,
+      target: movie.transmission_target,
     });
   } catch (err) {
     if (err.screened) {
       // Blocked by content screening — remember it and let the next run try the
       // next-best candidate instead of failing the movie outright.
-      const tried = JSON.parse(movie.tried_magnets || '[]');
+      const tried = parseList(movie.tried_magnets);
       tried.push(torrentUrl);
-      movies.update(movie.id, { tried_magnets: JSON.stringify(tried), results_cache: null });
-      console.warn(`[scheduler] "${movie.title}" candidate blocked: ${err.message}`);
+      movies.update(movie.id, {
+        tried_magnets: JSON.stringify(tried), results_cache: null,
+        last_error: `Blocked by content screen: ${err.message}`,
+      });
+      log.warn(`"${movie.title}" candidate blocked: ${err.message}`, { type: 'movie', id: movie.id });
       return;
     }
     throw err;
@@ -275,20 +293,20 @@ async function processMovie(movie) {
 
   movies.update(movie.id, {
     status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
-    download_started_at: new Date().toISOString(),
+    last_error: null, download_started_at: new Date().toISOString(),
   });
-  console.log(`[scheduler] added "${movie.title}" — torrent #${result.id}`);
+  log.info(`added "${movie.title}" — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'movie', id: movie.id });
 }
 
 // --- Shows ---
 
 async function runShows(deadline) {
   for (const show of shows.active()) {
-    if (Date.now() > deadline) { console.warn('[scheduler] deadline reached, deferring remaining shows'); return; }
+    if (Date.now() > deadline) { log.warn('run deadline reached — deferring the remaining shows'); return; }
     try {
       await processShow(show, deadline);
     } catch (err) {
-      console.error(`[scheduler] show error "${show.title}":`, err.message);
+      log.error(`show "${show.title}" failed: ${err.message}`, { type: 'show', id: show.id });
     }
   }
 }
@@ -314,10 +332,10 @@ async function processShow(show, deadline = Infinity) {
   try {
     const { added, updated } = await syncEpisodes(current, fetchSeason);
     if (added || updated) {
-      console.log(`[scheduler] "${current.title}": synced ${added} new, ${updated} updated`);
+      log.info(`"${current.title}": synced ${added} new, ${updated} updated episode(s)`, { type: 'show', id: current.id });
     }
   } catch (err) {
-    console.error(`[scheduler] "${current.title}" sync failed:`, err.message);
+    log.error(`"${current.title}" TMDB sync failed: ${err.message}`, { type: 'show', id: current.id });
   }
 
   // Auto-pause finished shows with nothing left outstanding
@@ -328,7 +346,7 @@ async function processShow(show, deadline = Infinity) {
                       + episodes.downloading().filter(e => e.show_id === current.id).length;
     if (outstanding === 0) {
       shows.update(current.id, { active: 0 });
-      console.log(`[scheduler] "${current.title}" is ${current.show_status} and fully grabbed — pausing`);
+      log.info(`"${current.title}" is ${current.show_status} and fully grabbed — pausing`, { type: 'show', id: current.id });
       return;
     }
   }
@@ -339,17 +357,36 @@ async function processShow(show, deadline = Infinity) {
   }
 
   let grabbed = 0;
+
+  // Packs first, biggest unit down. For a show that finished years ago the whole
+  // run is often one well-seeded torrent while the individual episodes have long
+  // since died — so trying series, then season, then episode is not just fewer
+  // requests, it is frequently the difference between getting it and not.
+  // Anything a pack doesn't cover falls through to the per-episode loop.
+  if (current.prefer_season_pack) {
+    try {
+      if (await grabSeriesPack(current)) grabbed++;
+    } catch (err) {
+      log.error(`"${current.title}" series pack pass failed: ${err.message}`, { type: 'show', id: current.id });
+    }
+    try {
+      grabbed += await grabSeasonPacks(current, deadline);
+    } catch (err) {
+      log.error(`"${current.title}" season pack pass failed: ${err.message}`, { type: 'show', id: current.id });
+    }
+  }
+
   for (const ep of episodes.pending(current.id)) {
     if (grabbed >= MAX_EPISODES_PER_RUN) {
-      console.log(`[scheduler] "${current.title}": hit per-run cap (${MAX_EPISODES_PER_RUN}), continuing next run`);
+      log.info(`"${current.title}": hit the per-run cap of ${MAX_EPISODES_PER_RUN}, continuing next run`, { type: 'show', id: current.id });
       break;
     }
-    if (Date.now() > deadline) { console.warn(`[scheduler] deadline reached during "${current.title}"`); break; }
+    if (Date.now() > deadline) { log.warn(`run deadline reached during "${current.title}"`, { type: 'show', id: current.id }); break; }
     try {
       if (await grabEpisode(current, ep)) grabbed++;
     } catch (err) {
-      console.error(`[scheduler] "${current.title}" S${ep.season}E${ep.episode} failed:`, err.message);
-      episodes.update(ep.id, { status: 'failed' });
+      log.error(`"${current.title}" ${epLabel(ep.season, ep.episode)} failed: ${err.message}`, { type: 'episode', id: ep.id });
+      episodes.update(ep.id, { status: 'failed', last_error: err.message });
     }
   }
 }
@@ -366,55 +403,240 @@ async function cacheManualPreview(show) {
   const ep = episodes.firstPending(show.id);
   if (!ep || ep.results_cache) return;
 
-  const label   = epLabel(ep.season, ep.episode);
-  const quality = show.quality || settings.get('default_quality') || '1080p';
-  console.log(`[scheduler] "${show.title}" ${label}: caching preview results`);
+  const label = epLabel(ep.season, ep.episode);
+  log.info(`"${show.title}" ${label}: searching for candidates`, { type: 'episode', id: ep.id });
 
-  const [prowlarrResults, eztvResults] = await Promise.all([
-    prowlarr.search(`${show.title} ${label}`, 'show'),
-    eztv.search(show.imdb_id, ep.season, ep.episode),
-  ]);
-  const top5 = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', limit: 5 });
-  if (top5.length === 0) {
-    console.log(`[scheduler] "${show.title}" ${label}: no candidates found`);
+  const { accepted } = await findCandidates({
+    ...episodeSearch(show, ep), limit: 20,
+  });
+  if (accepted.length === 0) {
+    log.warn(`"${show.title}" ${label}: no candidates found`, { type: 'episode', id: ep.id });
     return;
   }
-  episodes.update(ep.id, { results_cache: JSON.stringify(top5) });
-  console.log(`[scheduler] "${show.title}" ${label}: awaiting manual approval (${top5.length} candidates)`);
+  episodes.update(ep.id, {
+    results_cache: JSON.stringify(accepted),
+    results_cached_at: new Date().toISOString(),
+  });
+  log.info(`"${show.title}" ${label}: ${accepted.length} candidate(s) awaiting your approval`, { type: 'episode', id: ep.id });
+}
+
+function episodeSearch(show, ep) {
+  return {
+    type:    'show',
+    title:   show.title,
+    imdbId:  show.imdb_id,
+    season:  ep.season,
+    episode: ep.episode,
+    quality: show.quality || settings.get('default_quality') || '1080p',
+    exclude: parseList(ep.tried_magnets),
+  };
+}
+
+/**
+ * Seasons that are worth asking for as a single pack.
+ *
+ * A pack is only safe when the season is both complete and entirely un-grabbed:
+ * if anything is already downloading or done the pack would re-fetch it, and if
+ * anything is still `upcoming` the season is mid-flight and no complete pack
+ * exists yet.
+ *
+ * `failed` episodes don't block a pack — a season where individual grabs kept
+ * failing is exactly when one is most useful — but they are left alone when it
+ * lands, because a failed row stays terminal until Redo or Retry Failed.
+ */
+const PACKABLE_STATUSES = new Set(['pending', 'skipped', 'failed']);
+
+function packableSeasons(show) {
+  const pending = episodes.pending(show.id);
+  const seasons = [...new Set(pending.map(e => e.season))].sort((a, b) => a - b);
+
+  return seasons.filter(season => {
+    const all = episodes.forSeason(show.id, season);
+    if (all.filter(e => e.status === 'pending').length < 2) return false; // not worth a pack
+    return all.every(e => PACKABLE_STATUSES.has(e.status));
+  });
+}
+
+/**
+ * Mark every episode a pack covers as downloading against the same torrent, so
+ * progress and completion are reported for all of them together.
+ */
+function claimEpisodesForPack(eps, magnet, torrentId) {
+  const startedAt = new Date().toISOString();
+  for (const ep of eps) {
+    episodes.update(ep.id, {
+      status: 'downloading', magnet, torrent_id: torrentId,
+      results_cache: null, results_cached_at: null, last_error: null,
+      download_started_at: startedAt,
+    });
+  }
+}
+
+/** Record a blocked pack against every episode it would have covered. */
+function rememberBlockedPack(eps, magnet) {
+  for (const ep of eps) {
+    const list = parseList(ep.tried_magnets);
+    list.push(magnet);
+    episodes.update(ep.id, { tried_magnets: JSON.stringify(list) });
+  }
+}
+
+/**
+ * Try to cover the entire show with one torrent.
+ *
+ * Only attempted when the show has finished airing and every episode of every
+ * season is still outstanding — that is, a back catalogue being picked up from
+ * scratch, which is exactly the case a "Complete Series" release exists for.
+ * A show still in production is skipped: no complete pack exists yet, and one
+ * claiming to be complete would be wrong by definition.
+ */
+async function grabSeriesPack(show) {
+  if (!['Ended', 'Canceled', 'Cancelled'].includes(show.show_status)) return false;
+
+  const all = episodes.forShow(show.id);
+  if (all.length === 0) return false;
+  if (!all.every(e => PACKABLE_STATUSES.has(e.status))) return false;
+
+  const wanted  = all.filter(e => e.status === 'pending');
+  const seasons = [...new Set(all.map(e => e.season))].sort((a, b) => a - b);
+  if (seasons.length < 2 || wanted.length < 2) return false;  // a season pack covers this better
+
+  const quality = show.quality || settings.get('default_quality') || '1080p';
+  const tried   = new Set(all.flatMap(e => parseList(e.tried_magnets)));
+
+  log.info(
+    `"${show.title}": ${show.show_status} and nothing grabbed yet — looking for a complete-series pack ` +
+    `(${seasons.length} seasons, ${all.length} episodes)`,
+    { type: 'show', id: show.id },
+  );
+
+  const { accepted } = await findCandidates({
+    type: 'show', title: show.title, imdbId: show.imdb_id,
+    quality, pack: 'series', seasons, episodeCount: all.length,
+    exclude: [...tried], limit: 1,
+  });
+  const winner = accepted[0];
+  if (!winner) {
+    log.info(`"${show.title}": no complete-series pack found, trying season packs`, { type: 'show', id: show.id });
+    return false;
+  }
+
+  const downloadDir = `${settings.get('shows_path')}/${show.title}`;
+  let result;
+  try {
+    result = await addTorrent(winner.magnet, downloadDir, {
+      screen: { type: 'show', title: winner.title, allowPacks: true },
+      files:  winner.files,
+      target: show.transmission_target,
+    });
+  } catch (err) {
+    if (err.screened) {
+      rememberBlockedPack(all, winner.magnet);
+      log.warn(`"${show.title}" complete-series pack blocked: ${err.message}`, { type: 'show', id: show.id });
+      return false;
+    }
+    throw err;
+  }
+
+  claimEpisodesForPack(wanted, winner.magnet, result.id);
+  log.info(
+    `added "${show.title}" complete series covering ${wanted.length} episode(s) — ${winner.title} ` +
+    `(${(winner.size / 1e9).toFixed(1)} GB, ${winner.seeders} seeds)`,
+    { type: 'show', id: show.id },
+  );
+  return true;
+}
+
+/** Grab whole-season torrents where one fits. Returns the number of packs added. */
+async function grabSeasonPacks(show, deadline = Infinity) {
+  const quality = show.quality || settings.get('default_quality') || '1080p';
+  let added = 0;
+
+  for (const season of packableSeasons(show)) {
+    if (Date.now() > deadline) break;
+
+    const seasonEps = episodes.forSeason(show.id, season).filter(e => e.status === 'pending');
+    const label     = `S${String(season).padStart(2, '0')}`;
+    const tried     = new Set(seasonEps.flatMap(e => parseList(e.tried_magnets)));
+
+    log.info(`"${show.title}" ${label}: looking for a season pack (${seasonEps.length} episodes)`,
+      { type: 'show', id: show.id });
+
+    const { accepted } = await findCandidates({
+      type: 'show', title: show.title, imdbId: show.imdb_id,
+      season, episode: null, quality, pack: 'season',
+      episodeCount: seasonEps.length,
+      exclude: [...tried], limit: 1,
+    });
+    const winner = accepted[0];
+    if (!winner) {
+      log.info(`"${show.title}" ${label}: no pack found, falling back to single episodes`,
+        { type: 'show', id: show.id });
+      continue;
+    }
+
+    const downloadDir = `${settings.get('shows_path')}/${show.title}`;
+    let result;
+    try {
+      result = await addTorrent(winner.magnet, downloadDir, {
+        screen: { type: 'show', title: winner.title, allowPacks: true },
+        files:  winner.files,
+        target: show.transmission_target,
+      });
+    } catch (err) {
+      if (err.screened) {
+        // Remember it against every episode so the next pass tries another pack
+        // — or gives up on packs for this season and grabs them one by one.
+        rememberBlockedPack(seasonEps, winner.magnet);
+        log.warn(`"${show.title}" ${label} pack blocked: ${err.message}`, { type: 'show', id: show.id });
+        continue;
+      }
+      throw err;
+    }
+
+    claimEpisodesForPack(seasonEps, winner.magnet, result.id);
+    log.info(
+      `added "${show.title}" ${label} pack covering ${seasonEps.length} episode(s) — ${winner.title}`,
+      { type: 'show', id: show.id },
+    );
+    added++;
+  }
+
+  return added;
 }
 
 /** Search for and grab one already-aired pending episode. Returns true on success. */
 async function grabEpisode(show, ep) {
-  const label   = epLabel(ep.season, ep.episode);
-  const quality = show.quality || settings.get('default_quality') || '1080p';
+  const label = epLabel(ep.season, ep.episode);
 
-  console.log(`[scheduler] show: "${show.title}" ${label}`);
-  const [prowlarrResults, eztvResults] = await Promise.all([
-    prowlarr.search(`${show.title} ${label}`, 'show'),
-    eztv.search(show.imdb_id, ep.season, ep.episode),
-  ]);
+  log.info(`searching for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
+  const { accepted } = await findCandidates({ ...episodeSearch(show, ep), limit: 1 });
+  const winner = accepted[0];
+  if (!winner) {
+    log.warn(`no usable result for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
+    return false;
+  }
 
-  const exclude = JSON.parse(ep.tried_magnets || '[]');
-  const winner  = select([...prowlarrResults, ...eztvResults], { preferredQuality: quality, type: 'show', exclude });
-  if (!winner) { console.log(`[scheduler] no result for "${show.title}" ${label}`); return false; }
-
-  const torrentUrl = winner.magnet || winner.download_url;
-  if (!torrentUrl) { console.log(`[scheduler] no magnet/url for "${show.title}" ${label}`); return false; }
-
+  const torrentUrl  = winner.magnet;
   const downloadDir = `${settings.get('shows_path')}/${show.title}`;
   let result;
   try {
     result = await addTorrent(torrentUrl, downloadDir, {
       screen: { type: 'show', title: winner.title },
+      files:  winner.files,
+      target: show.transmission_target,
     });
   } catch (err) {
     if (err.screened) {
       // Blocked by content screening — remember it and stay pending so the next
       // run picks the next-best candidate.
-      const tried = JSON.parse(ep.tried_magnets || '[]');
+      const tried = parseList(ep.tried_magnets);
       tried.push(torrentUrl);
-      episodes.update(ep.id, { tried_magnets: JSON.stringify(tried), results_cache: null });
-      console.warn(`[scheduler] "${show.title}" ${label} candidate blocked: ${err.message}`);
+      episodes.update(ep.id, {
+        tried_magnets: JSON.stringify(tried), results_cache: null,
+        last_error: `Blocked by content screen: ${err.message}`,
+      });
+      log.warn(`"${show.title}" ${label} candidate blocked: ${err.message}`, { type: 'episode', id: ep.id });
       return false;
     }
     throw err;
@@ -422,9 +644,10 @@ async function grabEpisode(show, ep) {
 
   episodes.update(ep.id, {
     status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
-    results_cache: null, download_started_at: new Date().toISOString(),
+    results_cache: null, last_error: null,
+    download_started_at: new Date().toISOString(),
   });
-  console.log(`[scheduler] added "${show.title}" ${label} — torrent #${result.id}`);
+  log.info(`added "${show.title}" ${label} — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'episode', id: ep.id });
   return true;
 }
 
@@ -435,16 +658,18 @@ let _running = false;
 async function run() {
   if (_running) { console.log('[scheduler] already running, skipping'); return; }
   _running = true;
-  const deadline = Date.now() + RUN_DEADLINE_MINUTES * 60 * 1000;
-  console.log('[scheduler] starting run');
+  const startedAt = Date.now();
+  const deadline  = startedAt + RUN_DEADLINE_MINUTES * 60 * 1000;
+  log.info('run started');
   try {
-    await runMovies(deadline).catch(err => console.error('[scheduler] movies run error:', err.message));
-    await runShows(deadline).catch(err  => console.error('[scheduler] shows run error:',  err.message));
+    await runMovies(deadline).catch(err => log.error(`movies pass failed: ${err.message}`));
+    await runShows(deadline).catch(err  => log.error(`shows pass failed: ${err.message}`));
     await syncDownloading();
   } finally {
     _running = false;
   }
-  console.log('[scheduler] run complete');
+  log.info(`run complete in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  log.prune();
 }
 
 let _scheduleTimer = null;

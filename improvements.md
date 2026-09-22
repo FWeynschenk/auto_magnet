@@ -335,10 +335,37 @@ registered before the SPA catch-all. `assertColumns()` validates dynamic column 
 
 Verified: 401 JSON unauthenticated, 200 with token, JSON 404 on unknown API route, secrets masked.
 
-### Deferred
+### Deferred at the time
 
 **Unbounded list payloads** (§7, first bullet). Returning episode counts instead of full lists
 would change the response shape that `ShowCard`, `EpisodeGrid`, `ShowManageDialog`, and both
 views all read, for a modest gain. Visibility-gated polling removes most of the practical cost
 (hidden tabs no longer poll at all) and `idx_episodes_show_status` was added. Worth revisiting
 if show counts grow past a few hundred.
+
+---
+
+## Follow-up (2026-09-20 → 2026-09-22)
+
+**§7 unbounded list payloads — now partly resolved.** `results_cache` is stripped from every
+list response via `publicRow()`. This mattered more than it did in July: the candidate list
+now holds up to 20 scored rows *with parsed file lists*, and any previewed episode has one, so
+both views were polling that bulk every 30 seconds. Returning counts instead of full episode
+lists is still open, and still judged not worth the response-shape churn.
+
+**Search pipeline.** `server/pipeline.js` is now the single path from "I want this" to a
+ranked list. Order matters: search → filter → score → resolve magnets *for the shortlist only*
+→ screen. Resolving every raw row up front meant ~80 round trips to display 10 results. Source
+searches are cached in-memory (`server/search-cache.js`) with in-flight coalescing, so the
+scheduler and a user clicking Browse at the same moment never search twice.
+
+**Screening.** Files are judged on their *final* extension against a set, not a regex that
+fires anywhere in the name — the old pattern read `RARBG.com.url` as a `.com` executable and
+rejected ordinary releases. Added crack/keygen folder detection, disc-image gating, and a
+file-count ceiling.
+
+**Selection.** Title/year/episode verification (nothing previously checked a result was even
+the right film), size-vs-quality plausibility floors, and log-scaled, saturating seeder weight
+so a 4000-seed 720p rip no longer buries a 1080p WEB-DL.
+
+See the implementation notes at the end of `user-stories.md` for #14, #15 and #16.

@@ -65,6 +65,18 @@
               <option value="manual">Manual (I'll choose the torrent)</option>
             </select>
           </label>
+          <label v-if="targets.length > 1">Download to
+            <select v-model="target">
+              <option v-for="t in targets" :key="t.name" :value="t.name">
+                {{ t.name === 'default' ? `Default (${t.host})` : `${t.name} (${t.host})` }}
+              </option>
+            </select>
+          </label>
+          <label v-if="type === 'tv'" class="check-row">
+            <input v-model="preferPack" type="checkbox" />
+            Prefer packs — grab a complete series or a whole season in one torrent
+            when it covers episodes you don't already have
+          </label>
           <div v-if="type === 'tv'" class="start-row">
             <label>Start season
               <input v-model.number="startSeason" type="number" min="1" class="num-input" />
@@ -90,7 +102,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { search as searchApi, movies as moviesApi, shows as showsApi } from '../api.js';
+import { search as searchApi, movies as moviesApi, shows as showsApi, settings as settingsApi } from '../api.js';
 import { useDialog } from '../composables/useDialog.js';
 
 const props = defineProps({ type: { type: String, default: 'movie' } });
@@ -104,6 +116,9 @@ const selected = ref(null);
 const loading  = ref(false);
 const quality      = ref('1080p');
 const mode         = ref('auto');
+const preferPack   = ref(false);
+const target       = ref('default');
+const targets      = ref([]);
 const startSeason  = ref(1);
 const startEpisode = ref(1);
 const adding       = ref(false);
@@ -112,7 +127,12 @@ const inputEl  = ref(null);
 
 let debounceTimer;
 
-onMounted(() => inputEl.value?.focus());
+onMounted(async () => {
+  inputEl.value?.focus();
+  // Only shown when more than one instance exists, so a single-Transmission
+  // setup never sees a picker with one option in it.
+  try { targets.value = await settingsApi.targets(); } catch (_) { targets.value = []; }
+});
 
 function onInput() {
   clearTimeout(debounceTimer);
@@ -143,7 +163,12 @@ async function add() {
   try {
     const api = props.type === 'movie' ? moviesApi : showsApi;
     const body = { tmdb_id: selected.value.tmdb_id, quality: quality.value, mode: mode.value };
-    if (props.type === 'tv') { body.start_season = startSeason.value; body.start_episode = startEpisode.value; }
+    if (target.value && target.value !== 'default') body.transmission_target = target.value;
+    if (props.type === 'tv') {
+      body.start_season  = startSeason.value;
+      body.start_episode = startEpisode.value;
+      body.prefer_season_pack = preferPack.value ? 1 : 0;
+    }
     const result = await api.add(body);
     emit('added', result);
     emit('close');
@@ -226,6 +251,7 @@ async function add() {
 
 .options { display: flex; flex-direction: column; gap: 12px; }
 .options label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+.check-row { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .start-row { display: flex; gap: 12px; }
 .start-row label { flex: 1; }
 .num-input {

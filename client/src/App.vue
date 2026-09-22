@@ -5,6 +5,7 @@
       <div class="nav-links">
         <RouterLink to="/movies">Movies</RouterLink>
         <RouterLink to="/shows">Shows</RouterLink>
+        <RouterLink to="/activity">Activity</RouterLink>
         <RouterLink to="/settings">Settings</RouterLink>
       </div>
       <span class="tx-status" :class="txStatus.connected ? 'ok' : 'err'">
@@ -16,19 +17,25 @@
       <RouterView />
     </main>
 
-    <TimelineStrip />
+    <TimelineStrip v-if="showTimeline" />
     <ToastHost />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
+import { useRoute } from 'vue-router';
 import { settings } from './api.js';
 import { usePolling } from './composables/usePolling.js';
 import TimelineStrip from './components/TimelineStrip.vue';
 import ToastHost     from './components/ToastHost.vue';
 
 const txStatus = ref({ connected: false });
+
+// The release timeline is about what is coming up, which is meaningless on the
+// Settings and Activity pages — it was only ever shown there by accident.
+const route = useRoute();
+const showTimeline = computed(() => ['/movies', '/shows', '/'].includes(route.path));
 
 async function checkStatus() {
   try { txStatus.value = await settings.status(); } catch (_) {}

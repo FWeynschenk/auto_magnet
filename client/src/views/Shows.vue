@@ -86,6 +86,8 @@
       :on-add-episode="manageAddEpisode"
       @close="manageShow = null"
       @redo-episode="manageRedo"
+      @choose-episode="chooseEpisode"
+      @update-show="updateManagedShow"
       @skip-episode="manageSkip"
       @refresh-tmdb="manageRefreshTmdb"
     />
@@ -266,6 +268,29 @@ function onAdded(show) {
   list.value.unshift(show);
   const count = (show.episodes || []).length;
   notifySuccess(`Added “${show.title}”${count ? ` — ${count} episodes tracked` : ''}`);
+}
+
+/** Change a setting on the show the manage dialog is open for. */
+async function updateManagedShow(data) {
+  const show = manageShow.value;
+  if (!show) return;
+  const updated = await guard(() => api.update(show.id, data), 'Could not update show');
+  if (!updated) return;
+  const idx = list.value.findIndex(s => s.id === show.id);
+  if (idx !== -1) list.value[idx] = { ...list.value[idx], ...updated };
+  manageShow.value = list.value[idx] || manageShow.value;
+}
+
+/** Open the torrent picker for a single episode, whatever mode the show is in. */
+function chooseEpisode(episode) {
+  const show = manageShow.value;
+  if (!show) return;
+  previewItem.value = {
+    show:       { ...show, type: 'tv' },
+    season:     episode.season,
+    episode:    episode.episode,
+    episode_id: episode.id,
+  };
 }
 
 async function manageRedo(episode) {

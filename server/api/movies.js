@@ -2,16 +2,16 @@
 
 const express = require('express');
 const router  = express.Router();
-const { movies } = require('../db');
+const { movies, publicRow } = require('../db');
 const { getMovieDetails, getMovieReleaseDates } = require('../tmdb');
 const { run: runScheduler } = require('../scheduler');
 
 router.get('/', (_req, res) => {
-  res.json(movies.all());
+  res.json(movies.all().map(publicRow));
 });
 
 router.post('/', async (req, res) => {
-  const { tmdb_id, quality = '1080p', mode = 'auto' } = req.body;
+  const { tmdb_id, quality = '1080p', mode = 'auto', transmission_target = null } = req.body;
   if (!tmdb_id) return res.status(400).json({ error: 'tmdb_id required' });
 
   try {
@@ -25,7 +25,10 @@ router.post('/', async (req, res) => {
     const region      = settings.get('tmdb_region') || 'US';
     const release_date = await getMovieReleaseDates(tid, region);
 
-    const result = movies.insert({ tmdb_id: tid, imdb_id, title, year, poster_url, quality, mode, release_date });
+    const result = movies.insert({
+      tmdb_id: tid, imdb_id, title, year, poster_url, quality, mode, release_date,
+      transmission_target: transmission_target || null,
+    });
     res.status(201).json(movies.byId(result.lastInsertRowid));
   } catch (err) {
     if (err.message?.includes('UNIQUE')) {
@@ -36,7 +39,7 @@ router.post('/', async (req, res) => {
 });
 
 router.put('/:id', (req, res) => {
-  const allowed = ['quality', 'mode', 'status', 'release_date'];
+  const allowed = ['quality', 'mode', 'status', 'release_date', 'transmission_target'];
   const data = Object.fromEntries(
     Object.entries(req.body).filter(([k]) => allowed.includes(k))
   );
@@ -58,7 +61,8 @@ router.post('/:id/redo', (req, res) => {
   // previously attempted torrent and the redo fails instantly with no candidates.
   movies.update(req.params.id, {
     status: 'pending', magnet: null, torrent_id: null,
-    results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+    results_cache: null, results_cached_at: null, last_error: null,
+    progress: 0, tried_magnets: null, download_started_at: null,
   });
   runScheduler().catch(() => {});
   res.json(movies.byId(req.params.id));
@@ -70,7 +74,8 @@ router.post('/retry-failed', (req, res) => {
   for (const m of failed) {
     movies.update(m.id, {
       status: 'pending', magnet: null, torrent_id: null,
-      results_cache: null, progress: 0, tried_magnets: null, download_started_at: null,
+      results_cache: null, results_cached_at: null, last_error: null,
+      progress: 0, tried_magnets: null, download_started_at: null,
     });
   }
   if (failed.length > 0) runScheduler().catch(() => {});

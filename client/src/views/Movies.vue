@@ -90,6 +90,7 @@
       v-if="statsItem"
       :item="statsItem"
       @close="statsItem = null"
+      @update="onStatsUpdate"
     />
 
     <ConfirmDialog
@@ -205,6 +206,12 @@ async function update(id, data) {
 function onAdded(movie) {
   list.value.unshift(movie);
   notifySuccess(`Added “${movie.title}”`);
+}
+
+/** Keep the open stats dialog in sync with whatever it just changed. */
+async function onStatsUpdate(id, data) {
+  await update(id, data);
+  statsItem.value = list.value.find(m => m.id === id) || statsItem.value;
 }
 
 function openPreview(movie) {

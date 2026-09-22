@@ -235,7 +235,7 @@ is correct.)
 
 ---
 
-## 12. Notifications  *(not implemented)*
+## 12. Notifications  *(browser notifications implemented; webhooks not)*
 
 > As a user I want to be notified when an episode is ready for approval or a download completes
 > so that I don't have to keep opening the dashboard to check.
@@ -249,7 +249,7 @@ is correct.)
 
 ---
 
-## 13. Show ended — auto-pause  *(not implemented)*
+## 13. Show ended — auto-pause  *(implemented 2026-07-26)*
 
 > As a user I want shows that TMDB marks as "Ended" or "Cancelled" to be automatically paused
 > so that the scheduler stops checking for new episodes without me having to remember to do it.
@@ -265,7 +265,7 @@ is correct.)
 
 ---
 
-## 14. Audit log / scheduler history  *(not implemented)*
+## 14. Audit log / scheduler history  *(implemented 2026-09-22)*
 
 > As a user I want to see a log of what the scheduler did each run so that I can diagnose why
 > something wasn't downloaded or why a particular torrent was chosen.
@@ -280,7 +280,7 @@ is correct.)
 
 ---
 
-## 15. Season pack support  *(not implemented)*
+## 15. Season pack support  *(implemented 2026-09-22)*
 
 > As a user I want the option to download a full season pack when one is available so that I can
 > get an entire season in one torrent rather than episode by episode.
@@ -295,7 +295,7 @@ is correct.)
 
 ---
 
-## 16. Multiple Transmission instances  *(not implemented)*
+## 16. Multiple Transmission instances  *(implemented 2026-09-22)*
 
 > As a user I want to route different shows or movies to different Transmission servers so that
 > downloads land on the right machine/drive without manual intervention.
@@ -320,8 +320,75 @@ is correct.)
 | 4,7 | `emit` swallows async errors in add-episode form | Low | **Fixed** (2026-07-26) |
 | 10 | Ungrabbable (magnet-less) results shown in Browse | **High** | **Fixed** (2026-07-26) |
 | 10 | Stale cache could serve magnet-less rows | **Medium** | **Fixed** (2026-07-26) |
-| 12 | Notifications | — | Not implemented |
-| 13 | Show ended auto-pause | — | Not implemented |
-| 14 | Audit log / scheduler history | — | Not implemented |
-| 15 | Season pack support | — | Not implemented |
-| 16 | Multiple Transmission instances | — | Not implemented |
+| 10 | Results re-searched on every Browse open | **High** | **Fixed** (2026-09-20) |
+| 10 | Grab blocked ~30s waiting on magnet metadata | **High** | **Fixed** (2026-09-20) |
+| 10 | EZTV filter compared string season/episode to numbers — discarded every result | **High** | **Fixed** (2026-09-20) |
+| 10 | Nothing verified a result was even the right title | **Medium** | **Fixed** (2026-09-20) |
+| 2 | `hasMalware` rejected `RARBG.com.url` as a `.com` executable | **Medium** | **Fixed** (2026-09-20) |
+| 7 | Episode `results_cache` shipped on every 30s list poll | **Medium** | **Fixed** (2026-09-22) |
+| 12 | Notifications — browser only | — | **Partial**; webhooks still not implemented |
+| 13 | Show ended auto-pause | — | **Implemented** (2026-07-26) |
+| 14 | Audit log / scheduler history | — | **Implemented** (2026-09-22) |
+| 15 | Season pack support | — | **Implemented** (2026-09-22) |
+| 16 | Multiple Transmission instances | — | **Implemented** (2026-09-22) |
+
+---
+
+## Implementation notes (2026-09-22)
+
+**#14 Audit log.** `scheduler_log` table, written through `server/log.js`, which emits to
+stdout *and* the database so a restart doesn't take the answer with it. The scheduler's
+per-item messages and manual grabs both go through it. `GET /api/log` takes `level`,
+`entity_type` and `entity_id` filters (bound as parameters, never interpolated); entries
+past 30 days are pruned at the end of each run. New **Activity** view with level/type
+filters and a client-side text filter.
+
+**#15 Packs.** Per-show `prefer_season_pack` (the toggle now covers complete-series packs
+too — see the follow-up note below). A season is only packed when every
+episode of it is `pending`/`skipped`/`failed` and at least two are pending — so nothing
+already downloaded gets re-fetched, and a season still airing is skipped because no complete
+pack exists yet. `failed` rows don't block the pack but aren't resurrected by it either,
+which keeps the "failed is terminal until Redo" invariant. All covered episodes point at the
+same `torrent_id`, so progress and completion report together. `allowPacks` threads through
+the selector (season-only title matching), the screen (rule 8's file-count check), and
+`addTorrent`.
+
+**#16 Multiple Transmission instances.** Named instances in `transmission_extra`;
+`transmission_target` on `movies` and `shows`, null meaning the default. The important
+detail: torrent ids restart at 1 on every instance, so `getTorrentProgress` keys its map by
+`instance:id` — keying by id alone would read one machine's torrent as another's. An
+unknown target name falls back to the default rather than failing, so deleting an instance
+never strands items. Every probe is timeout-guarded: the transmission client has no timeout
+of its own, and without one a switched-off box hung the status endpoint indefinitely.
+
+**Also.** `results_cache` stripped from all list responses (§7). Free-text search in the
+Choose Torrent dialog, which bypasses title matching and the item's stored list. A
+`unverified_policy` setting for magnets whose metadata never arrives. `last_error` surfaced
+on every card and cleared on a completed download.
+
+**Not done:** webhook notifications (#12). Browser notifications cover the same need for a
+dashboard that is open; webhooks are for one that isn't.
+
+---
+
+## Follow-up (2026-09-22, later): complete-series packs
+
+Season packs turned out to be understated as a *download* strategy rather than a convenience.
+For a show that ended years ago the individual episodes are frequently dead while the complete
+run is one healthy torrent, so the pack pass now cascades series → season → episode.
+
+A complete-series pack is attempted only when the show is Ended/Cancelled and every episode of
+every season is outstanding, across at least two seasons. Three checks had to change, because
+the ordinary ones reject every pack ever made:
+
+- `min_size_mb` / `max_size_gb` are applied **per episode** (`size / episodeCount`), as is the
+  quality plausibility floor. A 180 GB complete series is 3 GB an episode.
+- The file-count ceiling in `screen.js` lifts from 300 to 5000 for packs.
+- Season coverage is verified from the title (`claimedSeasons`), and — where the `.torrent`
+  parsed — from the file list: a pack must contain ≥90% of the expected episodes. Verified
+  against a mocked pair where the higher-seeded "Complete Series" ships 36 of 60 episodes; it
+  is rejected in favour of the genuine one. This check is load-bearing, because the episodes a
+  pack covers are marked as handled and nothing revisits the ones it missed.
+
+Also fixed: the season-span patterns did not allow dot separators, so `Seasons.1-9` — the way
+release titles are actually written — did not match.

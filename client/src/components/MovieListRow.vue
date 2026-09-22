@@ -9,6 +9,8 @@
 
     <span class="badge quality">{{ movie.quality }}</span>
     <span class="badge" :class="statusClass">{{ movie.status }}</span>
+    <span v-if="movie.last_error" class="err-flag" :title="movie.last_error">⚠</span>
+    <span v-else class="err-flag" />
 
     <div v-if="movie.status === 'downloading'" class="progress-wrap">
       <div class="progress-bar">
@@ -86,6 +88,7 @@ const statusClass = computed(() => ({
 .status-failed      { background: #7f1d1d; color: #fecaca; }
 .quality { background: #1e1b4b; color: var(--accent-h); }
 
+.err-flag { width: 14px; flex-shrink: 0; color: var(--red); font-size: 12px; text-align: center; }
 .progress-wrap { display: flex; align-items: center; gap: 5px; width: 120px; flex-shrink: 0; }
 .progress-bar  { flex: 1; height: 4px; background: var(--border); border-radius: 99px; overflow: hidden; }
 .progress-fill { height: 100%; background: var(--accent); border-radius: 99px; transition: width .5s; }

@@ -29,6 +29,12 @@
       <div v-if="movie.status === 'pending' && movie.mode === 'manual'" class="preview-hint">
         Awaiting approval
       </div>
+
+      <!-- Content screening finishes after the grab returns, so this is where a
+           blocked release actually becomes visible. -->
+      <div v-if="movie.last_error" class="last-error" :title="movie.last_error">
+        ⚠ {{ movie.last_error }}
+      </div>
     </div>
 
     <div class="actions">
@@ -129,6 +135,10 @@ function toggleMode() {
 
 .release-date { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .preview-hint { margin-top: 6px; font-size: 12px; color: var(--yellow); }
+.last-error {
+  margin-top: 6px; font-size: 11px; color: var(--red);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .actions { display: flex; flex-direction: column; gap: 6px; }
 </style>

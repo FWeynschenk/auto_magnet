@@ -191,9 +191,19 @@ async function handleUnusable(group, entry, reason, target) {
 async function fetchSubtitles(entry, localPath, info, wanted) {
   if (!subtitles.configured()) {
     storeFor(entry.kind).update(entry.id, {
-      last_error: 'No subtitles in your language — add OpenSubtitles details in Settings to fetch them',
+      last_error: 'No subtitles in your language — add an OpenSubtitles API key in Settings to fetch them',
     });
     return 'missing';
+  }
+
+  // Today's downloads are spent: send nothing at all, searches included, and
+  // say nothing — this runs on every pass until midnight UTC, and one line
+  // when the quota ran out is enough.
+  if (subtitles.quotaExhausted()) {
+    storeFor(entry.kind).update(entry.id, {
+      last_error: `Subtitles waiting — today's OpenSubtitles downloads are used up (resets ${subtitles.quotaResetsAt().toISOString().slice(11, 16)} UTC)`,
+    });
+    return 'pending';
   }
 
   const row = entry.row;
@@ -239,7 +249,8 @@ async function fetchSubtitles(entry, localPath, info, wanted) {
     return 'fetched';
   } catch (err) {
     if (err.quota) {
-      log.warn(`${err.message} — will retry`, { type: entry.kind, id: entry.id });
+      log.warn(`${err.message}; the rest wait until ${subtitles.quotaResetsAt().toISOString().slice(11, 16)} UTC`);
+      storeFor(entry.kind).update(entry.id, { last_error: "Subtitles waiting — today's OpenSubtitles downloads are used up" });
     } else {
       log.warn(`subtitle download failed, will retry: ${err.message}`, { type: entry.kind, id: entry.id });
     }

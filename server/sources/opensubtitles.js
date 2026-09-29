@@ -2,76 +2,209 @@
 
 // OpenSubtitles REST API client (api.opensubtitles.com/api/v1).
 //
-// What the API requires, from its published OpenAPI spec:
-//   * an Api-Key header on every request, and a User-Agent of "<app> v<version>"
-//   * a login token as well for /download — the Api-Key alone is not enough
-//   * /login is rate limited (1/s, 10/min, 30/hour), and a 401 means stop:
-//     retrying bad credentials is exactly what the limit exists to punish
-//   * after login, further requests go to the base_url it returns
+// The rules this is written against, from OpenSubtitles' getting-started docs
+// and OpenAPI spec:
+//   * An Api-Key header on every request — it identifies the *application*
+//     (a "consumer") — and a User-Agent of "<app> v<version>".
+//   * A user login (JWT) is optional. Without one a consumer may download 5
+//     subtitles per IP per 24h; a logged-in user gets their own allowance (20 on
+//     a free account). Searching is not counted, only downloads.
+//   * 5 requests per second per IP on the free consumer tier.
+//   * /login: 1 per second, 10 per minute, 30 per hour. A 401 means stop —
+//     retrying bad credentials is what that limit exists to punish.
+//   * The JWT lasts 24h. An expired one comes back as an error, not silently.
+//   * Download counters reset at midnight UTC.
 //
-// The download quota isn't a documented constant; every /download response
-// reports `remaining` and `reset_time`, so the live figure is what gets used.
+// Everything goes through request(), which paces calls, waits out a 429, and
+// renews a stale login once. The daily budget is tracked, and persisted, so
+// that once it is spent nothing more is sent — not even searches — until the
+// reset. That matters because the scheduler retries pending subtitles every
+// run; without the gate each run would spend requests to learn the same thing.
 
-const fs     = require('fs');
+const fs = require('fs');
 const { settings } = require('../db');
 
 const DEFAULT_BASE = 'https://api.opensubtitles.com/api/v1';
 const USER_AGENT   = 'auto_magnet v2';
 
-let session = null;          // { token, base, at }
-let loginBlockedUntil = 0;   // back off after a failed login
-let quotaExhaustedUntil = 0; // back off after running out of downloads
+const MIN_GAP_MS      = 260;           // ≤ 4 requests/second, under the limit of 5
+const LOGIN_GAP_MS    = 60_000;        // at most one login a minute, whatever happens
+const MAX_429_RETRIES = 2;
 
+let session        = null;   // { token, base, at }
+let lastLoginAt    = 0;
+let loginBlockedUntil = 0;
+let nextSlotAt     = 0;      // when the next request may start
+let queue          = Promise.resolve();
+
+// ─── configuration ────────────────────────────────────────────────────────────
+
+/** A key is required; the login is optional and only raises the daily limit. */
 function configured() {
-  return !!(settings.get('opensubtitles_api_key')
-         && settings.get('opensubtitles_username')
-         && settings.get('opensubtitles_password'));
+  return !!settings.get('opensubtitles_api_key');
 }
 
-function headers(extra = {}) {
-  return {
-    'Api-Key':      settings.get('opensubtitles_api_key'),
-    'User-Agent':   USER_AGENT,
-    'Content-Type': 'application/json',
-    Accept:         'application/json',
-    ...extra,
+function hasLogin() {
+  return !!(settings.get('opensubtitles_username') && settings.get('opensubtitles_password'));
+}
+
+// ─── daily download budget ────────────────────────────────────────────────────
+//
+// Kept in the settings table rather than in memory, so a restart doesn't cost
+// a round of wasted searches to rediscover that the quota is spent.
+
+function nextMidnightUtc() {
+  const d = new Date();
+  d.setUTCHours(24, 0, 0, 0);
+  return d.getTime();
+}
+
+function exhaustedUntil() {
+  return Number(settings.get('opensubtitles_exhausted_until') || 0);
+}
+
+function markExhausted(resetUtc) {
+  const at = Number.isFinite(Date.parse(resetUtc)) ? Date.parse(resetUtc) : nextMidnightUtc();
+  settings.set('opensubtitles_exhausted_until', String(at));
+}
+
+/** True while today's downloads are used up. Callers check before searching. */
+function quotaExhausted() {
+  return Date.now() < exhaustedUntil();
+}
+
+/** When the budget comes back, for log messages. */
+function quotaResetsAt() {
+  return new Date(exhaustedUntil() || nextMidnightUtc());
+}
+
+// ─── transport ────────────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** Wait for a free slot. Serialised, so concurrent callers share the pace. */
+function takeSlot() {
+  const turn = queue.then(async () => {
+    const wait = nextSlotAt - Date.now();
+    if (wait > 0) await sleep(wait);
+    nextSlotAt = Date.now() + MIN_GAP_MS;
+  });
+  queue = turn.catch(() => {});
+  return turn;
+}
+
+/** Seconds the server asked us to wait, from whichever header it sent. */
+function retryAfterMs(res) {
+  const s = Number(res.headers.get('retry-after') ?? res.headers.get('ratelimit-reset') ?? 1);
+  return Math.min(Math.max(Number.isFinite(s) ? s : 1, 1), 30) * 1000;
+}
+
+/**
+ * One API call, paced and retried.
+ * @param {Object} opts  { method, body, auth: send the JWT if we have one }
+ */
+async function request(path, { method = 'GET', body, auth = true } = {}, attempt = 0) {
+  await takeSlot();
+
+  const base = session?.base || DEFAULT_BASE;
+  const headers = {
+    'Api-Key':    settings.get('opensubtitles_api_key'),
+    'User-Agent': USER_AGENT,
+    Accept:       'application/json',
   };
+  if (body)                  headers['Content-Type'] = 'application/json';
+  if (auth && session?.token) headers.Authorization  = `Bearer ${session.token}`;
+
+  const res = await fetch(`${base}${path}`, {
+    method, headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  // The server says how much of this second is left; honour it rather than
+  // finding out with a 429.
+  if (res.headers.get('x-ratelimit-remaining-second') === '0') {
+    nextSlotAt = Math.max(nextSlotAt, Date.now() + retryAfterMs(res));
+  }
+
+  if (res.status === 429) {
+    if (attempt >= MAX_429_RETRIES) throw new Error('OpenSubtitles is rate limiting — will retry next run');
+    nextSlotAt = Date.now() + retryAfterMs(res);
+    return request(path, { method, body, auth }, attempt + 1);
+  }
+
+  const data = await res.json().catch(() => ({}));
+
+  // A stale token is reported as an error rather than a clean 401 (the docs
+  // mention a 500 saying "invalid"). Renew once and retry; never loop.
+  const tokenProblem = res.status === 401 || (res.status >= 500 && /invalid|token|expired/i.test(data.message || ''));
+  if (auth && session?.token && tokenProblem && attempt === 0) {
+    session = null;
+    await login();
+    return request(path, { method, body, auth }, 1);
+  }
+
+  return { res, data };
 }
 
-/** A login token, cached for the day. Refuses to retry a rejected login. */
-async function login() {
-  // Tokens last 24h; renew a little early.
-  if (session && Date.now() - session.at < 23 * 3600 * 1000) return session;
-  if (Date.now() < loginBlockedUntil) throw new Error('OpenSubtitles login is backing off after a failure');
+// ─── login ────────────────────────────────────────────────────────────────────
 
-  const res = await fetch(`${DEFAULT_BASE}/login`, {
-    method:  'POST',
-    headers: headers(),
-    body:    JSON.stringify({
+/**
+ * Log in if credentials are set and there isn't a live session. Resolves with
+ * the session, or null when running on the key alone.
+ */
+let loginInFlight = null;
+
+async function login() {
+  if (!hasLogin()) return null;
+  if (session && Date.now() - session.at < 23 * 3600 * 1000) return session;
+  // Callers arriving while a login is under way share it rather than each
+  // starting their own — or, worse, tripping the once-a-minute guard below.
+  if (loginInFlight) return loginInFlight;
+  loginInFlight = doLogin().finally(() => { loginInFlight = null; });
+  return loginInFlight;
+}
+
+async function doLogin() {
+  if (Date.now() < loginBlockedUntil) {
+    throw new Error('OpenSubtitles login is backing off after a failure');
+  }
+  if (Date.now() - lastLoginAt < LOGIN_GAP_MS) {
+    throw new Error('OpenSubtitles login was attempted less than a minute ago');
+  }
+  lastLoginAt = Date.now();
+
+  const { res, data } = await request('/login', {
+    method: 'POST', auth: false,
+    body: {
       username: settings.get('opensubtitles_username'),
       password: settings.get('opensubtitles_password'),
-    }),
-    signal: AbortSignal.timeout(15000),
+    },
   });
 
   if (res.status === 401) {
-    // Wrong credentials. The API asks clients to stop, so stop for a day
-    // rather than tripping its hourly limit on every scheduler run.
+    // Wrong credentials. Stop for a day rather than tripping the hourly login
+    // limit on every scheduler run.
     loginBlockedUntil = Date.now() + 24 * 3600 * 1000;
     throw new Error('OpenSubtitles rejected the username or password');
   }
-  if (!res.ok) {
+  if (!res.ok || !data.token) {
     loginBlockedUntil = Date.now() + 15 * 60 * 1000;
-    throw new Error(`OpenSubtitles login failed: HTTP ${res.status}`);
+    throw new Error(`OpenSubtitles login failed: ${data.message || `HTTP ${res.status}`}`);
   }
 
-  const body = await res.json();
-  const base = body.base_url ? `https://${String(body.base_url).replace(/^https?:\/\//, '')}/api/v1` : DEFAULT_BASE;
-  session = { token: body.token, base, at: Date.now() };
+  const host = data.base_url ? String(data.base_url).replace(/^https?:\/\//, '').replace(/\/.*$/, '') : null;
+  session = { token: data.token, base: host ? `https://${host}/api/v1` : DEFAULT_BASE, at: Date.now() };
+
+  // The login response already carries the user's allowance.
+  const left = data.user?.remaining_downloads ?? data.user?.allowed_downloads;
+  if (typeof left === 'number' && left <= 0) markExhausted(null);
   return session;
 }
 
-/** Query string with keys sorted, as the API recommends for cache hits. */
+// ─── search ───────────────────────────────────────────────────────────────────
+
+/** Query string with keys sorted and values lowercased, as the API asks. */
 function qs(params) {
   return Object.keys(params)
     .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
@@ -81,14 +214,9 @@ function qs(params) {
 }
 
 async function searchOnce(params) {
-  const base = session?.base || DEFAULT_BASE;
-  const res = await fetch(`${base}/subtitles?${qs(params)}`, {
-    headers: headers(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
-    signal:  AbortSignal.timeout(20000),
-  });
-  if (!res.ok) throw new Error(`OpenSubtitles search failed: HTTP ${res.status}`);
-  const body = await res.json();
-  return Array.isArray(body.data) ? body.data : [];
+  const { res, data } = await request(`/subtitles?${qs(params)}`);
+  if (!res.ok) throw new Error(`OpenSubtitles search failed: ${data.message || `HTTP ${res.status}`}`);
+  return Array.isArray(data.data) ? data.data : [];
 }
 
 /** Subtitles that can be used as-is for one video file. */
@@ -112,7 +240,7 @@ function releaseSimilarity(subRelease, torrentName) {
 /**
  * Best subtitle for a file, or null.
  *
- * A moviehash match first — that subtitle was timed against this exact file.
+ * A file-hash match first — that subtitle was timed against this exact file.
  * Otherwise by IMDb/TMDB id, preferring one whose release name resembles the
  * torrent's (same group and source usually means the same cut and timing),
  * then trusted uploaders, then popularity.
@@ -125,13 +253,13 @@ async function findBest(q) {
   const id = {};
   const imdb = q.imdbId ? String(q.imdbId).replace(/^tt/i, '').replace(/^0+/, '') : null;
   if (q.season != null && q.episode != null) {
-    if (imdb)     id.parent_imdb_id = imdb;
+    if (imdb)          id.parent_imdb_id = imdb;
     else if (q.tmdbId) id.parent_tmdb_id = q.tmdbId;
     id.season_number  = q.season;
     id.episode_number = q.episode;
     id.type = 'episode';
   } else {
-    if (imdb)     id.imdb_id = imdb;
+    if (imdb)          id.imdb_id = imdb;
     else if (q.tmdbId) id.tmdb_id = q.tmdbId;
     id.type = 'movie';
   }
@@ -155,53 +283,52 @@ async function findBest(q) {
   return { item: byId[0], matchedBy: 'title id' };
 }
 
+// ─── download ─────────────────────────────────────────────────────────────────
+
+function quotaError(message) {
+  const err = new Error(message);
+  err.quota = true;
+  return err;
+}
+
 /**
  * Download one subtitle to `destPath`. Resolves { remaining } on success.
- * Throws with `quota: true` when the daily allowance is spent.
+ * Throws with `quota: true` when today's allowance is spent.
  */
 async function download(item, destPath) {
-  if (Date.now() < quotaExhaustedUntil) {
-    const err = new Error('OpenSubtitles download quota is used up');
-    err.quota = true;
-    throw err;
-  }
-  const s = await login();
-  const fileId = item.attributes.files[0].file_id;
+  if (quotaExhausted()) throw quotaError('OpenSubtitles downloads for today are used up');
+  await login();
 
-  const res = await fetch(`${s.base}/download`, {
-    method:  'POST',
-    headers: headers({ Authorization: `Bearer ${s.token}` }),
-    body:    JSON.stringify({ file_id: fileId }),
-    signal:  AbortSignal.timeout(20000),
+  const { res, data } = await request('/download', {
+    method: 'POST',
+    body: { file_id: item.attributes.files[0].file_id },
   });
-  const body = await res.json().catch(() => ({}));
 
-  // The spec documents only the 200 response, so quota exhaustion is detected
-  // from what *is* documented — the `remaining` count — plus the message text,
-  // rather than from a guessed status code.
-  if ((typeof body.remaining === 'number' && body.remaining < 0)
-      || (!res.ok && /quota|limit|exceed|allowed/i.test(body.message || ''))) {
-    const reset = body.reset_time_utc ? Date.parse(body.reset_time_utc) : NaN;
-    quotaExhaustedUntil = Number.isFinite(reset) ? reset : Date.now() + 6 * 3600 * 1000;
-    const err = new Error(`OpenSubtitles download quota is used up${body.reset_time ? ` (resets in ${body.reset_time})` : ''}`);
-    err.quota = true;
-    throw err;
+  // Only the 200 response is documented, so a spent quota is recognised from
+  // what is: the `remaining` count, and the wording of the refusal.
+  if ((typeof data.remaining === 'number' && data.remaining < 0)
+      || (!res.ok && /quota|limit|exceed|allowed|downloaded/i.test(data.message || ''))) {
+    markExhausted(data.reset_time_utc);
+    throw quotaError(`OpenSubtitles downloads for today are used up${data.reset_time ? ` (resets in ${data.reset_time})` : ''}`);
   }
-  if (!res.ok || !body.link) throw new Error(`OpenSubtitles download failed: ${body.message || `HTTP ${res.status}`}`);
+  if (!res.ok || !data.link) {
+    throw new Error(`OpenSubtitles download failed: ${data.message || `HTTP ${res.status}`}`);
+  }
 
-  // The link is temporary; fetch it now. The API always serves UTF-8.
-  const file = await fetch(body.link, { signal: AbortSignal.timeout(30000) });
+  // The link is temporary and served from their file host, not the API, so it
+  // is fetched directly rather than through the paced API queue. Always UTF-8.
+  const file = await fetch(data.link, { signal: AbortSignal.timeout(30_000) });
   if (!file.ok) throw new Error(`subtitle file fetch failed: HTTP ${file.status}`);
   const text = await file.text();
   if (!text.trim()) throw new Error('subtitle file was empty');
-
   fs.writeFileSync(destPath, text, 'utf8');
-  if (typeof body.remaining === 'number' && body.remaining <= 0) {
-    const reset = body.reset_time_utc ? Date.parse(body.reset_time_utc) : NaN;
-    quotaExhaustedUntil = Number.isFinite(reset) ? reset : Date.now() + 6 * 3600 * 1000;
-  }
-  return { remaining: body.remaining, resetTime: body.reset_time };
+
+  // That was the last one for today: stop before the next search, not after.
+  if (typeof data.remaining === 'number' && data.remaining <= 0) markExhausted(data.reset_time_utc);
+  return { remaining: data.remaining, resetTime: data.reset_time };
 }
+
+// ─── file hash ────────────────────────────────────────────────────────────────
 
 /**
  * The OpenSubtitles file hash: the file size plus the sum of the first and
@@ -228,4 +355,7 @@ function movieHash(path) {
   }
 }
 
-module.exports = { configured, findBest, download, movieHash };
+module.exports = {
+  configured, hasLogin, quotaExhausted, quotaResetsAt,
+  findBest, download, movieHash,
+};

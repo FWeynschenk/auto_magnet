@@ -182,7 +182,7 @@
           </label>
           <label>OpenSubtitles username
             <input v-model="form.opensubtitles_username" type="text" autocomplete="off" />
-            <span class="hint">downloads need an account as well as the key</span>
+            <span class="hint">optional — raises downloads from 5 to 20 a day</span>
           </label>
           <label>OpenSubtitles password
             <input v-model="form.opensubtitles_password" type="password" placeholder="leave blank to keep current" autocomplete="new-password" />

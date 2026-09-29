@@ -15,7 +15,8 @@ These shipped but can only be confirmed on the real box.
   couldn't be built on the dev machine (no Docker daemon running there), so the first
   `docker compose build` on the server is its first real test.
 - **Set `MEDIA_ROOT` and OpenSubtitles.** Add `MEDIA_ROOT=/HDD0/Shared` to the server's
-  `.env` before rebuilding, and the OpenSubtitles key, username and password in Settings.
+  `.env` before rebuilding, and an OpenSubtitles API key (Free consumer tier) in Settings —
+  plus your OpenSubtitles login, which raises downloads from 5 to 20 a day.
   Without the mount, finished-download checks skip every file and say why on the card.
 - **Do your indexers return IDs?** Prowlarr's search result *has* `imdbId`/`tmdbId` fields
   (confirmed from its source), but indexers only fill them if they know them. Every search

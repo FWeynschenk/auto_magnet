@@ -188,7 +188,8 @@ Advanced settings (UI only, not in `.env`):
 | Check finished downloads | on | Probe completed files and fetch missing subtitles |
 | When a file is unusable | replace | `replace` deletes and re-grabs; `flag` keeps it and says why |
 | Subtitle languages | `en` | 2-letter codes; the first is the one fetched |
-| OpenSubtitles key / username / password | — | All three are needed to download subtitles |
+| OpenSubtitles API key | — | Required for subtitles (Free consumer tier: 5 downloads/day) |
+| OpenSubtitles username / password | — | Optional; raises downloads to 20/day |
 | Media path mapping | — | Only if the container sees files under a different path than Transmission |
 | Unverifiable magnets | start | Whether to start or delete a magnet whose file list never arrives |
 | Extra Transmission instances | — | Named servers, selectable per movie or show with "Download to" |
@@ -310,11 +311,24 @@ OpenSubtitles file hash), and only then by IMDb id and season/episode,
 preferring one from the same release group. Machine-translated, AI-translated
 and forced-only subtitles are excluded.
 
-OpenSubtitles needs **both** an API key and an account: the key alone can search
-but not download. Create a free account at opensubtitles.com, add an API
-consumer to get a key, and enter all three in Settings. Downloads are limited
-per day; the remaining count is logged after every download, and when it runs
-out the rest wait until the quota resets.
+OpenSubtitles needs an **API key**, which identifies the application: create a
+free account at opensubtitles.com and add an API consumer on the **Free** tier.
+Your **login is optional** but worth adding — it raises the limit:
+
+| Setup | Downloads per day |
+|---|---|
+| API key only | 5 |
+| API key + free account | 20 |
+
+Searching doesn't count, only downloads, and the counters reset at midnight UTC.
+20 a day covers new episodes comfortably; a backfilled season pack takes a day
+or two.
+
+The free consumer tier also allows **5 requests per second**. auto_magnet paces
+itself to 4, waits out any `429`, logs in once a day, and — once the day's
+downloads are spent — sends nothing more at all, searches included, until the
+reset. That state is kept in the database, so a restart doesn't spend requests
+rediscovering it. A rejected login is not retried for a day.
 
 ### Setup
 

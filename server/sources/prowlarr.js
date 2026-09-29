@@ -11,7 +11,17 @@ const { parseTorrent, buildMagnet } = require('./torrent-meta');
 // NOT done here — the pipeline filters and scores first and only resolves the
 // handful of rows that can actually win. Resolving 50 rows to show 10 was the
 // single biggest source of "why is this taking a minute".
-async function search(query, type = 'movie', { refresh = false } = {}) {
+/**
+ * @param {string} query
+ * @param {string} type        'movie' | 'show' — picks the category
+ * @param {Object} [opts]
+ * @param {string} [opts.searchType]  Prowlarr search type. 'movie' and
+ *   'tvsearch' make it parse {imdbid:…}, {tmdbid:…}, {season:…}, {episode:…}
+ *   tokens out of the query and search by ID wherever the indexer supports it.
+ *   Indexers that don't simply see the remaining text. Default 'search' is
+ *   plain free text, as before.
+ */
+async function search(query, type = 'movie', { refresh = false, searchType = 'search' } = {}) {
   const host   = settings.get('prowlarr_host') || 'localhost';
   const port   = settings.get('prowlarr_port') || '9696';
   const apiKey = settings.get('prowlarr_api_key');
@@ -22,10 +32,11 @@ async function search(query, type = 'movie', { refresh = false } = {}) {
   }
 
   const category = type === 'movie' ? '2000' : '5000';
-  const key = `prowlarr:${category}:${query.toLowerCase()}`;
+  const key = `prowlarr:${category}:${searchType}:${query.toLowerCase()}`;
 
   return cached(key, async () => {
-    const url = `http://${host}:${port}/api/v1/search?query=${encodeURIComponent(query)}&categories=${category}&limit=100`;
+    const url = `http://${host}:${port}/api/v1/search?query=${encodeURIComponent(query)}` +
+      `&type=${searchType}&categories=${category}&limit=100`;
     const started = Date.now();
     try {
       const res = await fetch(url, {
@@ -48,9 +59,21 @@ async function search(query, type = 'movie', { refresh = false } = {}) {
         download_url: item.downloadUrl || null,
         info_hash:    item.infoHash ? String(item.infoHash).toLowerCase() : null,
         published_at: item.publishDate || null,
+        // Supplied only by indexers that know them; 0 means "unknown", never
+        // "different". ImdbId arrives as a number — tt0133093 is 133093.
+        imdb_id:      item.imdbId || null,
+        tmdb_id:      item.tmdbId || null,
+        tvdb_id:      item.tvdbId || null,
+        // How many people actually took this release — a better signal of a
+        // good one than seeders, which only say who is still sharing it.
+        grabs:        item.grabs ?? null,
       })).filter(r => r.magnet || r.download_url);
 
-      console.log(`[prowlarr] "${query}" → ${items.length} result(s) in ${Math.round((Date.now() - started) / 1000)}s`);
+      const withIds = items.filter(r => r.imdb_id || r.tmdb_id || r.tvdb_id).length;
+      console.log(
+        `[prowlarr] ${searchType} "${query}" → ${items.length} result(s), ${withIds} carrying an ID, ` +
+        `in ${Math.round((Date.now() - started) / 1000)}s`,
+      );
       return items;
     } catch (err) {
       console.error(`[prowlarr] search error for "${query}":`, err.message);
@@ -110,4 +133,17 @@ async function resolveMagnet(r) {
   }
 }
 
-module.exports = { search, resolveMagnet };
+/**
+ * Structured-search tokens for a title. Prowlarr strips these out of the query
+ * and passes them as parameters, leaving the title as the free-text fallback.
+ */
+function idTokens({ imdbId, tmdbId, season, episode }) {
+  const t = [];
+  if (imdbId)          t.push(`{imdbid:${String(imdbId).startsWith('tt') ? imdbId : 'tt' + String(imdbId).padStart(7, '0')}}`);
+  if (tmdbId)          t.push(`{tmdbid:${tmdbId}}`);
+  if (season  != null) t.push(`{season:${season}}`);
+  if (episode != null) t.push(`{episode:${episode}}`);
+  return t.join('');
+}
+
+module.exports = { search, resolveMagnet, idTokens };

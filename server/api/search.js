@@ -7,6 +7,7 @@ const { findCandidates } = require('../pipeline');
 const { remember, recall } = require('../search-cache');
 const { settings, movies, shows, episodes } = require('../db');
 const { addTorrent } = require('../transmission');
+const { afterAdd, verdictHandler } = require('../quarantine');
 const log = require('../log');
 
 /** How long a stored candidate list is served without re-searching. */
@@ -158,7 +159,7 @@ router.post('/preview', async (req, res) => {
     })();
 
     const { accepted, rejected } = await findCandidates({
-      type, title, year, imdbId,
+      type, title, year, imdbId, tmdbId: tmdb_id,
       season: season ?? null, episode: ep ?? null,
       quality, exclude, limit: maxRows, refresh,
     });
@@ -239,13 +240,17 @@ router.post('/grab', async (req, res) => {
       screen: { type: screenType, title: torrent.title, allowPacks: true },
       files,
       target: txTarget,
-      onVerdict: (verdict) => onScreenVerdict(target, torrentUrl, verdict),
+      // Same verdict handling as the scheduler: a failed screen puts the item
+      // back to pending with the magnet excluded, rather than the dead-end
+      // 'failed' this endpoint used to leave it in.
+      onVerdict: verdictHandler(txTarget),
     });
 
     target.store.update(target.id, {
       status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
-      results_cache: null, results_cached_at: null, last_error: null,
+      results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
+      ...afterAdd(result),
     });
 
     log.info(
@@ -254,10 +259,11 @@ router.post('/grab', async (req, res) => {
     );
 
     res.json({
-      success:    true,
-      torrent_id: result.id,
-      // True when the content check is still running against magnet metadata.
-      screening:  !!result.screening,
+      success:     true,
+      torrent_id:  result.id,
+      // True when it is held throttled until its file list has been checked.
+      quarantined: !!result.quarantined,
+      duplicate:   !!result.duplicate,
     });
   } catch (err) {
     // A content-screen rejection is a client-actionable 422, not a server fault
@@ -268,35 +274,5 @@ router.post('/grab', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-/**
- * Background screening finished after the response went out. Record the outcome
- * on the item so the dashboard can show it.
- */
-function onScreenVerdict(target, torrentUrl, verdict) {
-  try {
-    const row = target.store.byId?.(target.id) || target.row;
-    if (!verdict.ok) {
-      const tried = (() => {
-        try { return JSON.parse(row?.tried_magnets || '[]'); } catch (_) { return []; }
-      })();
-      tried.push(torrentUrl);
-      target.store.update(target.id, {
-        status: 'failed', magnet: null, torrent_id: null, progress: 0,
-        tried_magnets: JSON.stringify(tried),
-        download_started_at: null,
-        last_error: `Blocked by content screen: ${verdict.reason}`,
-      });
-      log.warn(`purged after screening: ${verdict.reason}`, { type: target.kind, id: target.id });
-      return;
-    }
-    if (verdict.warnings?.length) {
-      target.store.update(target.id, { last_error: verdict.warnings.join('; ') });
-      log.warn(verdict.warnings.join('; '), { type: target.kind, id: target.id });
-    }
-  } catch (err) {
-    console.error('[grab] recording screen verdict failed:', err.message);
-  }
-}
 
 module.exports = router;

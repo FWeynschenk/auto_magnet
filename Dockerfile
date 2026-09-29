@@ -10,6 +10,12 @@ RUN npm run build
 FROM node:22-slim
 WORKDIR /app
 
+# ffprobe reads finished downloads to check their audio, video and subtitle
+# streams. Installed before the app is copied so this layer stays cached.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 

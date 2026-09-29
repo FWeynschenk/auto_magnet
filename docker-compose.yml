@@ -53,6 +53,10 @@ services:
       - AMAGNET_NO_SCHEDULER=${AMAGNET_NO_SCHEDULER:-0}
     volumes:
       - auto-magnet-data:/data
+      # The media folder, mounted at the SAME path Transmission reports, so the
+      # finished-download check can open files without translating paths.
+      # Read-write, because fetched subtitles are saved beside the video.
+      - ${MEDIA_ROOT:-/HDD0/Shared}:${MEDIA_ROOT:-/HDD0/Shared}
     ports:
       - "${AMAGNET_PORT:-62201}:62201"
     restart: unless-stopped

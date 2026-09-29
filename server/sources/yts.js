@@ -39,6 +39,7 @@ async function search(query, quality = '1080p', { refresh = false } = {}) {
           size:         torrent.size_bytes ?? 0,
           quality:      torrent.quality,
           year:         movie.year ?? null,
+          imdb_id:      movie.imdb_code ? Number(String(movie.imdb_code).replace(/^tt/i, '')) : null,
           magnet,
           info_hash:    torrent.hash ? String(torrent.hash).toLowerCase() : null,
           published_at: torrent.date_uploaded || null,

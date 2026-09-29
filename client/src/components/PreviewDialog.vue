@@ -233,9 +233,11 @@ async function grab(torrent, index) {
       season:     props.season,
       episode:    props.episode,
     });
-    notifySuccess(res?.screening
-      ? 'Added to Transmission — verifying contents in the background'
-      : 'Added to Transmission');
+    notifySuccess(
+      res?.duplicate   ? 'Already in Transmission — left as it was'
+      : res?.quarantined ? 'Added in quarantine — it downloads once its contents check out'
+      : 'Added to Transmission',
+    );
     emit('grabbed');
     emit('close');
   } catch (err) {

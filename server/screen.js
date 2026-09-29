@@ -48,7 +48,14 @@ const DISC_EXTS = new Set(['iso', 'img', 'nrg', 'mdf', 'cue', 'bin']);
 const LINKFILE_EXTS = new Set(['url', 'website', 'webloc']);
 
 const VIDEO_RE   = /\.(mkv|mp4|avi|m4v|mov|wmv|flv|webm|mpg|mpeg|m2ts|ts|vob|ogm|divx|rmvb)(?=[\s.\-_\])}]|$)/i;
-const ARCHIVE_RE = /\.(rar|zip|7z|tar|gz|bz2|r\d{2}|z\d{2}|part\d+)(?=[\s.\-_\])}]|$)/i;
+// zipx, xz, zst and friends matter: a 1.2 GB .zipx posing as a Rings of Power
+// episode sat undetected because the list stopped at the common formats.
+const ARCHIVE_RE = /\.(rar|zipx?|7z|tar|t?gz|bz2|t?xz|zst|lz|lzh|lzma|cab|arj|ace|r\d{2}|z\d{2}|part\d+)(?=[\s.\-_\])}]|$)/i;
+
+// Formats that describe a release: text, subtitles, images, checksums. Any of
+// them measured in hundreds of megabytes is not what its extension claims.
+const SIDECAR_RE = /\.(txt|nfo|srt|sub|idx|ass|ssa|vtt|jpe?g|png|gif|bmp|sfv|md5|sha1|sha256|xml|url|html?)(?=[\s.\-_\])}]|$)/i;
+const SIDECAR_MAX_BYTES = 50 * 1024 * 1024;
 
 // Text files whose name suggests an archive password — a long-standing pattern
 // for getting a user to hand-extract a payload past automated scanning.
@@ -88,8 +95,36 @@ function dirname(path) {
 
 /** True when a filename has a video extension immediately before another one. */
 function isDoubleExtension(path) {
-  return /\.(mkv|mp4|avi|m4v|mov|wmv|webm|mpg|mpeg)\.[A-Za-z0-9]{1,6}$/i.test(path);
+  const m = /\.(mkv|mp4|avi|m4v|mov|wmv|webm|mpg|mpeg)\.([A-Za-z0-9]{1,6})$/i.exec(path);
+  // A sidecar describing the video is not a disguise. "Film.mkv.nfo" is how
+  // UIndex ships every release, and flagging it rejected them all — including
+  // an 11 GB 2160p episode, over a zero-byte text file. Executables named this
+  // way are already caught by the extension rule above.
+  return !!m && !SIDECAR_EXTS.has(m[2].toLowerCase());
 }
+
+/**
+ * The only executables allowed through, and only when both the name and the
+ * size fit. RARBG shipped a 99-byte RARBG_DO_NOT_MIRROR.exe in every release;
+ * rejecting it failed the entire RARBG back catalogue (61 torrents on this box).
+ * Matching the name alone would not do — a 1 GB payload can call itself
+ * anything — so the size has to be too small to hold one, and known.
+ */
+const HARMLESS_MARKERS = [/^RARBG_DO_NOT_MIRROR\.exe$/i];
+const MARKER_MAX_BYTES = 1024;
+
+function isHarmlessMarker(f) {
+  if (f.length === 0) return true;  // an empty file executes nothing
+  return typeof f.length === 'number'
+      && f.length <= MARKER_MAX_BYTES
+      && HARMLESS_MARKERS.some(re => re.test(basename(f.path)));
+}
+
+/** Files that describe a video rather than impersonate one. */
+const SIDECAR_EXTS = new Set([
+  'nfo', 'txt', 'srt', 'sub', 'idx', 'ass', 'ssa', 'vtt', 'sup',
+  'jpg', 'jpeg', 'png', 'sfv', 'md5', 'sha1', 'sha256', 'xml', 'torrent',
+]);
 
 function reject(reason) {
   return { ok: false, reason };
@@ -119,7 +154,7 @@ function screenFiles(files, { type = 'movie', allowPacks = false } = {}) {
   // 1. Any executable or script payload is an immediate reject. This is the
   //    headline rule: a film never needs to ship a program.
   for (const f of named) {
-    if (isExecutable(f.path)) {
+    if (isExecutable(f.path) && !isHarmlessMarker(f)) {
       return reject(`contains executable file "${basename(f.path)}"`);
     }
   }
@@ -153,6 +188,16 @@ function screenFiles(files, { type = 'movie', allowPacks = false } = {}) {
     }
   }
 
+  // 5b. A "text file" of several gigabytes is a renamed payload. This one sat
+  //     beside a 3 MB stub .mkv as "Torrent Downloaded From UIndex.org .txt" —
+  //     4.3 GB of it. The size ratio rule happened to catch that case, but in a
+  //     pack full of real episodes it would have slipped under the ratio.
+  for (const f of named) {
+    if (SIDECAR_RE.test(basename(f.path)) && (f.length || 0) > SIDECAR_MAX_BYTES) {
+      return reject(`"${basename(f.path)}" is ${Math.round(f.length / 1024 / 1024)} MB — too large to be what its extension says`);
+    }
+  }
+
   // 6. A link file with no video next to it is pure adware bait.
   if (videos.length === 0 && archives.length === 0 && named.some(f => isLinkFile(f.path))) {
     return reject('contains only link files, no media');
@@ -161,17 +206,17 @@ function screenFiles(files, { type = 'movie', allowPacks = false } = {}) {
   // 7. The payload should actually be video. Skip when sizes are unknown.
   if (total > 0) {
     if (videos.length === 0) {
-      // No video at all. Archives are legitimate for some scene releases, so only
-      // reject when there is neither video nor archive content.
-      if (archives.length === 0 && discs.length === 0) {
-        return reject('contains no video or archive files');
+      // No video at all. This used to let archive-only releases through with a
+      // warning, as a concession to old scene RAR sets. It doesn't hold here:
+      // nothing extracts archives, so one delivers nothing playable — and its
+      // contents can't be screened. That combination is the dropper pattern; a
+      // lone 1.2 GB .zipx posing as a Rings of Power episode was exactly this.
+      if (archives.length > 0) {
+        return reject(`contains only an archive ("${basename(archives[0].path)}") — nothing playable, and its contents can't be checked`);
       }
-      // A "movie" that is one small archive is not a movie.
-      const archiveBytes = archives.reduce((s, f) => s + (f.length || 0), 0);
-      if (archives.length > 0 && archiveBytes > 0 && archiveBytes < 50 * 1024 * 1024) {
-        return reject(`archive-only release is just ${Math.round(archiveBytes / 1024 / 1024)} MB`);
+      if (discs.length === 0) {
+        return reject('contains no video files');
       }
-      warnings.push('archive-only release — contents cannot be verified before extracting');
     } else {
       const videoBytes = videos.reduce((s, f) => s + (f.length || 0), 0);
       const ratio = videoBytes / total;

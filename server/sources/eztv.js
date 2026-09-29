@@ -24,9 +24,11 @@ async function search(imdbId, season, episode, { refresh = false } = {}) {
         seeders:      Number(t.seeds) || 0,
         size:         t.size_bytes ? parseInt(t.size_bytes) : 0,
         magnet:       t.magnet_url,
+        info_hash:    t.hash ? String(t.hash).toLowerCase() : null,
+        // Queried by this id, so every row belongs to it.
+        imdb_id:      Number(numericId),
         // EZTV hands back season/episode as strings, so these must be coerced.
         // Comparing "3" !== 3 used to discard every single result.
-        info_hash:    t.hash ? String(t.hash).toLowerCase() : null,
         season:       Number(t.season),
         episode:      Number(t.episode),
         published_at: t.date_released_unix

@@ -15,8 +15,10 @@ const ALLOWED_KEYS = [
   'air_date_buffer_hours', 'tmdb_region',
   'preferred_movie_groups', 'preferred_show_groups', 'quality_strict',
   'blocked_tags', 'trusted_only',
-  'search_cache_mins', 'allow_disc_images', 'title_match_min', 'unverified_policy',
+  'search_cache_mins', 'allow_disc_images', 'title_match_min', 'quarantine_hold_hours',
   'transmission_extra',
+  'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'media_path_map',
+  'opensubtitles_api_key', 'opensubtitles_username', 'opensubtitles_password',
 ];
 
 const MASK = '••••••••';
@@ -37,6 +39,8 @@ router.get('/', (_req, res) => {
   if (safe.transmission_pw)  safe.transmission_pw  = safe.transmission_pw  ? MASK : '';
   if (safe.prowlarr_api_key) safe.prowlarr_api_key = safe.prowlarr_api_key ? MASK : '';
   if (safe.tmdb_api_key)     safe.tmdb_api_key     = safe.tmdb_api_key     ? MASK : '';
+  if (safe.opensubtitles_api_key)  safe.opensubtitles_api_key  = MASK;
+  if (safe.opensubtitles_password) safe.opensubtitles_password = MASK;
   // Extra instances carry their own passwords, which must be masked the same
   // way — they are as sensitive as the default instance's.
   safe.transmission_extra = JSON.stringify(

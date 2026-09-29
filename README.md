@@ -9,7 +9,10 @@ A self-hosted dashboard that automatically finds, scores, and downloads torrents
 - **Automatic episode tracking** — follows airing schedules from TMDB, grabs episodes as soon as they air
 - **Multi-source search** — queries Prowlarr (all your indexers), EZTV, and YTS in parallel
 - **Smart torrent scoring** — ranks results by quality, seeders, release group, source type, codec and audio; rejects cams, screeners, season packs, and releases that aren't actually the title you asked for
-- **Content screening** — every release is judged on its real file list before anything downloads: executables, crack/keygen folders, password-protected archives, double extensions, and videos too small for their claimed quality are rejected
+- **Content screening** — every release is judged on its real file list before it may download: executables, disc images, crack/keygen folders, password-protected or archive-only releases, oversized "text files", and videos too small for their claimed quality are rejected. Magnets wait in a throttled quarantine until their file list can be checked
+- **Matching by ID** — asks Prowlarr by IMDb/TMDB id alongside the text search, so a release is confirmed to be *that* film rather than one with the same name; an audio-description release is ranked below any ordinary one
+- **Finished-download checks** — opens each completed file and replaces it if it has no video, no audio, or only an audio-description track
+- **Subtitles** — fetches subtitles in your language from OpenSubtitles when a release has none, preferring ones timed to your exact file
 - **Manual mode** — browse and approve ranked candidates yourself; every row is already resolved to a magnet, so picking one starts the download immediately
 - **Packs** — optional per show: grab a complete series or a whole season in one torrent instead of episode by episode, which for older shows is often the only thing still well seeded
 - **Multiple Transmission instances** — route individual movies or shows to different servers
@@ -166,6 +169,7 @@ All settings can be changed at runtime from the **Settings** page in the UI. The
 | `MIN_SEEDS` | `10` | Minimum seeders required to consider a result |
 | `DEFAULT_QUALITY` | `1080p` | Preferred quality: `2160p`, `1080p`, or `720p` |
 | `AMAGNET_PORT` | `62201` | Port the dashboard listens on |
+| `MEDIA_ROOT` | `/HDD0/Shared` | Media folder mounted into the container, at the same path, for finished-download checks and subtitles |
 | `AMAGNET_NO_SCHEDULER` | `0` | Set to `1` to start with the scheduler off — nothing is searched for or sent to Transmission, and `POST /api/scheduler/run` returns 503 |
 
 Advanced settings (UI only, not in `.env`):
@@ -180,6 +184,12 @@ Advanced settings (UI only, not in `.env`):
 | Reuse results for | `20 min` | How long a search stays reusable, so reopening the picker is instant |
 | Title match strictness | `0.7` | Share of the requested title's words a release must contain |
 | Allow disc images | off | Permit `.iso` / `.img` releases, whose contents cannot be screened |
+| Quarantine hold | `24h` | How long a magnet may wait for its file list before it is removed |
+| Check finished downloads | on | Probe completed files and fetch missing subtitles |
+| When a file is unusable | replace | `replace` deletes and re-grabs; `flag` keeps it and says why |
+| Subtitle languages | `en` | 2-letter codes; the first is the one fetched |
+| OpenSubtitles key / username / password | — | All three are needed to download subtitles |
+| Media path mapping | — | Only if the container sees files under a different path than Transmission |
 | Unverifiable magnets | start | Whether to start or delete a magnet whose file list never arrives |
 | Extra Transmission instances | — | Named servers, selectable per movie or show with "Download to" |
 | Blocked tags | — | Comma-separated keywords to always reject in torrent titles |
@@ -236,26 +246,89 @@ are done once, up front:
 4. **Screen contents** on anything whose `.torrent` could be parsed.
 
 Everything that reaches the picker therefore already has a magnet, so clicking
-**Grab** hands it to Transmission immediately and returns. For magnet-only
-results, whose file list nobody can see until the metadata arrives, the torrent
-is added paused and screening continues in the background; if it turns out to be
-a dropper the torrent is purged and the item is flagged with the reason.
+**Grab** hands it to Transmission immediately and returns.
 
-### Running a test or demo instance
+### Quarantine
 
-A server started against a database that contains auto-mode items **will grab them** — that is
-what it is for — using whatever Transmission host and download paths its settings name. A
-database created fresh seeds those settings from `.env`, so a throwaway instance started next
-to a real `.env` is pointed at the real Transmission and the real disks. EZTV needs no API key,
-so this happens even with no Prowlarr configured.
+A magnet has no file list: Transmission only learns what is inside by fetching
+the metadata from peers, and **it only talks to peers while a torrent is
+running** — a paused torrent never gets its file list. So a magnet is added
+running but throttled to 4 kB/s and labelled `amagnet-quarantine` (visible in
+the Transmission UI). The metadata — tens of kilobytes — gets through; the
+payload effectively doesn't. The throttle and label are applied *before* it is
+started, so it never runs at full speed unchecked.
 
-Start any test instance with the scheduler off:
+- **Passes the screen** → label removed, throttle lifted, download proceeds.
+- **Fails** → removed with its data; the item goes back to pending with that
+  release excluded, so the next run picks the next candidate.
+- **Metadata still missing** after the two-minute grab-time watch → it simply
+  stays quarantined. The sweep at the start of every scheduler run (and at
+  startup) checks it again. Nothing is ever released on a timer.
+- **Nobody seeding it** for 24 hours (`Quarantine hold` in Settings) → removed.
 
-\`\`\`bash
-AMAGNET_NO_SCHEDULER=1 DB_PATH=/tmp/test.db node server/index.js
-\`\`\`
+A grab that turns out to be a **duplicate** of a torrent already in
+Transmission is left exactly as it was — it is your existing download, and
+nothing screens, pauses or deletes it.
 
-Isolating the database is not enough on its own — it isolates the records, not the side effects.
+The same sweep also checks anything auto_magnet was tracking as downloading but
+had never screened — every magnet grabbed before the quarantine existed. A
+failure there **stops** the torrent and flags it on the card; it never deletes,
+because those may be partly downloaded or started by hand.
+
+---
+
+## After a download finishes
+
+Screening reads file *names*. Once a download completes, auto_magnet opens the
+file with `ffprobe` and reads its actual streams, which catches what no name
+can:
+
+| Finding | What happens |
+|---|---|
+| No video stream | Unusable |
+| No audio | Unusable |
+| Every audio track is audio description | Unusable |
+| An audio-description track *plus* an ordinary one | Fine — the AD track is extra |
+| English subtitles embedded, or a `.en.srt` beside it | Nothing to fetch |
+| No subtitles in your language | Fetched from OpenSubtitles |
+
+An **unusable** download is deleted and the next candidate grabbed — but only
+when auto_magnet added the torrent itself and it covers a single item. A season
+pack, or a torrent that was already in Transmission, is only ever flagged on the
+card, whatever the setting says. Set **When a file is unusable** to *Keep it* to
+flag everything instead.
+
+Only downloads that complete **after this feature is deployed** are checked, so
+upgrading doesn't set it loose on your whole library.
+
+### Subtitles
+
+Fetched subtitles are saved beside the video as `<video name>.en.srt` — the
+naming Jellyfin and Plex pick up — and owned by the same user as the video. The
+search asks first for a subtitle timed to your *exact file* (by its
+OpenSubtitles file hash), and only then by IMDb id and season/episode,
+preferring one from the same release group. Machine-translated, AI-translated
+and forced-only subtitles are excluded.
+
+OpenSubtitles needs **both** an API key and an account: the key alone can search
+but not download. Create a free account at opensubtitles.com, add an API
+consumer to get a key, and enter all three in Settings. Downloads are limited
+per day; the remaining count is logged after every download, and when it runs
+out the rest wait until the quota resets.
+
+### Setup
+
+The check needs `ffprobe` (included in the Docker image) and the media folder
+mounted into the container **at the same path Transmission uses**. Set
+`MEDIA_ROOT` in `.env` to the folder that holds your movie and show paths:
+
+```bash
+MEDIA_ROOT=/HDD0/Shared
+```
+
+If the container has to see the files under a different path, set **Media path
+mapping** in Settings, e.g. `/HDD0/Shared=>/media`. A file that stays
+unreachable for a day is marked as skipped, with the reason on the card.
 
 ---
 
@@ -339,6 +412,45 @@ restart. Entries older than 30 days are pruned at the end of each scheduler run.
 
 ---
 
+## Working on it
+
+```bash
+npm install            # server dependencies
+npm run build:client   # build the SPA into client/dist
+npm run dev            # server with --watch
+```
+
+The server serves `client/dist`, so the SPA has to be built at least once before the dashboard
+renders. Rebuild it after any change under `client/src`.
+
+Four documents, each with a different job:
+
+| File | What it holds |
+|---|---|
+| `README.md` | How to run it, configure it, and what the features do |
+| `TODO.md` | Open work. The first place to look for what's next |
+| `user-stories.md` | What each feature is for, the bugs found against it, and what shipped when |
+| `improvements.md` | Audit findings and the reasoning behind past reworks — mostly historical |
+
+### Running a test or demo instance
+
+A server started against a database that contains auto-mode items **will grab them** — that is
+what it is for — using whatever Transmission host and download paths its settings name. A
+database created fresh seeds those settings from `.env`, so a throwaway instance started next
+to a real `.env` is pointed at the real Transmission and the real disks. EZTV needs no API key,
+so this happens even with no Prowlarr configured.
+
+Start any test instance with the scheduler off:
+
+```bash
+AMAGNET_NO_SCHEDULER=1 DB_PATH=/tmp/test.db node server/index.js
+```
+
+Isolating the database is not enough on its own — it isolates the records, not the side effects.
+
+
+---
+
 ## Updating
 
 ### Docker deployment
@@ -387,11 +499,14 @@ auto_magnet/
 │   ├── screen.js         # Content screening of torrent file lists
 │   ├── search-cache.js   # Short-lived source-search reuse
 │   ├── log.js            # Activity log — stdout plus the database
+│   ├── quarantine.js     # Screen verdicts, and the sweeps that finish them
+│   ├── postprocess.js    # Finished-download checks and subtitle fetching
 │   ├── transmission.js   # Transmission RPC client
 │   ├── sources/
 │   │   ├── prowlarr.js   # Multi-indexer search
 │   │   ├── eztv.js       # Show torrent fallback
-│   │   └── yts.js        # Movie torrent fallback
+│   │   ├── yts.js        # Movie torrent fallback
+│   │   └── opensubtitles.js # Subtitle search and download
 │   └── api/
 │       ├── movies.js
 │       ├── shows.js
@@ -406,7 +521,13 @@ auto_magnet/
 │   │   ├── views/        # Movies, Shows, Activity, Settings
 │   │   └── components/
 │   └── dist/             # Built SPA — served by Express in production
+├── deploy/
+│   └── auto-magnet.service   # systemd unit for a bare-metal host
 ├── .env.example
 ├── docker-compose.yml
-└── package.json
+├── package.json
+├── README.md
+├── TODO.md               # open work, reviewed as it changes
+├── user-stories.md       # what each feature is for, and what shipped when
+└── improvements.md       # audit findings and the reasoning behind past reworks
 ```

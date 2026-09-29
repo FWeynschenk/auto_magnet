@@ -392,3 +392,78 @@ the ordinary ones reject every pack ever made:
 
 Also fixed: the season-span patterns did not allow dot separators, so `Seasons.1-9` — the way
 release titles are actually written — did not match.
+
+---
+
+## Implementation notes (2026-09-29): the screening that never screened
+
+**How it was found.** Auditing all 907 torrents on the box against the current rules turned
+up five ~1 GB executables disguised as episodes (`.exe` and `.scr`), all fully downloaded
+into the Samba share — two of them grabbed *after* content screening had shipped.
+
+**Root cause.** Transmission only fetches a magnet's metadata from peers while the torrent is
+*running*. The screening added magnets paused and waited for a file list that therefore never
+came. The evidence was in Transmission's own timestamps: magnet grabs started exactly 30 s
+(scheduler) or 360 s (manual) after being added — the two timeout values — while `.torrent`
+grabs, which carry their file list, started in 3–7 s. On timeout the code started the torrent
+unscreened, and the synchronous path discarded the warning, so nothing recorded it.
+**No magnet was ever screened.**
+
+Two more holes turned up on the way:
+- A Prowlarr download URL that redirected to a magnet went straight to Transmission, with no
+  screening at all.
+- The npm client reports `torrent-added` and `torrent-duplicate` identically. A grab matching
+  a torrent already in Transmission would have been screened and, on failure, **purged with
+  its data** — deleting a download the user already had.
+
+**Fix: quarantine** (`transmission.js`, new `quarantine.js`). Magnets are added paused,
+throttled to 4 kB/s and labelled `amagnet-quarantine`, *then* started — never a moment at full
+speed. Metadata gets through; payload effectively doesn't. Only a passing screen lifts the
+throttle. Nothing is released on a timer: a torrent unresolved after the grab-time watch stays
+quarantined for a sweep that runs at startup and at the start of every scheduler run, which
+also makes it restart-safe (the label lives in Transmission, not the process). Duplicates are
+detected by calling the RPC directly and left untouched. A second sweep checks everything
+tracked as downloading that was never screened, and on failure *stops* rather than deletes.
+Verified against a fake Transmission RPC server: 32 checks, including the timeout path that
+used to leak.
+
+**False positives the same audit found** (`screen.js`):
+- `RARBG_DO_NOT_MIRROR.exe` in every RARBG release — 61 torrents. First exempted as a
+  zero-byte file, which matched nothing: it is **99 bytes**. Now exempted by exact name *and*
+  size ≤ 1 KB, so a payload using that name is still caught.
+- `.mkv.nfo` sidecars in every UIndex release — 19 torrents, including an 11 GB 2160p episode.
+  The double-extension rule now ignores known sidecars; executables are caught by the
+  extension rule regardless.
+
+**New rules from real payloads on the box:** a 4.3 GB `.txt` beside a 3 MB stub `.mkv`
+(sidecar-type files over 50 MB are rejected); a lone 1.2 GB `.zipx` (more archive formats, and
+archive-only releases are now rejected outright — nothing extracts them, and their contents
+can't be checked). Widening the archive list at first *let the `.zipx` back through*, because
+archive-only releases used to pass with a warning; caught by re-running the audit. Library
+audit: 90 rejections → 5, every one genuine.
+
+**Audio description.** Title detection (`AD`, `DVS`, "audio description", "described video")
+with a −100 score penalty rather than a rejection — some releases carry AD *alongside* the
+normal track, and the title can't tell which. An initial check of the box found no AD-marked
+titles, but only because the release in question had already been removed; it did carry the
+marker. Post-download probing settles the ambiguous cases.
+
+**Matching by ID.** Prowlarr's `ReleaseResource` carries `imdbId`/`tmdbId`/`tvdbId`/`grabs`
+(confirmed from source), and with `type=movie`/`tvsearch` it parses `{imdbid:…}` etc. out of
+the query. The ID search now runs alongside the text search. A matching ID skips the fuzzy
+title check; a different one rejects a film outright. For TV a mismatch is not decisive,
+because some indexers attach the episode's own IMDb id. YTS results carry `imdb_code`; EZTV
+results are fetched by IMDb id. 19 checks — the case that motivated it: a yearless release of
+*The Thing* (2011) that no title comparison can separate from the 1982 film.
+
+**Finished-download checks and subtitles** (new `postprocess.js`, `sources/opensubtitles.js`).
+`ffprobe` reads the real streams: no video, no audio, or only audio description → unusable.
+Replaced only when auto_magnet added the torrent itself and it is a single item; packs and
+duplicates are flagged. Missing subtitles are fetched from OpenSubtitles — file-hash match
+first, then by ID — and saved as `<video>.en.srt`, owned like the video. Only downloads
+completing after deploy are processed. Verified with real `ffprobe` on generated videos
+carrying the relevant stream flags, plus a fake OpenSubtitles API: 31 checks.
+
+The OpenSubtitles spec documents only the 200 response, so quota exhaustion is detected from
+the documented `remaining` count and message text; a first draft keyed it to status 406,
+which the spec never mentions.

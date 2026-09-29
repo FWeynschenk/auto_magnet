@@ -54,7 +54,7 @@ async function pool(items, n, fn) {
 }
 
 /** Fan out to every source that applies to this request. */
-async function gather({ type, title, year, imdbId, season, episode, quality, query, pack, refresh }) {
+async function gather({ type, title, year, imdbId, tmdbId, season, episode, quality, query, pack, refresh }) {
   // A hand-typed query is taken literally and sent only to Prowlarr. YTS and
   // EZTV are keyed on a canonical title and an IMDB id respectively, so they
   // cannot answer "find me exactly this string" — and the whole point of the
@@ -63,19 +63,26 @@ async function gather({ type, title, year, imdbId, season, episode, quality, que
     return prowlarr.search(query, type === 'movie' ? 'movie' : 'show', { refresh });
   }
 
+  // Asking by ID where the indexer supports it is exact; asking by text is
+  // broad. Neither is a superset of the other — plenty of public indexers
+  // ignore ID parameters entirely — so both run, and the results are merged
+  // and deduped by infohash downstream. Both are cached.
+  const tokens = prowlarr.idTokens({ imdbId, tmdbId });
+
   if (type === 'movie') {
     const titleAndYear = `${title} ${year || ''}`.trim();
-    const [pr, yr] = await Promise.all([
+    const [pr, byId, yr] = await Promise.all([
       prowlarr.search(titleAndYear, 'movie', { refresh }),
+      tokens ? prowlarr.search(`${title} ${tokens}`, 'movie', { refresh, searchType: 'movie' }) : [],
       yts.search(title, quality, { refresh }),
     ]);
     // A year-qualified search that finds nothing is usually a year the indexers
     // disagree about, not a film that does not exist. Retry without it.
-    if (pr.length === 0 && year) {
+    if (pr.length === 0 && byId.length === 0 && year) {
       const bare = await prowlarr.search(title, 'movie', { refresh });
       return [...bare, ...yr];
     }
-    return [...pr, ...yr];
+    return [...pr, ...byId, ...yr];
   }
 
   // Pack search: ask for the season (or the whole run), not an episode. EZTV is
@@ -85,22 +92,31 @@ async function gather({ type, title, year, imdbId, season, episode, quality, que
     // Two phrasings cover almost everything: scene releases name a span
     // ("S01-S05"), while repackers say "Complete Series". Results are merged and
     // deduped by infohash, so asking both ways costs one extra cached search.
-    const [a, b] = await Promise.all([
+    const seriesTokens = prowlarr.idTokens({ imdbId, tmdbId });
+    const [a, b, byId] = await Promise.all([
       prowlarr.search(`${title} complete series`, 'show', { refresh }),
       prowlarr.search(title, 'show', { refresh }),
+      seriesTokens ? prowlarr.search(`${title} ${seriesTokens}`, 'show', { refresh, searchType: 'tvsearch' }) : [],
     ]);
-    return [...a, ...b];
+    return [...a, ...b, ...byId];
   }
   if (pack && season != null) {
-    return prowlarr.search(`${title} S${String(season).padStart(2, '0')}`, 'show', { refresh });
+    const seasonTokens = prowlarr.idTokens({ imdbId, tmdbId, season });
+    const [text, byId] = await Promise.all([
+      prowlarr.search(`${title} S${String(season).padStart(2, '0')}`, 'show', { refresh }),
+      seasonTokens ? prowlarr.search(`${title} ${seasonTokens}`, 'show', { refresh, searchType: 'tvsearch' }) : [],
+    ]);
+    return [...text, ...byId];
   }
 
   const label = (season != null && episode != null) ? epLabel(season, episode) : '';
-  const [pr, ez] = await Promise.all([
+  const epTokens = prowlarr.idTokens({ imdbId, tmdbId, season, episode });
+  const [pr, byId, ez] = await Promise.all([
     prowlarr.search(`${title} ${label}`.trim(), 'show', { refresh }),
+    epTokens ? prowlarr.search(`${title} ${epTokens}`, 'show', { refresh, searchType: 'tvsearch' }) : [],
     eztv.search(imdbId, season, episode, { refresh }),
   ]);
-  return [...pr, ...ez];
+  return [...pr, ...byId, ...ez];
 }
 
 /**
@@ -110,17 +126,17 @@ async function gather({ type, title, year, imdbId, season, episode, quality, que
  *   Every accepted row has `.magnet`. Rejected rows carry `._reason`.
  */
 async function findCandidates({
-  type, title, year = null, imdbId = null,
+  type, title, year = null, imdbId = null, tmdbId = null,
   season = null, episode = null,
   quality = '1080p', exclude = [], limit = 20, refresh = false,
   query = null, allowPacks = false, pack = false, seasons = null, episodeCount = 1,
 }) {
-  const raw = await gather({ type, title, year, imdbId, season, episode, quality, query, pack, refresh });
+  const raw = await gather({ type, title, year, imdbId, tmdbId, season, episode, quality, query, pack, refresh });
 
   // A typed query replaces the title check rather than stacking on top of it:
   // the user said what they wanted, so second-guessing the words is exactly the
   // behaviour the manual box exists to escape. Safety and quality filters stay.
-  const want    = query ? null : { title, year, season, episode, seasons, episodeCount };
+  const want    = query ? null : { title, year, season, episode, seasons, episodeCount, imdbId, tmdbId };
   const packsOk = allowPacks || pack || !!query;
   const { accepted, rejected } = evaluate(raw, {
     preferredQuality: quality, type, want, exclude,
@@ -158,7 +174,8 @@ async function findCandidates({
           unusable.push({ ...r, _reason: verdict.reason });
           continue;
         }
-        if (verdict.warnings?.length) r._warnings = verdict.warnings;
+        // Appended, not assigned: scoring may already have flagged audio description.
+        if (verdict.warnings?.length) r._warnings = [...(r._warnings || []), ...verdict.warnings];
         r._screened = true;
 
         // A title can only claim to be complete; a file list can be counted.
@@ -186,10 +203,4 @@ async function findCandidates({
   };
 }
 
-/** The single best candidate, fully resolved and screened, or null. */
-async function findBest(opts) {
-  const { accepted } = await findCandidates({ ...opts, limit: 1 });
-  return accepted[0] || null;
-}
-
-module.exports = { findCandidates, findBest, epLabel };
+module.exports = { findCandidates, epLabel };

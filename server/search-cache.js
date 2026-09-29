@@ -73,11 +73,6 @@ async function cached(key, fn, { refresh = false } = {}) {
   return promise;
 }
 
-/** Age in ms of a cached key, or null. Used to tell the UI how fresh a list is. */
-function ageOf(key) {
-  return peek(key)?.age ?? null;
-}
-
 function clear(prefix) {
   if (!prefix) { store.clear(); return; }
   for (const key of [...store.keys()]) {
@@ -91,8 +86,4 @@ function remember(key, value) { put(key, value); }
 /** Read back a remembered value, or undefined once it has expired. */
 function recall(key) { return peek(key)?.value; }
 
-function stats() {
-  return { entries: store.size, inflight: inflight.size, ttl_ms: ttlMs() };
-}
-
-module.exports = { cached, peek, ageOf, clear, stats, remember, recall };
+module.exports = { cached, clear, remember, recall };

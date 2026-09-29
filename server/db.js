@@ -117,6 +117,24 @@ const migrations = [
   // Which Transmission instance this item downloads to, by name. NULL = default.
   'ALTER TABLE movies   ADD COLUMN transmission_target TEXT',
   'ALTER TABLE shows    ADD COLUMN transmission_target TEXT',
+  // When the torrent's actual file list passed the content screen. NULL means
+  // never checked — which, before the quarantine rework, was every magnet.
+  'ALTER TABLE movies   ADD COLUMN screened_at TEXT',
+  'ALTER TABLE episodes ADD COLUMN screened_at TEXT',
+  // Post-download checks. completed_at gates them to downloads that finish
+  // after this code exists — otherwise the first run would probe, and fetch
+  // subtitles for, the entire back catalogue.
+  'ALTER TABLE movies   ADD COLUMN completed_at TEXT',
+  'ALTER TABLE episodes ADD COLUMN completed_at TEXT',
+  'ALTER TABLE movies   ADD COLUMN post_processed_at TEXT',
+  'ALTER TABLE episodes ADD COLUMN post_processed_at TEXT',
+  // present | fetched | unavailable | missing | pending (retry, e.g. quota)
+  'ALTER TABLE movies   ADD COLUMN subs_state TEXT',
+  'ALTER TABLE episodes ADD COLUMN subs_state TEXT',
+  // 'added' when auto_magnet put the torrent there, 'duplicate' when it was
+  // already in Transmission. Only an 'added' one may ever be deleted.
+  'ALTER TABLE movies   ADD COLUMN torrent_origin TEXT',
+  'ALTER TABLE episodes ADD COLUMN torrent_origin TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -175,12 +193,26 @@ const defaultSettings = {
   allow_disc_images:         '0',
   // Minimum share of the requested title's words a release must contain.
   title_match_min:           '0.7',
-  // What to do with a magnet whose metadata never arrives, so its contents
-  // cannot be screened: 'start' it anyway, or 'block' and purge it.
-  unverified_policy:         'start',
+  // How long a magnet may sit in quarantine without delivering its file list
+  // before it is given up on and purged. A magnet with no metadata has no peers
+  // and downloads nothing, so holding it costs nothing but a slot.
+  quarantine_hold_hours:     '24',
   // Extra named Transmission instances, as JSON: [{ name, host, port, user, pw }].
   // The transmission_* keys above describe the default one.
   transmission_extra:        '[]',
+  // After a download completes: probe the real file, fetch missing subtitles.
+  postprocess_enabled:       '1',
+  // 'replace' deletes an unusable download and grabs the next candidate;
+  // 'flag' keeps it and says why on the card. Packs and torrents that were
+  // already in Transmission are only ever flagged, whatever this says.
+  postprocess_action:        'replace',
+  subtitle_languages:        'en',
+  opensubtitles_api_key:     '',
+  opensubtitles_username:    '',
+  opensubtitles_password:    '',
+  // Only needed when auto_magnet sees the media under a different path than
+  // Transmission does, e.g. '/HDD0/Shared=>/media'. Semicolon-separated.
+  media_path_map:            '',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -230,6 +262,18 @@ const movies = {
   },
 
   remove: (id) => db.prepare('DELETE FROM movies WHERE id = ?').run(id),
+
+  byTorrent: (torrentId) =>
+    db.prepare("SELECT * FROM movies WHERE torrent_id = ? AND status = 'downloading'").all(torrentId),
+
+  unscreened: () =>
+    db.prepare("SELECT * FROM movies WHERE status = 'downloading' AND torrent_id IS NOT NULL AND screened_at IS NULL").all(),
+
+  needingPostProcess: () => db.prepare(`
+    SELECT * FROM movies
+    WHERE status = 'done' AND completed_at IS NOT NULL AND torrent_id IS NOT NULL
+      AND (post_processed_at IS NULL OR subs_state = 'pending')
+  `).all(),
 };
 
 const shows = {
@@ -304,6 +348,27 @@ const episodes = {
   forSeason: (showId, season) =>
     db.prepare('SELECT * FROM episodes WHERE show_id = ? AND season = ? ORDER BY episode')
       .all(showId, season),
+
+  // Joined to the show, because an episode's Transmission instance is its show's.
+  byTorrent: (torrentId) => db.prepare(`
+    SELECT e.*, s.transmission_target AS show_target FROM episodes e
+    JOIN shows s ON s.id = e.show_id
+    WHERE e.torrent_id = ? AND e.status = 'downloading'
+  `).all(torrentId),
+
+  unscreened: () => db.prepare(`
+    SELECT e.*, s.transmission_target AS show_target FROM episodes e
+    JOIN shows s ON s.id = e.show_id
+    WHERE e.status = 'downloading' AND e.torrent_id IS NOT NULL AND e.screened_at IS NULL
+  `).all(),
+
+  needingPostProcess: () => db.prepare(`
+    SELECT e.*, s.transmission_target AS show_target,
+           s.imdb_id AS show_imdb_id, s.tmdb_id AS show_tmdb_id, s.title AS show_title
+    FROM episodes e JOIN shows s ON s.id = e.show_id
+    WHERE e.status = 'done' AND e.completed_at IS NOT NULL AND e.torrent_id IS NOT NULL
+      AND (e.post_processed_at IS NULL OR e.subs_state = 'pending')
+  `).all(),
 
   // First pending episode only — manual mode queues one approval at a time.
   firstPending: (showId) =>

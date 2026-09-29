@@ -46,6 +46,19 @@ const LOW_QUALITY_SOURCES = [
 const FOREIGN_LANG_RE =
   /\b(?:FRENCH|GERMAN|DEUTSCH|SPANISH|HINDI|ITALIAN|PORTUGUESE|DUTCH|VOSTFR|TRUEFRENCH|ARABIC|TURKISH|RUSSIAN|KOREAN|CHINESE|JAPANESE|POLISH|CZECH|HUNGARIAN|THAI|TAMIL|TELUGU|NORDIC|SWEDISH|DANISH)\b/i;
 
+/**
+ * Audio description — a narrated track for blind and partially sighted viewers.
+ * Some releases carry it alongside the normal track, some carry nothing else,
+ * and the title can't tell the two apart. So it is penalised hard rather than
+ * rejected: any ordinary release wins, but an AD one is still better than
+ * nothing, and post-download probing settles whether a normal track exists.
+ *
+ * Token-bounded throughout: "AD" must stand alone, so "Mad.Men" and "Head"
+ * never match, and "A.D." — separated by a dot — isn't a single token either.
+ */
+const AUDIO_DESCRIPTION_RE =
+  /(?:^|[.\-_\s[(])(?:AD|DVS|audio[.\-_\s]?desc(?:ription|ribed)?|descri(?:bed|ptive)(?:[.\-_\s]video)?|visually[.\-_\s]impaired)(?:[.\-_\s\])]|$)/i;
+
 // ─── Quality detection ────────────────────────────────────────────────────────
 
 const QUALITY_PATTERNS = [
@@ -213,6 +226,42 @@ const SXXEYY_RE = /\bS(\d{1,2})[\s._-]?E(\d{1,3})\b/i;
 /** A season number with no episode after it — "S01", not "S01E04". */
 const SEASON_ONLY_RE = /\bS(\d{1,2})\b/i;
 
+/** An IMDb or TMDB id as a plain number, or 0 when absent. tt0133093 → 133093. */
+function numId(v) {
+  if (v == null || v === '') return 0;
+  const n = Number(String(v).replace(/^tt/i, ''));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * 'match', 'mismatch', or 'unknown', comparing only the IDs both sides have.
+ * Indexers that don't know an ID report 0, which is unknown — never different.
+ *
+ * A mismatch is only decisive for films. For TV, some indexers attach the
+ * *episode's* own IMDb id rather than the show's, so a TV mismatch is treated
+ * as unknown and the title comparison decides as it always has.
+ */
+function idVerdict(result, want) {
+  let matched = false;
+  for (const [have, wanted] of [
+    [numId(result.imdb_id), numId(want.imdbId)],
+    [numId(result.tmdb_id), numId(want.tmdbId)],
+  ]) {
+    if (!have || !wanted) continue;
+    if (have !== wanted) return 'mismatch';
+    matched = true;
+  }
+  return matched ? 'match' : 'unknown';
+}
+
+function idLabel(x) {
+  const imdb = numId(x.imdb_id ?? x.imdbId);
+  const tmdb = numId(x.tmdb_id ?? x.tmdbId);
+  if (imdb) return `IMDb tt${String(imdb).padStart(7, '0')}`;
+  if (tmdb) return `TMDB ${tmdb}`;
+  return 'no id';
+}
+
 /**
  * Does this release plausibly match what was asked for?
  * Returns null when it does, or a human-readable reason when it does not.
@@ -220,13 +269,24 @@ const SEASON_ONLY_RE = /\bS(\d{1,2})\b/i;
 function mismatchReason(result, { type, want }) {
   if (!want?.title) return null;
 
+  // Identity by ID, where both sides carry one. Nothing about a title settles
+  // remakes, reboots and shared names the way this does.
+  const id = idVerdict(result, want);
+  if (id === 'mismatch' && type === 'movie') {
+    return `is a different film (${idLabel(result)}, not ${idLabel(want)})`;
+  }
+  if (id === 'match') result._idMatch = true;
+
+  // The ID pins the title, so the fuzzy title and year comparison has nothing
+  // left to add. It does *not* pin the episode or season — those checks below
+  // still run either way.
   const minRatio = parseFloat(settings.get('title_match_min') || '0.7');
   const ratio    = titleMatchRatio(result.title, want.title);
-  if (ratio < minRatio) {
+  if (!result._idMatch && ratio < minRatio) {
     return `title match ${Math.round(ratio * 100)}% — looks like a different release`;
   }
 
-  if (type === 'movie' && want.year) {
+  if (type === 'movie' && want.year && !result._idMatch) {
     const years = releaseYears(result.title, want.title);
     // Only judge when the release actually states a year; many do not.
     if (years.length > 0 && !years.some(y => Math.abs(y - want.year) <= 1)) {
@@ -365,7 +425,7 @@ function rejectionReason(result, { minSeeds, type, want, allowPacks = false }) {
   if (result.files?.length) {
     const verdict = screenFiles(result.files, { type });
     if (!verdict.ok) return verdict.reason;
-    if (verdict.warnings?.length) result._warnings = verdict.warnings;
+    if (verdict.warnings?.length) result._warnings = [...(result._warnings || []), ...verdict.warnings];
   }
 
   return null;
@@ -415,6 +475,11 @@ function scoreResult(result, preferredQuality, type, want) {
   if (/\b(?:HDR(?:10\+?)?|DV\b|DOVI|DOLBY\.?VISION)\b/i.test(title)) s += 10;
   if (/\b(?:PROPER|REPACK|REAL\.PROPER)\b/i.test(title)) s += 15;
   if (FOREIGN_LANG_RE.test(title)) s -= 30;
+  // Large enough that any ordinary release outranks it, whatever the seeders.
+  if (AUDIO_DESCRIPTION_RE.test(title)) {
+    s -= 100;
+    result._warnings = [...(result._warnings || []), 'audio description'];
+  }
 
   // An exact title match beats a merely plausible one.
   if (want?.title) s += (titleMatchRatio(title, want.title) - 0.7) * 40;
@@ -423,6 +488,11 @@ function scoreResult(result, preferredQuality, type, want) {
   if (result.magnet) s += 15;
   // A parsed file list means the contents were verified, not assumed.
   if (result.files?.length) s += 10;
+  // Confirmed to be the right title by ID, not just by name.
+  if (result._idMatch) s += 40;
+  // How many people actually took it. Log-scaled and capped like seeders, and
+  // weighted lower: a helpful tiebreaker, not a reason to pick worse quality.
+  if (result.grabs > 0) s += Math.log2(Math.min(result.grabs, 5000) + 1) * 3;
 
   result._quality = q.label;
   return Math.round(s);
@@ -449,6 +519,11 @@ function dedupe(results) {
     merged.magnet    = existing.magnet || r.magnet || null;
     merged.files     = existing.files?.length ? existing.files : r.files;
     merged.info_hash = existing.info_hash || r.info_hash || null;
+    // Only one mirror may know the IDs or the grab count; keep them.
+    merged.imdb_id   = existing.imdb_id || r.imdb_id || null;
+    merged.tmdb_id   = existing.tmdb_id || r.tmdb_id || null;
+    merged.tvdb_id   = existing.tvdb_id || r.tvdb_id || null;
+    merged.grabs     = Math.max(existing.grabs || 0, r.grabs || 0) || null;
     merged._mirrors  = (existing._mirrors || 1) + 1;
     byKey.set(key, merged);
   }
@@ -504,20 +579,10 @@ function evaluate(results, {
   return { accepted, rejected };
 }
 
-/**
- * Select the best torrent(s). Thin wrapper over evaluate() kept for callers that
- * only care about the winners.
- *
- * @param {number} opts.limit  1 = return a single winner, N = return top N
- */
-function select(results, { limit = 1, ...opts } = {}) {
-  const { accepted } = evaluate(results, opts);
-  if (limit === 1) return accepted[0] || null;
-  return accepted.slice(0, limit);
-}
-
 module.exports = {
-  select, evaluate, dedupe, detectQuality,
-  normalizeTitle, titleMatchRatio,
+  evaluate,
+  // Exported for inspection and testing rather than for production callers —
+  // these are the rules most likely to need checking against a real title.
+  dedupe, detectQuality, normalizeTitle, titleMatchRatio,
   isSeasonPack, isSeriesPack, claimedSeasons,
 };

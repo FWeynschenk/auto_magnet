@@ -4,6 +4,8 @@ const { movies, shows, episodes, settings } = require('./db');
 const { addTorrent, getTorrentProgress, removeTorrent, progressKey } = require('./transmission');
 const { getSeasonDetails, getTvDetails } = require('./tmdb');
 const { findCandidates } = require('./pipeline');
+const { afterAdd, verdictHandler, sweepQuarantine, sweepUnscreened } = require('./quarantine');
+const { postProcessCompleted } = require('./postprocess');
 const log = require('./log');
 
 // --- Constants ---
@@ -172,7 +174,9 @@ async function syncDownloading() {
       if (t.done) {
         // Clear last_error too: a completed download makes the previous
         // rejection history, not a standing warning on the card.
-        movies.update(movie.id, { status: 'done', progress: 100, last_error: null });
+        movies.update(movie.id, {
+          status: 'done', progress: 100, last_error: null, completed_at: new Date().toISOString(),
+        });
         log.info(`"${movie.title}" download complete`, { type: 'movie', id: movie.id });
       } else {
         if (t.progress !== movie.progress) movies.update(movie.id, { progress: t.progress });
@@ -193,7 +197,9 @@ async function syncDownloading() {
       const t = progressMap.get(progressKey(episodeTarget(ep), ep.torrent_id));
       if (!t) continue;
       if (t.done) {
-        episodes.update(ep.id, { status: 'done', progress: 100, last_error: null });
+        episodes.update(ep.id, {
+          status: 'done', progress: 100, last_error: null, completed_at: new Date().toISOString(),
+        });
         log.info(`${epLabel(ep.season, ep.episode)} download complete`, { type: 'episode', id: ep.id });
       } else {
         if (t.progress !== ep.progress) episodes.update(ep.id, { progress: t.progress });
@@ -241,7 +247,8 @@ async function processMovie(movie) {
 
   const quality = movie.quality || settings.get('default_quality') || '1080p';
   const search  = {
-    type: 'movie', title: movie.title, year: movie.year, imdbId: movie.imdb_id,
+    type: 'movie', title: movie.title, year: movie.year,
+    imdbId: movie.imdb_id, tmdbId: movie.tmdb_id,
     quality, exclude: parseList(movie.tried_magnets),
   };
 
@@ -274,6 +281,7 @@ async function processMovie(movie) {
       screen: { type: 'movie', title: winner.title },
       files:  winner.files,
       target: movie.transmission_target,
+      onVerdict: verdictHandler(movie.transmission_target),
     });
   } catch (err) {
     if (err.screened) {
@@ -293,7 +301,8 @@ async function processMovie(movie) {
 
   movies.update(movie.id, {
     status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
-    last_error: null, download_started_at: new Date().toISOString(),
+    download_started_at: new Date().toISOString(),
+    ...afterAdd(result),
   });
   log.info(`added "${movie.title}" — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'movie', id: movie.id });
 }
@@ -425,6 +434,7 @@ function episodeSearch(show, ep) {
     type:    'show',
     title:   show.title,
     imdbId:  show.imdb_id,
+    tmdbId:  show.tmdb_id,
     season:  ep.season,
     episode: ep.episode,
     quality: show.quality || settings.get('default_quality') || '1080p',
@@ -461,13 +471,14 @@ function packableSeasons(show) {
  * Mark every episode a pack covers as downloading against the same torrent, so
  * progress and completion are reported for all of them together.
  */
-function claimEpisodesForPack(eps, magnet, torrentId) {
+function claimEpisodesForPack(eps, magnet, result) {
   const startedAt = new Date().toISOString();
   for (const ep of eps) {
     episodes.update(ep.id, {
-      status: 'downloading', magnet, torrent_id: torrentId,
-      results_cache: null, results_cached_at: null, last_error: null,
+      status: 'downloading', magnet, torrent_id: result.id,
+      results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
+      ...afterAdd(result),
     });
   }
 }
@@ -511,7 +522,7 @@ async function grabSeriesPack(show) {
   );
 
   const { accepted } = await findCandidates({
-    type: 'show', title: show.title, imdbId: show.imdb_id,
+    type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id,
     quality, pack: 'series', seasons, episodeCount: all.length,
     exclude: [...tried], limit: 1,
   });
@@ -528,6 +539,7 @@ async function grabSeriesPack(show) {
       screen: { type: 'show', title: winner.title, allowPacks: true },
       files:  winner.files,
       target: show.transmission_target,
+      onVerdict: verdictHandler(show.transmission_target),
     });
   } catch (err) {
     if (err.screened) {
@@ -538,7 +550,7 @@ async function grabSeriesPack(show) {
     throw err;
   }
 
-  claimEpisodesForPack(wanted, winner.magnet, result.id);
+  claimEpisodesForPack(wanted, winner.magnet, result);
   log.info(
     `added "${show.title}" complete series covering ${wanted.length} episode(s) — ${winner.title} ` +
     `(${(winner.size / 1e9).toFixed(1)} GB, ${winner.seeders} seeds)`,
@@ -563,7 +575,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
       { type: 'show', id: show.id });
 
     const { accepted } = await findCandidates({
-      type: 'show', title: show.title, imdbId: show.imdb_id,
+      type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id,
       season, episode: null, quality, pack: 'season',
       episodeCount: seasonEps.length,
       exclude: [...tried], limit: 1,
@@ -582,6 +594,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
         screen: { type: 'show', title: winner.title, allowPacks: true },
         files:  winner.files,
         target: show.transmission_target,
+        onVerdict: verdictHandler(show.transmission_target),
       });
     } catch (err) {
       if (err.screened) {
@@ -594,7 +607,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
       throw err;
     }
 
-    claimEpisodesForPack(seasonEps, winner.magnet, result.id);
+    claimEpisodesForPack(seasonEps, winner.magnet, result);
     log.info(
       `added "${show.title}" ${label} pack covering ${seasonEps.length} episode(s) — ${winner.title}`,
       { type: 'show', id: show.id },
@@ -625,6 +638,7 @@ async function grabEpisode(show, ep) {
       screen: { type: 'show', title: winner.title },
       files:  winner.files,
       target: show.transmission_target,
+      onVerdict: verdictHandler(show.transmission_target),
     });
   } catch (err) {
     if (err.screened) {
@@ -644,8 +658,9 @@ async function grabEpisode(show, ep) {
 
   episodes.update(ep.id, {
     status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
-    results_cache: null, last_error: null,
+    results_cache: null,
     download_started_at: new Date().toISOString(),
+    ...afterAdd(result),
   });
   log.info(`added "${show.title}" ${label} — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'episode', id: ep.id });
   return true;
@@ -662,9 +677,16 @@ async function run() {
   const deadline  = startedAt + RUN_DEADLINE_MINUTES * 60 * 1000;
   log.info('run started');
   try {
+    // Finish any screening left over — a magnet whose metadata arrived after
+    // its grab-time watch ended, or anything interrupted by a restart. First,
+    // so its verdicts are recorded before the grab pass looks at the queue.
+    await sweepQuarantine().catch(err => log.error(`quarantine sweep failed: ${err.message}`));
+    await sweepUnscreened().catch(err => log.error(`unscreened sweep failed: ${err.message}`));
     await runMovies(deadline).catch(err => log.error(`movies pass failed: ${err.message}`));
     await runShows(deadline).catch(err  => log.error(`shows pass failed: ${err.message}`));
     await syncDownloading();
+    // Check what just finished — the real streams, and subtitles.
+    await postProcessCompleted().catch(err => log.error(`post-processing failed: ${err.message}`));
   } finally {
     _running = false;
   }

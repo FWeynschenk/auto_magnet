@@ -152,23 +152,66 @@
       </section>
 
       <section>
+        <h2>After a download finishes</h2>
+        <p class="section-note">
+          The finished file is opened and its streams checked: a file with no video, no audio,
+          or nothing but an audio-description track is unusable. If it has no subtitles in your
+          language, they are fetched from OpenSubtitles and saved beside it as
+          <code>&lt;video&gt;.en.srt</code>. Needs <code>ffprobe</code> and the media folder
+          mounted into the container — see the README.
+        </p>
+        <div class="fields">
+          <label class="check-label span2">
+            <input v-model="postprocessBool" type="checkbox" class="checkbox" />
+            Check finished downloads
+          </label>
+          <label>When a file is unusable
+            <select v-model="form.postprocess_action">
+              <option value="replace">Replace it — delete and grab the next candidate</option>
+              <option value="flag">Keep it — just say why on the card</option>
+            </select>
+            <span class="hint">packs, and torrents that were already in Transmission, are only ever flagged</span>
+          </label>
+          <label>Subtitle languages
+            <input v-model="form.subtitle_languages" type="text" placeholder="en" />
+            <span class="hint">2-letter codes, comma-separated; the first is the one fetched</span>
+          </label>
+          <label>OpenSubtitles API key
+            <input v-model="form.opensubtitles_api_key" type="password" placeholder="leave blank to keep current" />
+            <span class="hint">create one under “API consumers” on opensubtitles.com</span>
+          </label>
+          <label>OpenSubtitles username
+            <input v-model="form.opensubtitles_username" type="text" autocomplete="off" />
+            <span class="hint">downloads need an account as well as the key</span>
+          </label>
+          <label>OpenSubtitles password
+            <input v-model="form.opensubtitles_password" type="password" placeholder="leave blank to keep current" autocomplete="new-password" />
+          </label>
+          <label>Media path mapping
+            <input v-model="form.media_path_map" type="text" placeholder="/HDD0/Shared=>/media" />
+            <span class="hint">only if this container sees the files under a different path than Transmission does</span>
+          </label>
+        </div>
+      </section>
+
+      <section>
         <h2>Safety</h2>
         <p class="section-note">
-          Releases are checked against their real file list before anything starts downloading.
+          Releases are checked against their real file list before anything downloads.
           Anything carrying an executable, a crack/keygen folder, a password-protected archive,
           or a video file that is suspiciously small for its claimed quality is rejected outright.
+          A magnet has no file list until peers supply one, so it waits in quarantine — running,
+          but throttled to a trickle and labelled <code>amagnet-quarantine</code> in
+          Transmission — and only a passing check lets it download.
         </p>
         <div class="fields">
           <label class="check-label span2">
             <input v-model="allowDiscImagesBool" type="checkbox" class="checkbox" />
             Allow disc images (.iso/.img) — off by default, since a disc image hides its own contents
           </label>
-          <label class="span2">Magnets whose contents never load
-            <span class="hint">some magnets never deliver a file list, so there is nothing to check</span>
-            <select v-model="form.unverified_policy">
-              <option value="start">Start anyway — keeps good torrents, skips the content check</option>
-              <option value="block">Block and delete — never run anything unverified</option>
-            </select>
+          <label>Quarantine hold (hours)
+            <span class="hint">how long a magnet may wait for its file list before it is given up on and removed</span>
+            <input v-model.number="form.quarantine_hold_hours" type="number" min="1" max="336" />
           </label>
         </div>
       </section>
@@ -272,6 +315,13 @@ const instances = ref([]);
 function addInstance() {
   instances.value.push({ name: '', host: '', port: '9091', user: '', pw: '' });
 }
+
+// Stored as '0'/'1' like the other toggles; anything but '0' means on, so an
+// install that has never saved this setting counts as enabled.
+const postprocessBool = computed({
+  get: () => form.value.postprocess_enabled !== '0',
+  set: (v) => { form.value.postprocess_enabled = v ? '1' : '0'; },
+});
 
 const allowDiscImagesBool = computed({
   get: () => form.value.allow_disc_images === '1',

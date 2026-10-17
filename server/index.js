@@ -44,6 +44,7 @@ app.use('/api/search',   require('./api/search'));
 app.use('/api/settings', require('./api/settings'));
 app.use('/api/timeline', require('./api/timeline'));
 app.use('/api/log',      require('./api/log'));
+app.use('/api/library',  require('./api/library'));
 
 app.get('/api/status', async (_req, res) => {
   const { testConnection } = require('./transmission');

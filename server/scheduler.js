@@ -6,6 +6,7 @@ const { getSeasonDetails, getTvDetails } = require('./tmdb');
 const { findCandidates } = require('./pipeline');
 const { afterAdd, verdictHandler, sweepQuarantine, sweepUnscreened } = require('./quarantine');
 const { postProcessCompleted } = require('./postprocess');
+const { showDir } = require('./paths');
 const log = require('./log');
 
 // --- Constants ---
@@ -532,7 +533,7 @@ async function grabSeriesPack(show) {
     return false;
   }
 
-  const downloadDir = `${settings.get('shows_path')}/${show.title}`;
+  const downloadDir = showDir(show);
   let result;
   try {
     result = await addTorrent(winner.magnet, downloadDir, {
@@ -587,7 +588,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
       continue;
     }
 
-    const downloadDir = `${settings.get('shows_path')}/${show.title}`;
+    const downloadDir = showDir(show);
     let result;
     try {
       result = await addTorrent(winner.magnet, downloadDir, {
@@ -631,7 +632,7 @@ async function grabEpisode(show, ep) {
   }
 
   const torrentUrl  = winner.magnet;
-  const downloadDir = `${settings.get('shows_path')}/${show.title}`;
+  const downloadDir = showDir(show);
   let result;
   try {
     result = await addTorrent(torrentUrl, downloadDir, {

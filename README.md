@@ -418,6 +418,41 @@ the default.
 
 ---
 
+## Show folders
+
+Each show is downloaded into a folder named after it, made safe for Windows: the
+library is shared over Samba, and Windows forbids `\ / : * ? " < > |` in a name
+and drops trailing dots and spaces. Samba shows such a folder to Windows clients
+under a scrambled stand-in like `A9VK1B~E`, which is what *Avatar: Seven
+Havens* used to look like. A colon now becomes a dash, the way Sonarr does it:
+
+| Title | Folder |
+|---|---|
+| Avatar: Seven Havens | Avatar - Seven Havens |
+| Re:Zero | Re-Zero |
+| Love/Hate | Love-Hate |
+| What If...? | What If |
+
+Older folders don't follow that, and some shows were also split across two
+folders whose names differ only in case (`House of the Dragon` and
+`house of the dragon`). **Settings → Show folders → Check show folders** lists
+every such folder and what moving it involves. Nothing moves until you press
+**Move** on a row, and then:
+
+- torrent data is moved by Transmission itself, so it keeps seeding;
+- everything else follows — fetched subtitles, files added by hand, and old
+  downloads whose torrents have since been removed;
+- nothing is ever overwritten: anything already present at the destination is
+  left where it is and reported;
+- the old folder is removed only if it ends up empty.
+
+Folders that only exist on disk — old downloads no longer in Transmission — are
+found too, when the media folder is mounted. A media server watching the folder
+picks a moved show up on its next scan; moving one show and checking it there
+first is the cautious way.
+
+---
+
 ## Activity log
 
 The **Activity** page records every search, grab, rejection, screen verdict and failure, with
@@ -515,6 +550,8 @@ auto_magnet/
 │   ├── log.js            # Activity log — stdout plus the database
 │   ├── quarantine.js     # Screen verdicts, and the sweeps that finish them
 │   ├── postprocess.js    # Finished-download checks and subtitle fetching
+│   ├── paths.js          # Show folder names (Windows-safe) and path mapping
+│   ├── library.js        # Finding and moving show folders that don't match
 │   ├── transmission.js   # Transmission RPC client
 │   ├── sources/
 │   │   ├── prowlarr.js   # Multi-indexer search
@@ -527,7 +564,8 @@ auto_magnet/
 │       ├── search.js
 │       ├── settings.js
 │       ├── timeline.js
-│       └── log.js
+│       ├── log.js
+│       └── library.js
 ├── client/               # Vue 3 frontend (Vite)
 │   ├── public/
 │   │   └── favicon.png

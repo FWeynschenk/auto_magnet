@@ -18,6 +18,12 @@ These shipped but can only be confirmed on the real box.
   `.env` before rebuilding, and an OpenSubtitles API key (Free consumer tier) in Settings —
   plus your OpenSubtitles login, which raises downloads from 5 to 20 a day.
   Without the mount, finished-download checks skip every file and say why on the card.
+- **Tidy the show folders.** Settings → Show folders → *Check show folders*. Against the
+  library as of 2026-10-17 it lists five: `Avatar: Seven Havens` and `Star Trek: Strange
+  New Worlds` (shown over the share as scrambled names like `A9VK1B~E`), and `from`,
+  `house of the dragon`, `i know this much is true` (each a second, lowercase folder for a
+  show). New episodes of the first two now go to the dash-named folder, so until they are
+  moved those shows are split. Move one first and check it in the media server.
 - **Do your indexers return IDs?** Prowlarr's search result *has* `imdbId`/`tmdbId` fields
   (confirmed from its source), but indexers only fill them if they know them. Every search
   now logs `N result(s), M carrying an ID` — watch `docker compose logs` for a day. If `M`
@@ -73,15 +79,20 @@ if that changes, or roll repeats into one line per run: `12 episodes still have 
 **Why:** `selector.js`, `screen.js`, `pipeline.js`, `quarantine.js` and `postprocess.js` are
 now a large set of rules. They have been verified — against a fake Transmission RPC server,
 real `ffprobe` on generated video files, a fake OpenSubtitles API, and a full audit of the
-907 torrents on the box — but by scripts that live outside the repo.
+907 torrents on the box — but by scripts that lived outside the repo, and **most of them are
+gone**: they were in a temporary working folder that was cleared between sessions. That is
+the whole argument for this item. Today the earlier suites (selection, ID matching,
+quarantine, post-processing, rate limits — about 160 checks) can't be rerun.
 
 The silent failure mode is real and has already happened twice: a corrupted `\b` in the
 season regex made every season pack unmatchable while still parsing as valid JavaScript, and
 widening the archive list quietly let a `.zipx` dropper back through. Neither produces an
 error; the only symptom is that the wrong thing downloads, or nothing does.
 
-**Shape:** `node --test` against a temp DB. The existing verification scripts are a
-ready-made starting point.
+**Shape:** `node --test` against a temp DB, kept in the repo. The approaches that worked are
+written up in `user-stories.md` — a fake Transmission RPC server that really moves files,
+`ffmpeg`-generated videos carrying the exact stream flags, a fake OpenSubtitles API that
+enforces the documented limits — so they can be rebuilt rather than rediscovered.
 
 ---
 

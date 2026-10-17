@@ -7,6 +7,7 @@ const { findCandidates } = require('../pipeline');
 const { remember, recall } = require('../search-cache');
 const { settings, movies, shows, episodes } = require('../db');
 const { addTorrent } = require('../transmission');
+const { showDir } = require('../paths');
 const { afterAdd, verdictHandler } = require('../quarantine');
 const log = require('../log');
 
@@ -225,7 +226,7 @@ router.post('/grab', async (req, res) => {
         row = episodes.get(media_id, epSeason, epEpisode);
       }
       target      = { kind: 'episode', row, store: episodes, id: row.id };
-      downloadDir = `${settings.get('shows_path')}/${show.title}`;
+      downloadDir = showDir(show);
       screenType  = 'show';
       txTarget    = show.transmission_target;
     }

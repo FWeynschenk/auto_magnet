@@ -77,6 +77,11 @@ export const timeline = {
   get: () => req('GET', '/timeline'),
 };
 
+export const library = {
+  folders:   ()               => req('GET',  '/library/folders'),
+  fixFolder: (from, target)   => req('POST', '/library/folders/fix', { from, target }),
+};
+
 export const activity = {
   list: (params = {}) => {
     const qs = new URLSearchParams(

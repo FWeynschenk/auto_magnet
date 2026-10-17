@@ -217,6 +217,63 @@
       </section>
 
       <section>
+        <h2>Show folders</h2>
+        <p class="section-note">
+          Shows are saved in a folder named after the show, made safe for Windows — a colon
+          becomes a dash, so “Avatar: Seven Havens” goes in “Avatar - Seven Havens”. Over the
+          share, a name Windows can't show appears scrambled, like <code>A9VK1B~E</code>.
+          This finds older folders like that, and shows split across two folders whose names
+          differ only in case, and moves them. Transmission moves the torrent data itself, so
+          it keeps seeding; other files follow; nothing is ever overwritten.
+        </p>
+        <button type="button" class="btn-ghost btn-sm" :disabled="folderChecking" @click="checkFolders">
+          {{ folderChecking ? 'Checking…' : 'Check show folders' }}
+        </button>
+
+        <div v-if="folderPlan" class="folder-plan">
+          <p v-if="folderPlan.length === 0" class="folder-ok">Every show folder is where it should be.</p>
+          <div v-for="f in folderPlan" :key="f.target + f.from" class="folder-fix">
+            <div class="ff-head">
+              <div class="ff-paths">
+                <code>{{ leaf(f.from) }}</code> <span class="ff-arrow">→</span> <code>{{ leaf(f.to) }}</code>
+              </div>
+              <button
+                v-if="!f.result"
+                type="button"
+                class="btn-primary btn-sm"
+                :disabled="folderMoving !== null"
+                @click="fixFolder(f)"
+              >{{ folderMoving === f.from ? 'Moving…' : 'Move' }}</button>
+            </div>
+            <div class="ff-meta">
+              {{ f.reason }} · {{ f.moves.length }} torrent{{ f.moves.length === 1 ? '' : 's' }} to move
+              <template v-if="f.merge"> · merges into an existing folder</template>
+              <template v-if="f.conflicts.length"> · {{ f.conflicts.length }} already there, left in place</template>
+              <template v-if="!f.reachable"> · other files can't follow (folder not mounted)</template>
+            </div>
+            <div v-if="f.result" class="ff-result" :class="{ partial: f.result.stillMoving.length }">
+              <template v-if="f.result.stillMoving.length">
+                Transmission is still moving {{ f.result.stillMoving.length }} torrent(s) — check again in a minute,
+                then move it again to bring the remaining files across.
+              </template>
+              <template v-else>
+                Moved {{ f.result.torrentsMoved }} torrent(s) and {{ f.result.filesMoved.length }} other item(s).
+                <template v-if="f.result.filesKept.length || f.result.torrentsSkipped">
+                  Left in place because the destination already has them:
+                  {{ [...f.result.filesKept].join(', ') || `${f.result.torrentsSkipped} torrent(s)` }}.
+                </template>
+                {{ f.result.oldFolderRemoved ? 'Old folder removed.' : 'Old folder kept — it still has files in it.' }}
+              </template>
+            </div>
+          </div>
+          <p v-if="folderPlan.length" class="hint ff-hint">
+            A media server watching this folder will pick up a moved show on its next scan. Moving
+            one show and checking it there first is the cautious way.
+          </p>
+        </div>
+      </section>
+
+      <section>
         <h2>Dashboard access</h2>
         <div class="fields">
           <label class="span2">API token <span class="hint">only needed if the server runs with AMAGNET_TOKEN set</span>
@@ -268,7 +325,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { settings as api, scheduler, getToken, setToken } from '../api.js';
+import { settings as api, scheduler, library, getToken, setToken } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
 
 const apiToken = ref(getToken());
@@ -311,6 +368,36 @@ const trustedOnlyBool = computed({
 });
 
 // Edited as an array, stored as a JSON string — the shape the server wants.
+// Show folders that don't match where new downloads go.
+const folderPlan     = ref(null);
+const folderChecking = ref(false);
+const folderMoving   = ref(null);
+const leaf = (p) => String(p).split('/').pop();
+
+async function checkFolders() {
+  folderChecking.value = true;
+  try {
+    const plan = await library.folders();
+    folderPlan.value = plan.fixes.map(f => ({ ...f, result: null }));
+  } catch (err) {
+    notifyError(`Could not check folders: ${err.message}`);
+  } finally {
+    folderChecking.value = false;
+  }
+}
+
+async function fixFolder(f) {
+  folderMoving.value = f.from;
+  try {
+    f.result = await library.fixFolder(f.from, f.target);
+    if (!f.result.stillMoving.length) notifySuccess(`Moved ${leaf(f.from)} → ${leaf(f.to)}`);
+  } catch (err) {
+    notifyError(`Could not move ${leaf(f.from)}: ${err.message}`);
+  } finally {
+    folderMoving.value = null;
+  }
+}
+
 const instances = ref([]);
 function addInstance() {
   instances.value.push({ name: '', host: '', port: '9091', user: '', pw: '' });
@@ -448,6 +535,17 @@ input:focus, select:focus { border-color: var(--accent); }
 @media (max-width: 720px) {
   .instance-row { grid-template-columns: 1fr 1fr auto; }
 }
+
+.folder-plan { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.folder-ok   { font-size: 12px; color: var(--green); }
+.folder-fix  { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; }
+.ff-head     { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ff-paths    { font-size: 13px; overflow-wrap: anywhere; }
+.ff-arrow    { color: var(--muted); margin: 0 4px; }
+.ff-meta     { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.ff-result   { font-size: 12px; color: var(--green); margin-top: 6px; }
+.ff-result.partial { color: var(--yellow); }
+.ff-hint     { font-size: 11px; color: var(--muted); }
 
 .section-note {
   color: var(--muted); font-size: 12px; margin: -4px 0 12px; max-width: 70ch; line-height: 1.5;

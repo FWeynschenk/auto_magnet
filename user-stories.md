@@ -467,3 +467,33 @@ carrying the relevant stream flags, plus a fake OpenSubtitles API: 31 checks.
 The OpenSubtitles spec documents only the 200 response, so quota exhaustion is detected from
 the documented `remaining` count and message text; a first draft keyed it to status 406,
 which the spec never mentions.
+
+---
+
+## Implementation notes (2026-10-17): scrambled show folder names
+
+**Symptom.** Some show folders appeared over the share as names like `A9VK1B~E`.
+
+**Cause.** The folder was the raw TMDB title. Linux accepts a colon in a name; Windows
+doesn't, so Samba shows such a folder to Windows clients under a generated stand-in that
+keeps only the first character (by default) — `A9VK1B~E` is *Avatar: Seven Havens*.
+Checking Transmission's download folders found two (`Avatar: Seven Havens`, `Star Trek:
+Strange New Worlds`), and three shows split across folders differing only in case
+(`FROM`/`from`, `House of the Dragon`/`house of the dragon`, `I Know This Much Is
+True`/`i know this much is true`).
+
+**Fix.** `paths.showDir()` is now the only place a show folder is built, through
+`sanitizeFolderName()`: `: ` → ` - `, bare `:` and `/` → `-`, `"` → `'`, the rest of
+`* ? < > |` removed, trailing dots and spaces dropped, Windows device names suffixed.
+
+**Existing folders** are moved only on request, one at a time, from Settings
+(`library.js`). Transmission moves torrent data itself (`torrent-set-location`); other files
+follow; nothing is overwritten; an emptied folder is removed. The plan is recomputed per
+request, so only a folder it found itself can ever be moved. Folders known only on disk are
+found too where the media folder is mounted. Verified against a fake Transmission that moves
+real files: 45 checks, including clashing names, an unfinished move, and a stray file named
+like a show. A read-only preview against the real Transmission listed exactly the five
+folders above, with no clashes.
+
+Also tightened `mapPath` to whole path segments: a mapping for `/HDD0/Shared` used to rewrite
+`/HDD0/SharedOther` too.

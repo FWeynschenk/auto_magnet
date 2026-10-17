@@ -114,6 +114,20 @@ async function getTorrentFiles(id, target = null) {
   return t.files.map(f => ({ path: f.name, length: f.length }));
 }
 
+/** Every torrent on one instance, with just the fields asked for. */
+async function listTorrents(fields, target = null) {
+  const args = await rpc('torrent-get', { fields: ['id', ...fields] }, target);
+  return args?.torrents || [];
+}
+
+/**
+ * Point a torrent at a new folder. With move=true Transmission relocates the
+ * data itself — a rename when it stays on the same disk — and keeps seeding.
+ */
+async function setTorrentLocation(id, location, { move = true, target = null } = {}) {
+  await rpc('torrent-set-location', { ids: [id], location, move }, target);
+}
+
 /** Where a torrent lives and what is in it, or null if Transmission no longer has it. */
 async function getTorrentInfo(id, target = null) {
   const args = await rpc('torrent-get', {
@@ -481,6 +495,7 @@ function removeTorrent(id, targetName = null) {
 module.exports = {
   addTorrent, getTorrentProgress, testConnection, removeTorrent,
   getTorrentFiles, getTorrentInfo, startTorrent, stopTorrent, purgeTorrent,
+  listTorrents, setTorrentLocation,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
   listTargets, resolveTarget, progressKey,
 };

@@ -21,6 +21,7 @@ const tx  = require('./transmission');
 const subtitles = require('./sources/opensubtitles');
 const { recordVerdict } = require('./quarantine');
 const log = require('./log');
+const { mapPath } = require('./paths');
 
 const FFPROBE   = process.env.FFPROBE_PATH || 'ffprobe';
 const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|mov|wmv|webm|mpg|mpeg|m2ts|ts)$/i;
@@ -131,14 +132,6 @@ function hasSidecarSubs(videoPath, showDir, wanted) {
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
-/** Translate a path as Transmission reports it into one this process can open. */
-function mapPath(p) {
-  for (const pair of (settings.get('media_path_map') || '').split(';')) {
-    const [from, to] = pair.split('=>').map(s => s && s.trim());
-    if (from && to && p.startsWith(from)) return to + p.slice(from.length);
-  }
-  return p;
-}
 
 /** The video file within a torrent that belongs to this row. */
 function pickFile(files, row, kind) {

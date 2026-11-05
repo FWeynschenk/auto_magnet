@@ -233,12 +233,13 @@ async function fetchSubtitles(entry, localPath, info, wanted) {
     // Match the video's owner, so a Samba user who can delete the episode can
     // delete its subtitles too.
     try { const st = fs.statSync(localPath); fs.chownSync(dest, st.uid, st.gid); } catch (_) {}
-    storeFor(entry.kind).update(entry.id, { last_error: null });
+    storeFor(entry.kind).update(entry.id, { last_error: null, subs_match: best.matchedBy || null });
     log.info(
       `subtitles fetched (matched by ${best.matchedBy}): ${path.basename(dest)}` +
       (typeof remaining === 'number' ? ` — ${remaining} download(s) left today` : ''),
       { type: entry.kind, id: entry.id },
     );
+    await autoSync(entry, localPath, dest, best.matchedBy);
     return 'fetched';
   } catch (err) {
     if (err.quota) {
@@ -248,6 +249,34 @@ async function fetchSubtitles(entry, localPath, info, wanted) {
       log.warn(`subtitle download failed, will retry: ${err.message}`, { type: entry.kind, id: entry.id });
     }
     return 'pending';
+  }
+}
+
+/**
+ * A subtitle matched by file hash was timed against this exact file. One
+ * matched any other way was timed against *a* release of it, and is aligned
+ * to the audio. Never fatal: an unaligned subtitle is still a subtitle.
+ */
+async function autoSync(entry, videoPath, subPath, matchedBy) {
+  if (matchedBy === 'hash' || settings.get('subtitle_autosync') === '0') return;
+  try {
+    const { chooseAudio, probe: probeFull } = require('./media');
+    const audio = chooseAudio((await probeFull(videoPath)).streams);
+    const r = await require('./subsync').syncFile(videoPath, subPath, { streamIndex: audio?.index ?? null });
+    log.info(r.applied
+      ? `subtitles aligned to the audio: shifted ${(r.offsetMs / 1000).toFixed(2)}s${r.ratio !== 1 ? `, stretched ×${r.ratio.toFixed(4)}` : ''}`
+      : `subtitles not re-timed: ${r.reason}`, { type: entry.kind, id: entry.id });
+  } catch (err) {
+    log.warn(`subtitle sync skipped: ${err.message}`, { type: entry.kind, id: entry.id });
+  }
+}
+
+/** Make a checked file watchable: record it and queue its web version. */
+async function recordForPlayback(entry, localPath) {
+  try {
+    await require('./media').record(entry.kind, entry.id, localPath);
+  } catch (err) {
+    log.warn(`could not add to the watch library: ${err.message}`, { type: entry.kind, id: entry.id });
   }
 }
 
@@ -318,6 +347,7 @@ async function postProcessCompleted({ limit = 25 } = {}) {
           await handleUnusable(group, entry, verdict.reason, target);
           continue;
         }
+        await recordForPlayback(entry, local);
         if (verdict.embeddedSubs) {
           store.update(entry.id, { post_processed_at: now, subs_state: 'present' });
           continue;

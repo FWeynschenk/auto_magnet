@@ -1,31 +1,40 @@
 <template>
   <div id="shell">
-    <nav class="navbar">
+    <nav v-if="!bare && user" class="navbar">
       <span class="nav-brand">⚡ auto_magnet</span>
       <div class="nav-links">
-        <RouterLink to="/movies">Movies</RouterLink>
-        <RouterLink to="/shows">Shows</RouterLink>
-        <RouterLink to="/activity">Activity</RouterLink>
-        <RouterLink to="/settings">Settings</RouterLink>
+        <RouterLink to="/watch">Watch</RouterLink>
+        <template v-if="isAdmin">
+          <RouterLink to="/movies">Movies</RouterLink>
+          <RouterLink to="/shows">Shows</RouterLink>
+          <RouterLink to="/activity">Activity</RouterLink>
+          <RouterLink to="/settings">Settings</RouterLink>
+        </template>
       </div>
-      <span class="tx-status" :class="txStatus.connected ? 'ok' : 'err'">
+      <span v-if="isAdmin" class="tx-status" :class="txStatus.connected ? 'ok' : 'err'">
         ● {{ txStatus.connected ? 'Transmission' : 'No Transmission' }}
+      </span>
+      <span class="who" :class="{ 'push-right': !isAdmin }">
+        {{ user.username }}
+        <button class="btn-ghost btn-sm" @click="logout">Sign out</button>
       </span>
     </nav>
 
-    <main>
+    <main v-if="!bare">
       <RouterView />
     </main>
+    <RouterView v-else />
 
-    <TimelineStrip v-if="showTimeline" />
+    <TimelineStrip v-if="showTimeline && isAdmin" />
     <ToastHost />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { ref, computed, onMounted, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { settings } from './api.js';
+import { user, isAdmin, signOut } from './session.js';
 import { usePolling } from './composables/usePolling.js';
 import TimelineStrip from './components/TimelineStrip.vue';
 import ToastHost     from './components/ToastHost.vue';
@@ -35,16 +44,25 @@ const txStatus = ref({ connected: false });
 // The release timeline is about what is coming up, which is meaningless on the
 // Settings and Activity pages — it was only ever shown there by accident.
 const route = useRoute();
+const router = useRouter();
+const bare = computed(() => !!route.meta.bare);
 const showTimeline = computed(() => ['/movies', '/shows', '/'].includes(route.path));
 
 async function checkStatus() {
+  if (!isAdmin.value) return;
   try { txStatus.value = await settings.status(); } catch (_) {}
+}
+
+async function logout() {
+  await signOut();
+  router.replace('/login');
 }
 
 // Notification permission is requested from Settings on an explicit click, not
 // on load — browsers penalise (and some suppress) unprompted permission requests.
 usePolling(checkStatus, 30000);
 onMounted(checkStatus);
+watch(isAdmin, checkStatus);
 </script>
 
 <style>
@@ -111,6 +129,8 @@ button:disabled { opacity: .4; cursor: default; }
 .nav-links a.router-link-active { color: var(--accent); }
 
 .tx-status { margin-left: auto; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.who { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.who.push-right { margin-left: auto; }
 .tx-status.ok  { color: var(--green); }
 .tx-status.err { color: var(--red); }
 

@@ -8,6 +8,9 @@ export const setToken = (t) => t
   : localStorage.removeItem(TOKEN_KEY);
 export const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
 
+let onUnauthorized = null;
+export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
+
 async function req(method, path, body) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
@@ -21,7 +24,12 @@ async function req(method, path, body) {
   });
 
   if (res.status === 204) return null;
-  if (res.status === 401) throw new Error('Unauthorized — check the API token in Settings');
+  if (res.status === 401 && !path.startsWith('/auth/')) {
+    // Session expired or revoked: back to the sign-in page, keeping the
+    // current page so it can return there.
+    onUnauthorized?.();
+    throw new Error('Signed out — please sign in again');
+  }
 
   // A non-JSON body means something upstream returned HTML; surface it readably
   let data;
@@ -90,4 +98,40 @@ export const activity = {
     return req('GET', `/log${qs ? `?${qs}` : ''}`);
   },
   clear: () => req('DELETE', '/log'),
+};
+
+export const auth = {
+  status:         ()               => req('GET',    '/auth/status'),
+  setup:          (body)           => req('POST',   '/auth/setup', body),
+  login:          (body)           => req('POST',   '/auth/login', body),
+  logout:         ()               => req('POST',   '/auth/logout'),
+  changePassword: (current, password) => req('PUT', '/auth/me/password', { current, password }),
+  sessions:       ()               => req('GET',    '/auth/me/sessions'),
+  revokeSession:  (id)             => req('DELETE', `/auth/me/sessions/${id}`),
+  users:          ()               => req('GET',    '/auth/users'),
+  createUser:     (body)           => req('POST',   '/auth/users', body),
+  updateUser:     (id, body)       => req('PUT',    `/auth/users/${id}`, body),
+  removeUser:     (id)             => req('DELETE', `/auth/users/${id}`),
+};
+
+const item = (kind, id) => `/watch/items/${kind}/${id}`;
+
+export const watch = {
+  home:        ()                 => req('GET',  '/watch/home'),
+  movies:      ()                 => req('GET',  '/watch/movies'),
+  shows:       ()                 => req('GET',  '/watch/shows'),
+  show:        (id)               => req('GET',  `/watch/shows/${id}`),
+  item:        (kind, id)         => req('GET',  item(kind, id)),
+  playback:    (kind, id)         => req('GET',  `${item(kind, id)}/playback`),
+  prepare:     (kind, id)         => req('POST', `${item(kind, id)}/prepare`),
+  reencode:    (kind, id)         => req('POST', `${item(kind, id)}/reencode`),
+  progress:    (kind, id, body)   => req('PUT',  `/watch/progress/${kind}/${id}`, body),
+  setWatched:  (kind, id, watched) => req('POST', `/watch/progress/${kind}/${id}/watched`, { watched }),
+  showWatched: (showId, season, watched) => req('POST', `/watch/shows/${showId}/watched`, { season, watched }),
+  syncSub:     (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/sync`),
+  shiftSub:    (kind, id, sub, offsetMs) => req('POST', `${item(kind, id)}/subtitles/${sub}/shift`, { offsetMs }),
+  restoreSub:  (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/restore`),
+  adminStatus: ()                 => req('GET',  '/watch/admin/status'),
+  scan:        ()                 => req('POST', '/watch/admin/scan'),
+  clear:       ()                 => req('POST', '/watch/admin/clear'),
 };

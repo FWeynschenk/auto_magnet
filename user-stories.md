@@ -497,3 +497,30 @@ folders above, with no clashes.
 
 Also tightened `mapPath` to whole path segments: a mapping for `/HDD0/Shared` used to rewrite
 `/HDD0/SharedOther` too.
+
+---
+
+## Implementation notes (2026-11-05): watching, accounts, Android
+
+**Why homegrown instead of a media server.** The library already knows exactly which file is
+which episode, what streams it has and which subtitles it fetched — a media server would have
+to rediscover all of it by scanning. Playback is built on that knowledge instead.
+
+**Accounts.** `users`/`sessions` tables; scrypt hashes; tokens stored as SHA-256 only. Browser
+sessions are HttpOnly SameSite=Lax cookies, plus an Origin check on cookie-authenticated writes
+(other ports on the same host are the same "site"). Apps get bearer tokens. `AMAGNET_TOKEN`
+stays as an admin credential for scripts and gates first-account setup.
+
+**Play plans.** direct / remux / transcode, decided from ffprobe. Web versions are HLS with fMP4
+segments and an EVENT playlist, so a player can start before the encode ends and the finished
+output is an ordinary VOD the Android downloader can fetch. Originals are never modified —
+torrents keep seeding.
+
+**Subtitle sync.** Not a model: band-limited speech energy vs. a cue on/off signal, FFT
+cross-correlation over ±10 minutes, repeated for seven frame-rate ratios. Applied only when the
+peak's z-score is ≥ 4. Synthetic tests recover offsets and a 25/23.976 stretch exactly.
+
+**Found while testing.** Kernel file timestamps are coarse (a few ms), so a subtitle cache
+checked by mtime served the pre-restore file when a restore followed a shift within the same
+tick; the cache is now keyed on the subtitle's content hash. `node --test test/` treats the
+directory as a file on Node 22 — the script globs `test/*.test.js`.

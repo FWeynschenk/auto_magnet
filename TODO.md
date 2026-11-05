@@ -3,13 +3,35 @@
 Open work, roughly in the order it's worth doing. Anything finished moves out of here —
 `user-stories.md` keeps the record of what shipped and why.
 
-Last reviewed: 2026-09-29
+Last reviewed: 2026-11-05
 
 ---
 
 ## Check after the next deploy
 
 These shipped but can only be confirmed on the real box.
+
+- **Create the admin account first.** The API is now locked until an account exists, so the
+  first page load after the deploy is the setup screen. Then add viewer accounts in Settings.
+- **GPU encoding.** Uncomment the `devices`/`group_add` lines in `docker-compose.yml`, set
+  `RENDER_GID` and `WEB_ROOT` in `.env`, rebuild (the image now installs `mesa-va-drivers`).
+  Settings → Watch library should say *GPU (VAAPI)*. Verified here only with libx264 — this
+  machine has no GPU — so the VAAPI argument set (`-init_hw_device`, `format=nv12,hwupload`,
+  `h264_vaapi -rc_mode VBR`) runs for the first time on the RX 6600. A failure falls back to the
+  CPU per file and is logged.
+- **Web version disk use.** Roughly the size of what gets converted. Watch `WEB_ROOT` for a
+  week; switch to *Only when someone presses play* if it grows too fast.
+- **Back catalogue indexing.** 40 items per half hour, or *Scan library now*. Items whose
+  torrents were removed are found by searching the show/movie folders; anything still missing
+  says so in the player.
+- **Subtitle auto-sync on real speech.** Tested against synthetic tone bursts, where it is exact.
+  Real dialogue under music is harder: check the log lines `subtitles aligned to the audio` /
+  `not re-timed` for the first few fetched subtitles, and try **Auto-sync** in the player on a
+  known-bad one.
+- **Android app on a real phone.** It builds, its models parse captured server responses, and
+  lint is clean, but there was no emulator here (no KVM), so the UI, playback, downloads and the
+  offline progress merge have never actually run. Install the APK from CI and try: sign in,
+  stream a direct and a converted item, download one, play it in airplane mode, reconnect.
 
 - **The Docker image builds.** The Dockerfile now installs `ffmpeg` for `ffprobe`. It
   couldn't be built on the dev machine (no Docker daemon running there), so the first
@@ -95,6 +117,18 @@ written up in `user-stories.md` — a fake Transmission RPC server that really m
 enforces the documented limits — so they can be rebuilt rather than rediscovered.
 
 ---
+
+## Playback — next steps
+
+- **Subtitle timing in the Android app.** The web player can nudge/save/auto-sync; the app can
+  only pick a track. Saved fixes reach the app on the next play.
+- **Multiple audio tracks.** A web version carries one audio track (the preferred language,
+  never commentary/AD). A language switch in the player would need one rendition per track.
+- **Adaptive bitrate for away-from-home.** One rendition per file today. A 720p/2 Mbps variant
+  in the HLS master would make streaming over a phone connection workable.
+- **Web version clean-up.** Nothing deletes web versions except *Delete all* or removing the item.
+  A "watched by everyone, older than N days" sweep would bound the disk use.
+- **Chromecast / TV.** Not started. Media3 has a Cast extension; HLS output is Cast-compatible.
 
 ## Smaller
 

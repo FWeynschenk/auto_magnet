@@ -48,6 +48,12 @@ services:
       # App
       - AMAGNET_PORT=62201
       - DB_PATH=/data/auto_magnet.db
+      # Browser-playable versions of files that need converting. Roughly the
+      # size of the originals they are made from, so keep it on a big disk.
+      - WEB_PATH=/web
+      # Optional shared secret for scripts; also required to create the first
+      # account when set.
+      - AMAGNET_TOKEN=${AMAGNET_TOKEN:-}
       # Set to 1 for a test instance: starts with the scheduler off so nothing
       # is searched for or pushed to Transmission. Leave 0 in production.
       - AMAGNET_NO_SCHEDULER=${AMAGNET_NO_SCHEDULER:-0}
@@ -57,6 +63,14 @@ services:
       # finished-download check can open files without translating paths.
       # Read-write, because fetched subtitles are saved beside the video.
       - ${MEDIA_ROOT:-/HDD0/Shared}:${MEDIA_ROOT:-/HDD0/Shared}
+      - ${WEB_ROOT:-./web}:/web
+    # The GPU, for hardware encoding (VAAPI). Uncomment on a machine with
+    # /dev/dri, and set RENDER_GID in .env to the number `getent group render`
+    # prints on the host. Without it, encoding runs on the CPU.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "${RENDER_GID}"
     ports:
       - "${AMAGNET_PORT:-62201}:62201"
     restart: unless-stopped

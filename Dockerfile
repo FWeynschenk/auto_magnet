@@ -11,9 +11,11 @@ FROM node:22-slim
 WORKDIR /app
 
 # ffprobe reads finished downloads to check their audio, video and subtitle
-# streams. Installed before the app is copied so this layer stays cached.
+# streams; ffmpeg builds the web versions. mesa-va-drivers lets ffmpeg encode
+# on an AMD (or Intel) GPU through VAAPI when /dev/dri is passed through.
+# Installed before the app is copied so this layer stays cached.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg \
+ && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers \
  && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json* ./

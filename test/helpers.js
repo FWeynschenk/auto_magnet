@@ -33,6 +33,7 @@ const SRT = '1\n00:00:01,000 --> 00:00:03,000\nHello there\n\n2\n00:00:05,000 --
  *   Movies/Direct.Film.2020/…mp4   H.264 + AAC in MP4      → direct
  *   Movies/Remux.Film.2021/…mkv    H.264 + English AC-3 + SRT + Dutch AAC, MKV → remux
  *   Series/Hevc Show/…S01E02…mkv   10-bit H.264            → transcode (+ sidecar .en.srt)
+ *   Movies/Dual.Audio.Film.2022/…mp4  H.264 + English and Dutch AAC → remux, playing as it is meanwhile
  */
 function makeLibrary(root, { seconds = 12 } = {}) {
   const movies = path.join(root, 'Movies'), series = path.join(root, 'Series', 'Hevc Show');
@@ -49,6 +50,10 @@ function makeLibrary(root, { seconds = 12 } = {}) {
     '-c:a:0', 'ac3', '-c:a:1', 'aac', '-c:s', 'srt', '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=dut',
     '-metadata:s:s:0', 'language=eng',
     path.join(movies, 'Remux.Film.2021', 'Remux.Film.2021.mkv')]);
+  fs.mkdirSync(path.join(movies, 'Dual.Audio.Film.2022'), { recursive: true });
+  ffmpeg([...v, '-f', 'lavfi', '-i', `sine=f=660:d=${seconds}`, '-map', '0', '-map', '1', '-map', '2',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=dut',
+    path.join(movies, 'Dual.Audio.Film.2022', 'Dual.Audio.Film.2022.mp4')]);
   const ep = path.join(series, 'Hevc.Show.S01E02.1080p.mkv');
   ffmpeg([...v, '-c:v', 'libx264', '-profile:v', 'high10', '-pix_fmt', 'yuv420p10le', '-c:a', 'aac', ep]);
   fs.writeFileSync(path.join(series, 'Hevc.Show.S01E02.1080p.en.srt'), SRT);

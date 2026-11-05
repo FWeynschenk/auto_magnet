@@ -129,6 +129,9 @@ function playback(kind, id, m) {
   const info = { plan: m.plan, reason: m.plan_reason, state: m.web_state, progress: m.web_progress, encoder: m.web_encoder,
     original: !m.original_removed_at };
   if (m.web_state === 'ready') return { mode: 'hls', url: hls, complete: true, download: { type: 'hls', url: hls }, ...info };
+  // An MP4 that only needs a web version for its other audio tracks plays as
+  // it is meanwhile — all of it, at once, rather than as far as the remux got.
+  if (media.playsAsIs(m)) return { mode: 'file', url: file.url, download: { type: 'file', ...file }, ...info };
   if (m.web_state === 'encoding' && media.hlsPlayable(kind, id)) return { mode: 'hls', url: hls, complete: false, ...info };
   return { mode: 'preparing', ...info, error: m.web_error || null };
 }

@@ -33,6 +33,35 @@ test('a preferred audio track that isn\'t first needs a remux, even in MP4', () 
   assert.match(r.reason, /first track/);
 });
 
+test('an MP4 with several ordinary audio tracks gets a web version, but plays as it is meanwhile', () => {
+  const two = { streams: [v(), a({ index: 1, tags: { language: 'eng' } }), a({ index: 2, tags: { language: 'dut' } })], format: mp4 };
+  const r = media.planFor(two, ['en']);
+  assert.equal(r.plan, 'remux');
+  assert.match(r.reason, /2 audio tracks/);
+  assert.equal(media.planFor(two, ['en'], { multiAudio: false }).plan, 'direct');
+  // Commentary or audio description alone doesn't justify a second copy.
+  const extra = { streams: [v(), a({ index: 1 }), a({ index: 2, tags: { title: 'Commentary' } }), a({ index: 3, disposition: { visual_impaired: 1 } })], format: mp4 };
+  assert.equal(media.planFor(extra, ['en']).plan, 'direct');
+});
+
+test('files planned as direct before that rule are re-planned from the stored probe', () => {
+  const { settings } = require('../server/db');
+  settings.set('web_prepare', 'demand'); // re-plan only; don't start encoding nonexistent files
+  const probe = (streams) => JSON.stringify({ streams, format: mp4 });
+  media.rows.upsert('movie', 901, { path: '/x/two.mp4', size: 1, plan: 'direct', plan_reason: 'plays as it is',
+    probe: probe([v(), a({ index: 1, tags: { language: 'eng' } }), a({ index: 2, tags: { language: 'fre' } })]) });
+  media.rows.upsert('movie', 902, { path: '/x/one.mp4', size: 1, plan: 'direct', plan_reason: 'plays as it is', probe: probe([v(), a()]) });
+  assert.equal(media.replanStored(), 1);
+  const two = media.rows.get('movie', 901);
+  assert.equal(two.plan, 'remux');
+  assert.equal(media.playsAsIs(two), true, 'still served as it is until the web version is ready');
+  assert.equal(media.rows.get('movie', 902).plan, 'direct');
+  assert.equal(media.replanStored(), 0, 'once');
+  assert.equal(media.playsAsIs({ ...two, original_removed_at: 'x' }), false);
+  assert.equal(media.playsAsIs({ ...two, probe: probe([v({ codec_name: 'hevc' }), a()]), plan: 'transcode' }), false);
+  settings.set('web_prepare', 'complete');
+});
+
 test('HEVC, 10-bit and HDR are transcoded', () => {
   assert.match(media.planFor({ streams: [v({ codec_name: 'hevc' }), a()], format: mkv }).reason, /HEVC/);
   assert.equal(media.planFor({ streams: [v({ pix_fmt: 'yuv420p10le' }), a()], format: mp4 }).reason, '10-bit video');

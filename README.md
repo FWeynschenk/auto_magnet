@@ -501,12 +501,17 @@ Each finished file is probed once and given one of three plans:
 | Plan | When | What happens |
 |---|---|---|
 | **Direct** | MP4 with H.264 video and AAC/MP3 audio | Served as it is, with range requests |
-| **Repackage** | Video is fine, but the file is MKV, or the audio is AC-3/DTS/TrueHD, or the right audio track isn't the first one | Video copied untouched, audio converted to stereo AAC. Takes about a minute, no loss of picture quality |
+| **Repackage** | Video is fine, but the file is MKV, or the audio is AC-3/DTS/TrueHD, or the right audio track isn't the first one, or it is an MP4 with more than one ordinary audio track | Video copied untouched, audio converted to stereo AAC. Takes about a minute, no loss of picture quality |
 | **Convert** | HEVC, 10-bit, HDR (tone-mapped to SDR), MPEG-4 Part 2, VC-1 | Re-encoded to 8-bit H.264, scaled to at most 1080p (configurable) |
 
 Repackaged and converted versions are HLS, written to their own folder (`WEB_PATH`, the `./web`
 volume in Docker) — **the original is never touched**, so Transmission keeps seeding it. The
 playlist grows as the encode runs, so playback can begin after the first few seconds are done.
+
+An MP4 with several audio tracks would play as it is, but a browser (Safari aside) only ever plays
+its first track — no way to reach a second language, or past a wrongly flagged default. So it gets
+a web version too, and plays as it is until that is ready. Files already in the library are
+re-planned from their stored probe when the server starts.
 
 **Every audio track is kept**, each as stereo AAC (about 85 MB an hour per extra track). The one
 in your first subtitle language — never commentary or audio description — plays by default; the
@@ -606,8 +611,24 @@ Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an accou
   (automatically on Android 12+), with back 10 s, play/pause and forward 10 s. Closing the window
   saves the position. Opening another item while one plays there switches to it.
 
-The app is for watching: adding movies and shows, Browse/Choose, and settings are in the web
-dashboard.
+**Admins also get a Manage tab** — the downloader side, through the same endpoints as the web
+dashboard:
+
+- **Waiting for you**: manual-mode movies, and the episode each manual-mode show is waiting on,
+  with a Choose button.
+- **Movies / Shows**: everything tracked, with its status, progress and last error. Open one to
+  change quality, mode, following and season packs, Redo, Skip or Restore episodes, refresh a
+  show's episodes from TMDB, or stop tracking it.
+- **+** searches TMDB and adds a movie or show (quality, automatic or manual, the season and
+  episode to start from, season packs, and which Transmission instance when there is more than
+  one).
+- **Choose** opens the torrent picker: the ranked releases with quality, seeders, size, indexer,
+  whether the contents were checked and any warnings; ↻ searches the indexers again, the search
+  box runs a literal query, and *filtered out* lists what was rejected and why. Tapping a release
+  asks before it downloads.
+
+Viewers don't see the tab, and the server refuses those endpoints to them anyway. Settings, the
+activity log and accounts stay in the web dashboard.
 
 Reaching the server away from home needs a route to it: a VPN such as WireGuard or Tailscale
 is the safe one. Exposing the port to the internet is not recommended.

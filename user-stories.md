@@ -587,3 +587,25 @@ ffmpeg 4.4: that release writes the first fragment into the fMP4 init segment an
 predates multi-track audio — the original single-playlist layout had it too. The server now moves
 the fragment back after each encode, and fixes existing web versions at startup. Newer ffmpeg
 likely doesn't need it; the repair leaves a correct file alone.
+
+## Implementation notes (2026-11-05, night): managing from the app
+
+**What.** Admins get a Manage tab in the Android app: what is tracked, a "Waiting for you" list for
+manual mode, adding by TMDB search, per-movie and per-show settings and episode actions, and the
+torrent picker with grab. No server changes: the app uses the dashboard's own endpoints, and a
+candidate goes back to `/api/search/grab` exactly as `/api/search/preview` sent it, so the server
+can find its cached file list by info hash.
+
+**Role.** The login response carries the role; sessions from before this learn it from
+`/api/auth/me` when the main screen opens. The tab is a convenience — every endpoint behind it is
+already admin-only on the server.
+
+**Testing.** The model tests use responses captured from a real server whose outbound calls (TMDB,
+Prowlarr, EZTV, YTS) and Transmission hand-off were stubbed by a preload script, so the fixtures
+come from the real code paths: a cam release filtered out, a cached list reused, a grab.
+
+**Several audio tracks in an MP4.** A browser's `<video>` plays only the first audio track of an MP4
+(Safari has `audioTracks`; Chrome and Firefox don't), so a wrongly flagged default or a second
+language was unreachable there. An MP4 with more than one ordinary (non-commentary, non-AD) track is
+now planned as a remux; `playsAsIs()` keeps serving the original until the web version is ready,
+and `replanStored()` re-plans existing rows from their stored probe at startup.

@@ -39,8 +39,11 @@ These shipped but can only be confirmed on the real box.
   known-bad one.
 - **Android app on a real phone.** Run on an API 33 emulator against a local server: sign in,
   direct play, a repackaged HLS item with subtitles, switching its audio track, picture-in-picture
-  (Home, the window's buttons, closing it, opening another item while it plays). Not yet tried:
-  downloads, playing one in airplane mode, and the offline progress merge on reconnect.
+  (Home, the window's buttons, closing it, opening another item while it plays), and the Manage
+  tab against a server with TMDB, Prowlarr and Transmission stubbed: search and add, the picker
+  and a grab, quality and removal, Skip, and the tab hidden for a viewer. Not yet tried:
+  downloads, playing one in airplane mode, the offline progress merge on reconnect, and the
+  Manage tab against real indexers (a slow Prowlarr search; a grab that is quarantined).
 
 - **The Docker image builds.** The Dockerfile now installs `ffmpeg` for `ffprobe`. It
   couldn't be built on the dev machine (no Docker daemon running there), so the first

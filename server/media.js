@@ -159,6 +159,12 @@ function wantedLanguages() {
   return (settings.get('subtitle_languages') || 'en').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 }
 
+/** Commentary or audio description: kept, but never the one chosen to play. */
+function isExtraAudio(a) {
+  return !!(a.disposition?.visual_impaired || a.disposition?.comment
+    || a.disposition?.descriptions || AD_TITLE_RE.test(a.tags?.title || ''));
+}
+
 /**
  * The audio track to play: not commentary or audio description, in the
  * preferred language if there is one, the default-flagged one otherwise.
@@ -166,8 +172,7 @@ function wantedLanguages() {
 function chooseAudio(streams, wanted = wantedLanguages()) {
   const audio = streams.filter(s => s.codec_type === 'audio');
   if (audio.length === 0) return null;
-  const plain = audio.filter(a => !(a.disposition?.visual_impaired || a.disposition?.comment
-    || a.disposition?.descriptions || AD_TITLE_RE.test(a.tags?.title || '')));
+  const plain = audio.filter(a => !isExtraAudio(a));
   const pool = plain.length ? plain : audio;
   const lang = (a) => normLang(a.tags?.language);
   for (const w of wanted) {
@@ -232,9 +237,15 @@ const isHdr = (v) => ['smpte2084', 'arib-std-b67'].includes(v?.color_transfer);
 
 /**
  * How this file can be made to play in a browser.
+ *
+ * An MP4 a browser could play as it is still gets a web version when it has
+ * more than one ordinary audio track: a browser only ever plays the first
+ * (Safari aside), so a wrongly flagged default — or a second language — could
+ * not be reached otherwise. `multiAudio: false` asks the narrower question of
+ * whether the file plays as it is, which it does meanwhile.
  * @returns {{ plan: 'direct'|'remux'|'transcode'|'unplayable', reason: string }}
  */
-function planFor({ streams, format }, wanted) {
+function planFor({ streams, format }, wanted, { multiAudio = true } = {}) {
   const video = mainVideo(streams);
   if (!video) return { plan: 'unplayable', reason: 'no video stream' };
   const audios = streams.filter(s => s.codec_type === 'audio');
@@ -253,7 +264,13 @@ function planFor({ streams, format }, wanted) {
   const audioOk = !audio || (['aac', 'mp3'].includes(audio.codec_name) && (audio.channels || 2) <= 6);
   const audioFirst = !audio || audio.index === audios[0].index;
 
-  if (isMp4 && audioOk && audioFirst) return { plan: 'direct', reason: 'plays as it is' };
+  if (isMp4 && audioOk && audioFirst) {
+    const ordinary = audios.filter(a => !isExtraAudio(a)).length;
+    if (multiAudio && ordinary > 1) {
+      return { plan: 'remux', reason: `${ordinary} audio tracks — a browser only plays the first` };
+    }
+    return { plan: 'direct', reason: 'plays as it is' };
+  }
   const reasons = [];
   if (!isMp4) reasons.push(`${container.split(',')[0] === 'matroska' ? 'MKV' : container.split(',')[0] || 'unknown'} container`);
   if (!audioOk) reasons.push(`${String(audio.codec_name).toUpperCase()} audio`);
@@ -658,6 +675,10 @@ async function encode(job, opts = {}) {
 function startWorker() {
   fs.mkdirSync(WEB_ROOT, { recursive: true });
   db.prepare("UPDATE media_files SET web_state = 'queued', web_progress = 0 WHERE web_state = 'encoding'").run();
+  try {
+    const n = replanStored();
+    if (n) log.info(`${n} file(s) with several audio tracks get a web version so a browser can switch between them`);
+  } catch (err) { console.error('[media] re-plan failed:', err.message); }
   setImmediate(pump);
   // Index what finished before playback existed, a batch at a time, so the
   // back catalogue becomes watchable without anyone pressing a button.
@@ -746,6 +767,38 @@ function clearWebVersions() {
   if (current) current.proc.kill('SIGKILL');
   for (const r of rows.all()) if (!r.original_removed_at) removeWebVersion(r.kind, r.item_id);
   db.prepare("UPDATE media_files SET web_state = 'none', web_progress = 0, web_error = NULL WHERE original_removed_at IS NULL").run();
+}
+
+/**
+ * Whether the original itself plays in a browser — true for an MP4 that only
+ * needs a web version to make its other audio tracks selectable. Such a file
+ * is served as it is until that web version is ready.
+ */
+function playsAsIs(row) {
+  if (!row || row.original_removed_at) return false;
+  if (row.plan === 'direct') return true;
+  if (row.plan !== 'remux') return false;
+  try { return planFor(JSON.parse(row.probe), wantedLanguages(), { multiAudio: false }).plan === 'direct'; } catch (_) { return false; }
+}
+
+/**
+ * Files planned before a rule changed keep their old plan, because a file is
+ * probed only once. Re-plan the ones a newer rule would treat differently —
+ * today, MP4s with several audio tracks that were played as they are — from
+ * the probe already stored. Returns how many changed.
+ */
+function replanStored() {
+  let changed = 0;
+  for (const r of rows.all().filter(x => x.plan === 'direct' && x.probe)) {
+    let info;
+    try { info = JSON.parse(r.probe); } catch (_) { continue; }
+    const p = planFor(info, wantedLanguages());
+    if (p.plan === 'direct') continue;
+    rows.update(r.kind, r.item_id, { plan: p.plan, plan_reason: p.reason, web_state: 'none', web_progress: 0, web_error: null });
+    if (settings.get('web_prepare') !== 'demand') enqueue(r.kind, r.item_id);
+    changed++;
+  }
+  return changed;
 }
 
 /** The playlist a player opens: master.m3u8, or index.m3u8 for an older web version. */
@@ -939,5 +992,5 @@ module.exports = {
   record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
-  normLang, langFromName, wantedLanguages, searchDisk, queue: () => rows.queue(),
+  normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),
 };

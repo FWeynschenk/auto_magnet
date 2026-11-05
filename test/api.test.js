@@ -55,7 +55,7 @@ test.before(async () => {
     settings.set('movie_path', ${JSON.stringify(lib.movies)});
     settings.set('shows_path', ${JSON.stringify(lib.series)});
     settings.set('web_encoder', 'x264');
-    db.prepare("INSERT INTO movies (id, title, year, status) VALUES (1, 'Direct Film', 2020, 'done'), (2, 'Remux Film', 2021, 'done'), (3, 'Missing Film', 2019, 'done')").run();
+    db.prepare("INSERT INTO movies (id, title, year, status) VALUES (1, 'Direct Film', 2020, 'done'), (2, 'Remux Film', 2021, 'done'), (3, 'Missing Film', 2019, 'done'), (4, 'Dual Audio Film', 2022, 'done')").run();
     db.prepare("INSERT INTO shows (id, tmdb_id, title) VALUES (1, 999, 'Hevc Show')").run();
     db.prepare("INSERT INTO episodes (id, show_id, season, episode, status) VALUES (1, 1, 1, 2, 'done')").run();
   `], { env, stdio: 'ignore' });
@@ -80,7 +80,7 @@ test('accounts and roles', { skip }, async (t) => {
     assert.equal((await call('POST', '/api/auth/setup', { username: 'x', password: 'correct horse' }, { jar: false })).status, 409);
   });
   await t.test('admin reaches the downloader API; a cross-origin write with the cookie is refused', async () => {
-    assert.equal((await call('GET', '/api/movies')).body.length, 3);
+    assert.equal((await call('GET', '/api/movies')).body.length, 4);
     assert.equal((await call('POST', '/api/movies', {}, { headers: { Origin: 'http://evil.example' } })).status, 403);
   });
   await t.test('viewer signs in as an app and gets a token, not a cookie', async () => {
@@ -93,7 +93,7 @@ test('accounts and roles', { skip }, async (t) => {
   await t.test('viewer can watch but not manage', async () => {
     assert.equal((await call('GET', '/api/movies', null, { tok: token })).status, 403);
     assert.equal((await call('GET', '/api/watch/admin/status', null, { tok: token })).status, 403);
-    assert.equal((await call('GET', '/api/watch/movies', null, { tok: token })).body.length, 3);
+    assert.equal((await call('GET', '/api/watch/movies', null, { tok: token })).body.length, 4);
   });
 });
 
@@ -153,6 +153,18 @@ test('playback', { skip }, async (t) => {
     const a1 = await call('GET', pb.url.replace('master.m3u8', 'a1/index.m3u8'), null, { tok: token, raw: true });
     assert.match(await a1.text(), /#EXT-X-ENDLIST/);
     assert.match(probeOf(path.join(dir, 'web', 'movie-2', 'a1', 'index.m3u8')), /aac/);
+  });
+  await t.test('an MP4 with two audio tracks plays at once, then switches to a web version with both', async () => {
+    const first = await call('GET', '/api/watch/items/movie/4', null, { tok: token });
+    assert.equal(first.body.playback.plan, 'remux');
+    assert.match(first.body.playback.reason, /2 audio tracks/);
+    assert.notEqual(first.body.playback.mode, 'preparing', 'never waits: the MP4 itself plays meanwhile');
+    const pb = await until(async () => {
+      const b = (await call('GET', '/api/watch/items/movie/4/playback', null, { tok: token })).body;
+      return b.mode === 'hls' && b.complete ? b : null;
+    });
+    const master = await (await call('GET', pb.url, null, { tok: token, raw: true })).text();
+    assert.equal(master.split('\n').filter(l => l.startsWith('#EXT-X-MEDIA:')).length, 2);
   });
   await t.test('HLS file names are whitelisted', async () => {
     for (const p of ['..%2F..%2Fapi.db', 'x/index.m3u8', '..%2F..%2Fweb/index.m3u8', 'v/..%2F..%2F..%2Fapi.db']) {

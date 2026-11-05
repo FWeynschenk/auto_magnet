@@ -1,0 +1,128 @@
+package com.automagnet.app
+
+import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+/** Server address and session, kept across launches. */
+object Prefs {
+    private lateinit var sp: SharedPreferences
+
+    fun init(ctx: Context) {
+        sp = ctx.getSharedPreferences("amagnet", Context.MODE_PRIVATE)
+    }
+
+    var server: String
+        get() = sp.getString("server", "") ?: ""
+        set(v) = sp.edit().putString("server", v.trim().trimEnd('/')).apply()
+
+    var token: String?
+        get() = sp.getString("token", null)
+        set(v) = sp.edit().putString("token", v).apply()
+
+    var username: String?
+        get() = sp.getString("username", null)
+        set(v) = sp.edit().putString("username", v).apply()
+
+    var wifiOnly: Boolean
+        get() = sp.getBoolean("wifi_only", true)
+        set(v) = sp.edit().putBoolean("wifi_only", v).apply()
+
+    fun string(key: String): String? = sp.getString(key, null)
+    fun putString(key: String, v: String?) = sp.edit().putString(key, v).apply()
+}
+
+class AuthException(msg: String) : IOException(msg)
+class ApiException(val status: Int, msg: String) : IOException(msg)
+
+object Api {
+    val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true }
+    private val JSON_TYPE = "application/json".toMediaType()
+
+    /**
+     * The session token goes only to the auto_magnet server — never to the
+     * image hosts posters come from.
+     */
+    private val auth = Interceptor { chain ->
+        val req = chain.request()
+        val token = Prefs.token
+        val server = Prefs.server
+        val ours = server.isNotEmpty() && req.url.toString().startsWith(server)
+        chain.proceed(if (ours && token != null) req.newBuilder().header("Authorization", "Bearer $token").build() else req)
+    }
+
+    val http: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .addInterceptor(auth)
+        .build()
+
+    fun abs(path: String) = if (path.startsWith("http")) path else Prefs.server + path
+
+    private suspend fun call(method: String, path: String, body: String? = null): String = withContext(Dispatchers.IO) {
+        val rb = body?.toRequestBody(JSON_TYPE) ?: if (method == "POST" || method == "PUT") "".toRequestBody(JSON_TYPE) else null
+        val req = Request.Builder().url(abs(path)).method(method, rb).build()
+        http.newCall(req).execute().use { res ->
+            val text = res.body?.string() ?: ""
+            if (res.code == 401) throw AuthException("Signed out — please sign in again")
+            if (!res.isSuccessful) {
+                val msg = runCatching { json.parseToJsonElement(text).let { (it as? kotlinx.serialization.json.JsonObject)?.get("error")?.toString()?.trim('"') } }.getOrNull()
+                throw ApiException(res.code, msg ?: "HTTP ${res.code}")
+            }
+            text
+        }
+    }
+
+    private suspend inline fun <reified T> get(path: String): T = json.decodeFromString(call("GET", path))
+
+    suspend fun login(server: String, username: String, password: String): LoginResponse {
+        Prefs.server = server
+        val body = json.encodeToString(mapOf("username" to username, "password" to password, "client" to "Android app"))
+        val r: LoginResponse = json.decodeFromString(call("POST", "/api/auth/login", body))
+        Prefs.token = r.token
+        Prefs.username = r.user.username
+        return r
+    }
+
+    suspend fun logout() {
+        runCatching { call("POST", "/api/auth/logout") }
+        Prefs.token = null
+    }
+
+    suspend fun home(): Home = get("/api/watch/home")
+    suspend fun movies(): List<Item> = get("/api/watch/movies")
+    suspend fun shows(): List<ShowSummary> = get("/api/watch/shows")
+    suspend fun show(id: Int): ShowDetail = get("/api/watch/shows/$id")
+    suspend fun item(kind: String, id: Int): ItemDetail = get("/api/watch/items/$kind/$id")
+    suspend fun playback(kind: String, id: Int): Playback = get("/api/watch/items/$kind/$id/playback")
+    suspend fun prepare(kind: String, id: Int): Playback = json.decodeFromString(call("POST", "/api/watch/items/$kind/$id/prepare"))
+
+    suspend fun setWatched(kind: String, id: Int, watched: Boolean): Progress =
+        json.decodeFromString(call("POST", "/api/watch/progress/$kind/$id/watched", """{"watched":$watched}"""))
+
+    suspend fun syncProgress(items: List<PendingProgress>): List<ProgressRow> =
+        json.decodeFromString(call("POST", "/api/watch/progress/sync", json.encodeToString(SyncRequest(items))))
+
+    /** Save a subtitle to a local file, for playing a download offline. */
+    suspend fun downloadTo(path: String, dest: File) = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(abs(path)).build()
+        http.newCall(req).execute().use { res ->
+            if (!res.isSuccessful) throw ApiException(res.code, "HTTP ${res.code}")
+            dest.parentFile?.mkdirs()
+            val tmp = File(dest.path + ".tmp")
+            tmp.outputStream().use { out -> res.body!!.byteStream().copyTo(out) }
+            tmp.renameTo(dest)
+        }
+    }
+}

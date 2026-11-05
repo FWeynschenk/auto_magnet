@@ -695,9 +695,18 @@ async function vttFor(media, subId) {
   if (!sub.available) throw Object.assign(new Error('Image-based subtitles can\'t be shown as text'), { status: 415 });
   const dir = subsDir(media.kind, media.item_id);
   fs.mkdirSync(dir, { recursive: true });
-  const out = path.join(dir, `${subId}.vtt`);
-  const srcMtime = fs.statSync(sub.file || media.path).mtimeMs;
-  try { if (fs.statSync(out).mtimeMs >= srcMtime) return out; } catch (_) {}
+  // The cache is named after what it was made from: a subtitle file's
+  // content (small, and re-timing it can leave size and timestamp unchanged —
+  // file times are only as fine as the kernel's coarse clock), or the video's
+  // size and mtime for an embedded track.
+  const version = sub.source === 'file'
+    ? crypto.createHash('sha1').update(fs.readFileSync(sub.file)).digest('hex').slice(0, 16)
+    : (() => { const st = fs.statSync(media.path); return `${st.size}-${Math.floor(st.mtimeMs)}`; })();
+  const out = path.join(dir, `${subId}.${version}.vtt`);
+  if (fs.existsSync(out)) return out;
+  for (const n of fs.readdirSync(dir)) {
+    if (n.startsWith(`${subId}.`) && n.endsWith('.vtt')) fs.rmSync(path.join(dir, n), { force: true });
+  }
 
   const tmp = `${out}.${process.pid}.tmp`;
   if (sub.source === 'file' && ['srt', 'vtt'].includes(sub.format)) {

@@ -2,6 +2,8 @@
 
 A self-hosted dashboard that automatically finds, scores, and downloads torrents for your movies and TV shows. It watches TMDB for new episodes, searches Prowlarr and EZTV, picks the best match, and pushes the magnet link straight to your Transmission instance — no manual searching required.
 
+Then it plays them: in the browser, or on Android with offline downloads, with accounts and per-person progress.
+
 ---
 
 ## Features
@@ -22,6 +24,10 @@ A self-hosted dashboard that automatically finds, scores, and downloads torrents
 - **Per-item settings** — override quality (4K / 1080p / 720p), auto vs manual mode per movie or show
 - **TMDB refresh** — re-sync episode air dates on demand and insert any episodes TMDB was missing
 - **Manual episode insert** — add a specific S/E directly when TMDB data is incomplete
+- **Watch in the browser** — anything that won't play in a browser is repackaged or converted (on the GPU when there is one) into a separate web version, so the original keeps seeding; playback starts while it converts
+- **Accounts** — admins run the downloader, viewers only watch; everyone has their own resume points, watched marks, "continue watching" and "next up"
+- **Subtitle sync** — fetched subtitles that weren't matched to your exact file are aligned to the audio, including frame-rate drift; the player can nudge, save, auto-sync or restore timing by hand
+- **Android app** — browse, stream, and download for offline viewing; progress made offline is merged when the phone is back online
 
 ---
 
@@ -113,7 +119,9 @@ docker compose up -d auto-magnet
 
 `http://host:62201`
 
-Go to **Settings** and verify the Transmission connection. You're ready.
+The first visit asks you to create the admin account (if `AMAGNET_TOKEN` is set in `.env`, it
+asks for that too, so nobody else on the network can claim the server first). Then go to
+**Settings** and verify the Transmission connection. You're ready.
 
 ---
 
@@ -171,6 +179,10 @@ All settings can be changed at runtime from the **Settings** page in the UI. The
 | `AMAGNET_PORT` | `62201` | Port the dashboard listens on |
 | `MEDIA_ROOT` | `/HDD0/Shared` | Media folder mounted into the container, at the same path, for finished-download checks and subtitles |
 | `AMAGNET_NO_SCHEDULER` | `0` | Set to `1` to start with the scheduler off — nothing is searched for or sent to Transmission, and `POST /api/scheduler/run` returns 503 |
+| `AMAGNET_TOKEN` | — | Optional. Required to create the first account, and accepted as an admin bearer token by scripts |
+| `WEB_ROOT` | `./web` | Host folder for web versions (mounted at `WEB_PATH=/web` in the container) |
+| `RENDER_GID` | — | Numeric `render` group id, for GPU encoding once enabled in `docker-compose.yml` |
+| `AMAGNET_TRUST_PROXY` | `0` | Set to `1` behind a reverse proxy, so client addresses and https come from its headers |
 
 Advanced settings (UI only, not in `.env`):
 
@@ -195,6 +207,10 @@ Advanced settings (UI only, not in `.env`):
 | Extra Transmission instances | — | Named servers, selectable per movie or show with "Download to" |
 | Blocked tags | — | Comma-separated keywords to always reject in torrent titles |
 | TMDB region | `US` | Region used for movie digital release dates |
+| Prepare web versions | as soon as checked | Or only when someone presses play |
+| Encoder | automatic | GPU (VAAPI) when available, else libx264 |
+| Converted video height | `1080p` | Converted video is scaled down to this; repackaged video is never touched |
+| Align fetched subtitles | on | Sync subtitles not matched by file hash to the audio |
 
 ---
 
@@ -461,6 +477,88 @@ restart. Entries older than 30 days are pruned at the end of each scheduler run.
 
 ---
 
+## Watching
+
+Everything that has finished downloading appears under **Watch** — for every account, admins
+and viewers alike. Add viewers in **Settings → Accounts**; they see only the Watch pages.
+
+### How a file gets to the browser
+
+Each finished file is probed once and given one of three plans:
+
+| Plan | When | What happens |
+|---|---|---|
+| **Direct** | MP4 with H.264 video and AAC/MP3 audio | Served as it is, with range requests |
+| **Repackage** | Video is fine, but the file is MKV, or the audio is AC-3/DTS/TrueHD, or the right audio track isn't the first one | Video copied untouched, audio converted to AAC. Takes about a minute, no quality loss |
+| **Convert** | HEVC, 10-bit, HDR (tone-mapped to SDR), MPEG-4 Part 2, VC-1 | Re-encoded to 8-bit H.264, scaled to at most 1080p (configurable) |
+
+Repackaged and converted versions are HLS, written to their own folder (`WEB_PATH`, the `./web`
+volume in Docker) — **the original is never touched**, so Transmission keeps seeding it. The
+playlist grows as the encode runs, so playback can begin after the first few seconds are done.
+
+By default a web version is built as soon as a download passes its file check. Set **Settings →
+Playback → Prepare web versions** to *Only when someone presses play* to save disk space; the
+first play then waits for the first segment. Budget roughly the size of the converted originals.
+
+Files downloaded before this existed are indexed in the background, 40 every half hour, or all
+at once with **Settings → Watch library → Scan library now**.
+
+### GPU encoding
+
+With an AMD or Intel GPU, encoding runs through VAAPI. In Docker, uncomment the `devices` and
+`group_add` lines in `docker-compose.yml` and set `RENDER_GID` in `.env` to
+`getent group render | cut -d: -f3`. **Settings → Watch library** shows which encoder is in use.
+A file the GPU fails on is retried once on the CPU.
+
+### Subtitles in the player
+
+Sidecar `.srt`/`.vtt`/`.ass` files named after the video (or in a release's `Subs/` folder) and
+embedded text tracks are offered; image-based tracks (PGS, VobSub) can't be shown as text. The
+first full track in your first subtitle language is on by default.
+
+The timing controls under the video shift subtitles live (`Z`/`X` also work). For a `.srt` beside
+the video you can then **Save to file**, **Auto-sync** it to the audio, or **Restore** the original
+— the first change keeps a `.bak` copy, which media players ignore.
+
+A subtitle fetched from OpenSubtitles by IMDb id rather than by file hash was timed against some
+other release, so it is aligned to the audio automatically: speech energy is cross-correlated
+with when cues are on screen, trying the common 23.976/24/25 fps mismatches too. The change is
+only applied when the match clearly stands out; otherwise the file is left alone and the log
+says why.
+
+### Progress
+
+Each account has its own resume points. Past 92% of the running time (or within the last two
+minutes) counts as watched. Under 30 seconds isn't a resume point. A report carries the time it
+was made, so progress uploaded late from a phone never overwrites newer progress from elsewhere.
+
+### Keyboard (player)
+
+`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `N` next episode
+
+### Android app
+
+The app is in `android/`. Every CI run builds it — download `auto_magnet-android` from the run's
+artifacts — or build it yourself with JDK 17+ and the Android SDK:
+
+```bash
+cd android && ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
+```
+
+Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an account. Then:
+
+- **Play** streams, resuming where that account left off, with subtitles; at the end of an
+  episode the next one starts.
+- **Download** keeps a copy on the phone: the original file for direct-play items, the web
+  version for the rest (available once it has finished converting). Subtitles come with it.
+  Downloads wait for Wi-Fi unless you switch that off on the Downloads tab.
+- Progress made offline is uploaded when the app is next opened online.
+
+Reaching the server away from home needs a route to it: a VPN such as WireGuard or Tailscale
+is the safe one. Exposing the port to the internet is not recommended.
+
+---
+
 ## Working on it
 
 ```bash
@@ -471,6 +569,12 @@ npm run dev            # server with --watch
 
 The server serves `client/dist`, so the SPA has to be built at least once before the dashboard
 renders. Rebuild it after any change under `client/src`.
+
+Tests: `npm test` (needs `ffmpeg`). They cover the plan and encode decisions, progress rules,
+subtitle parsing and sync against synthetic audio, and an end-to-end run of a real server
+against generated video — accounts, direct play, a real remux and transcode, subtitles and
+progress. The Android app's models are tested against captured server responses:
+`cd android && ./gradlew testDebugUnitTest`.
 
 Four documents, each with a different job:
 
@@ -553,6 +657,11 @@ auto_magnet/
 │   ├── paths.js          # Show folder names (Windows-safe) and path mapping
 │   ├── library.js        # Finding and moving show folders that don't match
 │   ├── transmission.js   # Transmission RPC client
+│   ├── auth.js           # Accounts, sessions, the API guard
+│   ├── media.js          # Watch library: locating files, play plans, encode queue, subtitles
+│   ├── progress.js       # Per-user resume points, continue watching, next up
+│   ├── subsync.js        # Aligning subtitles to the audio
+│   ├── subtitle-text.js  # SRT/WebVTT parsing and writing
 │   ├── sources/
 │   │   ├── prowlarr.js   # Multi-indexer search
 │   │   ├── eztv.js       # Show torrent fallback
@@ -565,14 +674,18 @@ auto_magnet/
 │       ├── settings.js
 │       ├── timeline.js
 │       ├── log.js
-│       └── library.js
+│       ├── library.js
+│       ├── auth.js       # Sign-in, setup, accounts
+│       └── watch.js      # Browsing, streaming, subtitles, progress
 ├── client/               # Vue 3 frontend (Vite)
 │   ├── public/
 │   │   └── favicon.png
 │   ├── src/
-│   │   ├── views/        # Movies, Shows, Activity, Settings
+│   │   ├── views/        # Movies, Shows, Activity, Settings, Login, Watch, ShowWatch, Player
 │   │   └── components/
 │   └── dist/             # Built SPA — served by Express in production
+├── android/              # Android app (Kotlin, Compose, Media3)
+├── test/                 # node --test suites
 ├── deploy/
 │   └── auto-magnet.service   # systemd unit for a bare-metal host
 ├── .env.example

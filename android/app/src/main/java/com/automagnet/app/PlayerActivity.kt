@@ -1,0 +1,208 @@
+@file:OptIn(UnstableApi::class)
+
+package com.automagnet.app
+
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.net.Uri
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
+import androidx.annotation.OptIn
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.offline.Download
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
+
+/**
+ * Full-screen playback. A finished download plays from the device; anything
+ * else streams. The position is saved every ten seconds and whenever playback
+ * stops, to ProgressStore first and the server when it can be reached.
+ */
+class PlayerActivity : Activity() {
+    companion object {
+        fun start(ctx: Context, kind: String, id: Int) {
+            ctx.startActivity(Intent(ctx, PlayerActivity::class.java).putExtra("kind", kind).putExtra("id", id))
+        }
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var view: PlayerView
+    private lateinit var message: TextView
+    private var player: ExoPlayer? = null
+    private var kind = ""
+    private var id = 0
+    private var duration: Double? = null
+    private var next: Item? = null
+    private var lastSaved = -1.0
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        kind = intent.getStringExtra("kind") ?: return finish()
+        id = intent.getIntExtra("id", 0)
+
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        view = PlayerView(this).apply {
+            setShowSubtitleButton(true)
+            setShowNextButton(false)
+            setShowPreviousButton(false)
+            keepScreenOn = true
+        }
+        message = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setPadding(48, 48, 48, 48)
+            text = "Loading…"
+        }
+        root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        root.addView(message, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        setContentView(root)
+        immersive()
+        scope.launch { load() }
+    }
+
+    private fun immersive() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private suspend fun load() {
+        val dl = Downloads.get(kind, id)
+        if (dl != null && dl.state == Download.STATE_COMPLETED) {
+            val meta = Downloads.meta(dl)
+            duration = meta?.item?.duration
+            // Online, find the next episode in the background; offline, just play.
+            scope.launch { next = runCatching { Api.item(kind, id).next }.getOrNull() }
+            val subs = meta?.subtitles?.map { s ->
+                MediaItem.SubtitleConfiguration.Builder(Uri.fromFile(File(s.path)))
+                    .setMimeType(MimeTypes.TEXT_VTT).setLanguage(s.lang).setLabel(s.label).setId(s.id)
+                    .setSelectionFlags(if (s.default) C.SELECTION_FLAG_DEFAULT else 0).build()
+            } ?: emptyList()
+            val resume = ProgressStore.resumeFor(kind, id, null)
+            play(dl.request.uri, dl.request.mimeType, subs, resume, meta?.subtitles?.firstOrNull { it.default }?.lang)
+            return
+        }
+
+        val detail = try {
+            Api.item(kind, id)
+        } catch (e: Exception) {
+            message.text = "Can't reach the server: ${e.message}"
+            return
+        }
+        duration = detail.duration
+        next = detail.next
+        var pb = detail.playback
+        if (pb.mode == "unavailable") { message.text = pb.error ?: "This can't be played"; return }
+        // Converting on the server: wait for the first part, then start — the
+        // rest keeps arriving while it plays.
+        while (pb.mode == "preparing") {
+            if (pb.state == "failed") { message.text = "The server couldn't convert this:\n${pb.error ?: ""}"; return }
+            val pct = ((pb.progress ?: 0.0) * 100).toInt()
+            message.text = if (pb.state == "queued") "Waiting for the server to start converting…" else "Preparing for playback… $pct%\n${pb.reason ?: ""}"
+            delay(2000)
+            pb = runCatching { Api.playback(kind, id) }.getOrElse { pb }
+        }
+        val subs = detail.subtitles.filter { it.available && it.url != null }.map { s ->
+            MediaItem.SubtitleConfiguration.Builder(Uri.parse(Api.abs(s.url!!)))
+                .setMimeType(MimeTypes.TEXT_VTT).setLanguage(s.lang).setLabel(s.label).setId(s.id)
+                .setSelectionFlags(if (s.default) C.SELECTION_FLAG_DEFAULT else 0).build()
+        }
+        val resume = ProgressStore.resumeFor(kind, id, detail.progress)
+        play(Uri.parse(Api.abs(pb.url!!)), if (pb.mode == "hls") MimeTypes.APPLICATION_M3U8 else null, subs, resume,
+            detail.subtitles.firstOrNull { it.default }?.lang)
+    }
+
+    private fun play(uri: Uri, mime: String?, subs: List<MediaItem.SubtitleConfiguration>, resumeAt: Double, subLang: String?) {
+        message.visibility = View.GONE
+        val p = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(Downloads.playbackFactory(this)))
+            .build()
+        player = p
+        view.player = p
+        if (subLang != null) {
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setPreferredTextLanguage(subLang).build()
+        }
+        p.setMediaItem(
+            MediaItem.Builder().setUri(uri).setMimeType(mime).setSubtitleConfigurations(subs).build(),
+            (resumeAt * 1000).toLong(),
+        )
+        p.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    save(force = true, ended = true)
+                    next?.let { n -> start(this@PlayerActivity, n.kind, n.id); finish() }
+                }
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) save(force = true) }
+            override fun onPlayerError(error: PlaybackException) {
+                message.visibility = View.VISIBLE
+                message.text = "Playback failed: ${error.errorCodeName}"
+            }
+        })
+        p.prepare()
+        p.playWhenReady = true
+        handler.post(ticker)
+    }
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            save(force = false)
+            handler.postDelayed(this, 10_000)
+        }
+    }
+
+    private fun save(force: Boolean, ended: Boolean = false) {
+        val p = player ?: return
+        val pos = p.currentPosition / 1000.0
+        val dur = p.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.let { it / 1000.0 } ?: duration
+        if (pos <= 0 || (!force && kotlin.math.abs(pos - lastSaved) < 5)) return
+        lastSaved = pos
+        ProgressStore.record(kind, id, if (ended && dur != null) dur else pos, dur, if (ended) true else null)
+        scope.launch(Dispatchers.IO) { ProgressStore.sync() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        save(force = true)
+        player?.pause()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(ticker)
+        save(force = true)
+        player?.release()
+        player = null
+        // Let the last upload finish even though the screen is gone.
+        CoroutineScope(Dispatchers.IO).launch { ProgressStore.sync() }
+        scope.cancel()
+        super.onDestroy()
+    }
+}

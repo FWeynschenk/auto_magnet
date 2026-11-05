@@ -274,10 +274,44 @@
       </section>
 
       <section>
-        <h2>Dashboard access</h2>
+        <h2>Playback</h2>
+        <p class="section-note">
+          Files a browser can't play are repackaged (MKV, AC-3/DTS audio — fast, video untouched) or
+          converted (HEVC, 10-bit, HDR) into a separate web version. The original keeps seeding.
+        </p>
         <div class="fields">
-          <label class="span2">API token <span class="hint">only needed if the server runs with AMAGNET_TOKEN set</span>
-            <input v-model="apiToken" type="password" placeholder="leave blank if auth is disabled" />
+          <label>Prepare web versions
+            <select v-model="form.web_prepare">
+              <option value="complete">As soon as a download is checked</option>
+              <option value="demand">Only when someone presses play</option>
+            </select>
+          </label>
+          <label>Encoder
+            <select v-model="form.web_encoder">
+              <option value="auto">Automatic (GPU if available)</option>
+              <option value="vaapi">GPU — VAAPI (AMD / Intel)</option>
+              <option value="x264">CPU — libx264</option>
+            </select>
+          </label>
+          <label>Converted video height
+            <select v-model="form.web_max_height">
+              <option value="720">720p</option>
+              <option value="1080">1080p</option>
+              <option value="2160">2160p (keep 4K)</option>
+            </select>
+          </label>
+          <label class="check-label span2">
+            <input v-model="autosyncBool" type="checkbox" class="checkbox" />
+            Align fetched subtitles to the audio when they weren't matched to the exact file
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <h2>API token</h2>
+        <div class="fields">
+          <label class="span2">Token <span class="hint">only for scripts — the server's AMAGNET_TOKEN. Signing in replaces it in the browser.</span>
+            <input v-model="apiToken" type="password" placeholder="leave blank" />
           </label>
         </div>
       </section>
@@ -308,6 +342,9 @@
       </div>
     </form>
 
+    <PlaybackPanel />
+    <UsersPanel />
+
     <div class="run-section">
       <div class="run-header">
         <div>
@@ -327,6 +364,8 @@
 import { ref, computed, onMounted } from 'vue';
 import { settings as api, scheduler, library, getToken, setToken } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
+import PlaybackPanel from '../components/PlaybackPanel.vue';
+import UsersPanel from '../components/UsersPanel.vue';
 
 const apiToken = ref(getToken());
 
@@ -405,6 +444,10 @@ function addInstance() {
 
 // Stored as '0'/'1' like the other toggles; anything but '0' means on, so an
 // install that has never saved this setting counts as enabled.
+const autosyncBool = computed({
+  get: () => form.value.subtitle_autosync !== '0',
+  set: (v) => { form.value.subtitle_autosync = v ? '1' : '0'; },
+});
 const postprocessBool = computed({
   get: () => form.value.postprocess_enabled !== '0',
   set: (v) => { form.value.postprocess_enabled = v ? '1' : '0'; },

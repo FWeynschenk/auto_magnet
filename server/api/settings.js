@@ -19,6 +19,7 @@ const ALLOWED_KEYS = [
   'transmission_extra',
   'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'media_path_map',
   'opensubtitles_api_key', 'opensubtitles_username', 'opensubtitles_password',
+  'web_prepare', 'web_encoder', 'web_max_height', 'subtitle_autosync',
 ];
 
 const MASK = '••••••••';

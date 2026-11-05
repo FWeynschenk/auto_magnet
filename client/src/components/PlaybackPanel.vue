@@ -1,0 +1,107 @@
+<template>
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Watch library</h2>
+      <button class="btn-ghost btn-sm" :disabled="busy" @click="refresh">Refresh</button>
+    </div>
+    <div v-if="!st" class="muted">Loading…</div>
+    <template v-else>
+      <div class="stats">
+        <div><span class="k">Encoder</span> {{ st.encoder === 'vaapi' ? 'GPU (VAAPI)' : 'CPU (libx264)' }}</div>
+        <div><span class="k">Web versions</span> {{ size(st.cacheBytes) }} <span class="muted">in {{ st.webRoot }}</span></div>
+        <div><span class="k">Plays as is</span> {{ count('direct') }}</div>
+        <div><span class="k">Repackaged</span> {{ count('remux', 'ready') }} / {{ count('remux') }}</div>
+        <div><span class="k">Converted</span> {{ count('transcode', 'ready') }} / {{ count('transcode') }}</div>
+        <div v-if="st.unindexed"><span class="k">Not yet indexed</span> {{ st.unindexed }}</div>
+      </div>
+
+      <div v-if="st.queue.length" class="queue">
+        <div class="k">Queue</div>
+        <div v-for="q in st.queue" :key="q.kind + q.item_id" class="q">
+          <span class="qt">{{ q.title }}</span>
+          <span class="muted">{{ q.plan }}</span>
+          <span v-if="q.web_state === 'encoding'" class="pct">{{ Math.round(q.web_progress * 100) }}%</span>
+          <span v-else class="muted">queued</span>
+        </div>
+      </div>
+
+      <div v-if="st.failed.length" class="queue">
+        <div class="k err">Failed</div>
+        <div v-for="f in st.failed" :key="f.kind + f.item_id" class="q">
+          <span class="qt">{{ f.kind }} #{{ f.item_id }}</span>
+          <span class="muted small">{{ f.web_error }}</span>
+          <button class="btn-ghost btn-sm" @click="retry(f)">Retry</button>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-ghost btn-sm" :disabled="busy" @click="scan">{{ busy === 'scan' ? 'Scanning…' : 'Scan library now' }}</button>
+        <button class="btn-ghost btn-sm danger" :disabled="busy" @click="clear">Delete all web versions</button>
+      </div>
+      <p class="muted small">
+        Originals are never changed — web versions live in their own folder, so torrents keep seeding.
+        Deleted web versions are rebuilt when needed.
+      </p>
+    </template>
+  </section>
+</template>
+
+<script setup>
+import { ref, onMounted, onUnmounted } from 'vue';
+import { watch } from '../api.js';
+import { notifyError, notifySuccess } from '../toast.js';
+
+const st = ref(null);
+const busy = ref('');
+let timer = null;
+
+const size = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+const count = (plan, state) => (st.value?.counts || [])
+  .filter(c => c.plan === plan && (!state || c.web_state === state)).reduce((a, c) => a + c.n, 0);
+
+async function refresh() {
+  try { st.value = await watch.adminStatus(); } catch (err) { notifyError(err.message); }
+}
+
+async function scan() {
+  busy.value = 'scan';
+  try {
+    const r = await watch.scan();
+    notifySuccess(`Checked ${r.checked}, found ${r.found}${r.removed ? `, removed ${r.removed} stale` : ''}`);
+    await refresh();
+  } catch (err) { notifyError(err.message); }
+  finally { busy.value = ''; }
+}
+
+async function clear() {
+  if (!window.confirm('Delete every web version? They are rebuilt the next time each item is played (or straight away, if preparing on completion).')) return;
+  busy.value = 'clear';
+  try { await watch.clear(); await refresh(); } catch (err) { notifyError(err.message); }
+  finally { busy.value = ''; }
+}
+
+async function retry(f) {
+  try { await watch.reencode(f.kind, f.item_id); await refresh(); } catch (err) { notifyError(err.message); }
+}
+
+onMounted(() => { refresh(); timer = setInterval(() => { if (st.value?.queue.length) refresh(); }, 5000); });
+onUnmounted(() => clearInterval(timer));
+</script>
+
+<style scoped>
+.panel { max-width: 640px; margin-top: 32px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+h2 { font-size: 15px; font-weight: 600; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 13px; }
+.k { color: var(--muted); font-size: 12px; margin-right: 6px; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+.err { color: var(--red); }
+.queue { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
+.q { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pct { color: var(--accent); font-variant-numeric: tabular-nums; }
+.actions { display: flex; gap: 8px; margin: 14px 0 8px; }
+.danger { color: var(--red); }
+@media (max-width: 640px) { .stats { grid-template-columns: 1fr; } }
+</style>

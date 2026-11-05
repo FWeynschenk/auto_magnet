@@ -20,33 +20,30 @@ if (corsOrigin) {
 
 app.use(express.json());
 
-// Optional shared-secret auth. Set AMAGNET_TOKEN to require it; when unset the
-// API stays open (unchanged behaviour for existing LAN-only installs).
-const TOKEN = process.env.AMAGNET_TOKEN;
-if (TOKEN) {
-  app.use('/api', (req, res, next) => {
-    const provided = req.get('X-Auth-Token')
-      || (req.get('Authorization') || '').replace(/^Bearer\s+/i, '')
-      || req.query.token;
-    if (provided === TOKEN) return next();
-    res.set('WWW-Authenticate', 'Bearer');
-    res.status(401).json({ error: 'Unauthorized' });
-  });
-  console.log('auto_magnet: API token auth enabled');
-} else {
-  console.warn('auto_magnet: no AMAGNET_TOKEN set — API is unauthenticated');
-}
+// Behind a reverse proxy (Caddy, nginx) set AMAGNET_TRUST_PROXY=1 so client
+// addresses — used to throttle password guessing — and https are read from
+// the proxy's headers instead of being the proxy's own.
+if (process.env.AMAGNET_TRUST_PROXY === '1') app.set('trust proxy', true);
 
-// API routes
-app.use('/api/movies',   require('./api/movies'));
-app.use('/api/shows',    require('./api/shows'));
-app.use('/api/search',   require('./api/search'));
-app.use('/api/settings', require('./api/settings'));
-app.use('/api/timeline', require('./api/timeline'));
-app.use('/api/log',      require('./api/log'));
-app.use('/api/library',  require('./api/library'));
+const auth = require('./auth');
 
-app.get('/api/status', async (_req, res) => {
+// Accounts. /api/auth/* handles its own access (login has to work signed out);
+// every other API route needs a signed-in user, and everything that can reach
+// Transmission or change settings needs an admin.
+app.use('/api/auth', require('./api/auth'));
+app.use('/api', auth.requireUser);
+app.use('/api/watch', require('./api/watch'));
+
+const admin = auth.requireAdmin;
+app.use('/api/movies',   admin, require('./api/movies'));
+app.use('/api/shows',    admin, require('./api/shows'));
+app.use('/api/search',   admin, require('./api/search'));
+app.use('/api/settings', admin, require('./api/settings'));
+app.use('/api/timeline', admin, require('./api/timeline'));
+app.use('/api/log',      admin, require('./api/log'));
+app.use('/api/library',  admin, require('./api/library'));
+
+app.get('/api/status', admin, async (_req, res) => {
   const { testConnection } = require('./transmission');
   res.json(await testConnection());
 });
@@ -60,7 +57,7 @@ app.get('/api/status', async (_req, res) => {
 // throwaway or test boot and nothing can reach Transmission automatically.
 const SCHEDULER_DISABLED = process.env.AMAGNET_NO_SCHEDULER === '1';
 
-app.post('/api/scheduler/run', (_req, res) => {
+app.post('/api/scheduler/run', admin, (_req, res) => {
   // The manual trigger has to honour the flag too, or the UI walks straight
   // around it with one click.
   if (SCHEDULER_DISABLED) {
@@ -91,6 +88,13 @@ app.get('*', (_req, res) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`auto_magnet v2 on ${HOST}:${PORT}`);
+  if (auth.users.count() === 0) {
+    console.warn('auto_magnet: no accounts yet — open the dashboard to create the admin account');
+  }
+  auth.sessions.prune();
+  // Encoding web versions is local work and never touches Transmission, so it
+  // runs even with the scheduler switched off.
+  require('./media').startWorker();
   if (SCHEDULER_DISABLED) {
     console.warn('auto_magnet: AMAGNET_NO_SCHEDULER=1 — scheduler is OFF, nothing will be grabbed');
     return;

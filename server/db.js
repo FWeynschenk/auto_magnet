@@ -71,6 +71,62 @@ db.exec(`
     message     TEXT NOT NULL
   );
 
+  -- Accounts. 'admin' runs the downloader; 'viewer' can only watch.
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'viewer',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT
+  );
+
+  -- Only a hash of each session token is stored, so a copy of the database
+  -- doesn't hand out live logins.
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash   TEXT PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label        TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at   TEXT NOT NULL
+  );
+
+  -- Where each finished item lives on disk, what it takes to play it in a
+  -- browser, and the state of its web version.
+  CREATE TABLE IF NOT EXISTS media_files (
+    kind         TEXT    NOT NULL,           -- 'movie' | 'episode'
+    item_id      INTEGER NOT NULL,
+    path         TEXT    NOT NULL,           -- as this process opens it
+    size         INTEGER,
+    mtime        INTEGER,
+    duration     REAL,
+    probe        TEXT,                       -- ffprobe JSON (streams + format)
+    plan         TEXT,                       -- direct | remux | transcode | unplayable
+    plan_reason  TEXT,
+    web_state    TEXT    NOT NULL DEFAULT 'none', -- none | queued | encoding | ready | failed
+    web_priority INTEGER NOT NULL DEFAULT 0,
+    web_progress REAL    NOT NULL DEFAULT 0,
+    web_error    TEXT,
+    web_encoder  TEXT,
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (kind, item_id)
+  );
+
+  -- Per-user resume points. updated_at is the client's clock for the moment
+  -- the position was reached, so progress made offline on a phone can be
+  -- merged later without overwriting something newer.
+  CREATE TABLE IF NOT EXISTS playback_progress (
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind       TEXT    NOT NULL,
+    item_id    INTEGER NOT NULL,
+    position   REAL    NOT NULL DEFAULT 0,
+    duration   REAL,
+    watched    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT    NOT NULL,
+    PRIMARY KEY (user_id, kind, item_id)
+  );
+
   CREATE TABLE IF NOT EXISTS tmdb_season_cache (
     tmdb_id       INTEGER NOT NULL,
     season_number INTEGER NOT NULL,
@@ -135,6 +191,13 @@ const migrations = [
   // already in Transmission. Only an 'added' one may ever be deleted.
   'ALTER TABLE movies   ADD COLUMN torrent_origin TEXT',
   'ALTER TABLE episodes ADD COLUMN torrent_origin TEXT',
+  // How a fetched subtitle was matched ('hash' is timed to the exact file;
+  // anything else may drift and is worth syncing to the audio).
+  'ALTER TABLE movies   ADD COLUMN subs_match TEXT',
+  'ALTER TABLE episodes ADD COLUMN subs_match TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_progress_user ON playback_progress(user_id, updated_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_media_web_state ON media_files(web_state)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -213,6 +276,16 @@ const defaultSettings = {
   // Only needed when auto_magnet sees the media under a different path than
   // Transmission does, e.g. '/HDD0/Shared=>/media'. Semicolon-separated.
   media_path_map:            '',
+  // ── Playback ──
+  // 'complete': build a browser-playable version as soon as a download is
+  // checked. 'demand': only when someone presses play.
+  web_prepare:               'complete',
+  // 'auto' uses the GPU (VAAPI) when /dev/dri is available, else libx264.
+  web_encoder:               'auto',
+  // Re-encoded video is scaled down to this height; copied video is never touched.
+  web_max_height:            '1080',
+  // Fetched subtitles not matched by file hash are aligned to the audio.
+  subtitle_autosync:         '1',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -462,4 +535,4 @@ const settings = {
   },
 };
 
-module.exports = { db, movies, shows, episodes, settings, seasonCache, logs, publicRow };
+module.exports = { db, movies, shows, episodes, settings, seasonCache, logs, publicRow, DB_PATH };

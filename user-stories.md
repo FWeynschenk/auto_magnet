@@ -609,3 +609,23 @@ come from the real code paths: a cam release filtered out, a cached list reused,
 language was unreachable there. An MP4 with more than one ordinary (non-commentary, non-AD) track is
 now planned as a remux; `playsAsIs()` keeps serving the original until the web version is ready,
 and `replanStored()` re-plans existing rows from their stored probe at startup.
+
+## Implementation notes (2026-11-05): faster conversions
+
+**Why it was slow.** With VAAPI only the encode ran on the GPU. ffmpeg decoded on the CPU (4K
+HEVC 10-bit is heavy), scaled 4K → 1080p with swscale (single-threaded in 5.1) and uploaded each
+frame, so the encoder waited on the CPU. The queue also ran one job at a time, so each repackage
+(a minute) waited behind every conversion (an hour or more) queued before it.
+
+**What changed.** `gpuDecodable()` picks GPU decoding for HEVC/AV1/VP9/MPEG-2 (and 8-bit H.264)
+in 4:2:0 8/10-bit. SDR becomes `scale_vaapi=w=…:h=…:format=nv12` with the frames never leaving
+the GPU. HDR is `hwdownload` → `zscale` (resize while going linear) → Hable → `hwupload`. The
+width is computed from the probe, not `-2`, so the scaler always gets an even width. Failures
+step down: GPU decode → CPU decode + GPU encode → libx264, and three GPU decode failures in a row
+switch it off until restart. The queue has two lanes, `remux` and `transcode`, each one job at a
+time.
+
+**Measured** (ffmpeg 5.1, Docker, 16 threads, synthetic 4K HDR10): decode alone 151 fps, the
+CPU tone-map chain about 48–52 fps whether zimg or swscale does the resize. On the server's CPU, tone
+mapping is the ceiling for HDR. libplacebo on Vulkan would lift it, but can't be tested without
+the GPU.

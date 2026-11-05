@@ -141,6 +141,47 @@ test('4K HEVC is scaled down and encoded on the GPU', () => {
   assert.match(x[x.indexOf('-vf') + 1], /^scale=-2:1080,format=nv12,hwupload$/);
 });
 
+test('with GPU decoding, frames stay on the GPU from decoder to encoder', () => {
+  const uhd = v({ codec_name: 'hevc', pix_fmt: 'yuv420p10le', width: 3840, height: 2160 });
+  const x = args({ plan: 'transcode', encoder: 'vaapi', hwDecode: true, info: { streams: [uhd, a()] } });
+  const at = (s) => x.indexOf(s);
+  assert.ok(at('-init_hw_device') < at('-hwaccel') && at('-hwaccel') < at('-i'), 'device, then decoder, then input');
+  assert.deepEqual(x.slice(at('-hwaccel'), at('-hwaccel') + 6),
+    ['-hwaccel', 'vaapi', '-hwaccel_device', 'va', '-hwaccel_output_format', 'vaapi']);
+  assert.equal(x[at('-vf') + 1], 'scale_vaapi=w=1920:h=1080:format=nv12', 'scaled and made 8-bit on the GPU');
+  assert.ok(x.includes('h264_vaapi'));
+
+  const hd = args({ plan: 'transcode', encoder: 'vaapi', hwDecode: true,
+    info: { streams: [v({ codec_name: 'hevc', width: 1920, height: 1080 }), a()] } });
+  assert.equal(hd[hd.indexOf('-vf') + 1], 'scale_vaapi=format=nv12', 'no resize when it fits');
+
+  // A 2.39:1 film keeps its shape, with an even width.
+  const scope = args({ plan: 'transcode', encoder: 'vaapi', hwDecode: true,
+    info: { streams: [v({ codec_name: 'av1', width: 3840, height: 1606 }), a()] } });
+  assert.equal(scope[scope.indexOf('-vf') + 1], 'scale_vaapi=w=2582:h=1080:format=nv12');
+});
+
+test('GPU-decoded HDR comes down to the CPU once, for tone mapping at 1080p', () => {
+  const hdr = v({ codec_name: 'hevc', pix_fmt: 'yuv420p10le', width: 3840, height: 2160, color_transfer: 'smpte2084' });
+  const x = args({ plan: 'transcode', encoder: 'vaapi', hwDecode: true, info: { streams: [hdr, a()] } });
+  assert.equal(x[x.indexOf('-vf') + 1], 'hwdownload,format=p010le,zscale=w=1920:h=1080:t=linear:npl=100,'
+    + 'format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=nv12,hwupload');
+});
+
+test('what the GPU cannot decode is decoded on the CPU, and only encoded on the GPU', () => {
+  const hi10 = v({ codec_name: 'h264', pix_fmt: 'yuv420p10le', width: 1920 });
+  assert.equal(media.gpuDecodable(hi10), false, 'no hardware decodes 10-bit H.264');
+  assert.equal(media.gpuDecodable(v({ codec_name: 'hevc', pix_fmt: 'yuv422p10le', width: 1920 })), false);
+  assert.equal(media.gpuDecodable(v({ codec_name: 'hevc' })), false, 'width unknown: cannot size the scaler');
+  assert.equal(media.gpuDecodable(v({ codec_name: 'hevc', pix_fmt: 'yuv420p10le', width: 1920 })), true);
+  const x = args({ plan: 'transcode', encoder: 'vaapi', hwDecode: true, info: { streams: [hi10, a()] } });
+  assert.ok(!x.includes('-hwaccel'));
+  assert.equal(x[x.indexOf('-vf') + 1], 'format=nv12,hwupload');
+  const cpu = args({ plan: 'transcode', encoder: 'x264', hwDecode: true,
+    info: { streams: [v({ codec_name: 'hevc', width: 1920 }), a()] } });
+  assert.ok(!cpu.includes('-hwaccel') && cpu.includes('libx264'), 'libx264 never decodes on the GPU');
+});
+
 test('HDR is tone-mapped; CPU path uses libx264 with forced keyframes per segment', () => {
   const x = args({ plan: 'transcode', encoder: 'x264', info: { streams: [v({ codec_name: 'hevc', color_transfer: 'smpte2084' }), a()] } });
   assert.ok(x.includes('libx264'));

@@ -19,6 +19,12 @@ These shipped but can only be confirmed on the real box.
   machine has no GPU — so the VAAPI argument set (`-init_hw_device`, `format=nv12,hwupload`,
   `h264_vaapi -rc_mode VBR`) runs for the first time on the RX 6600. A failure falls back to the
   CPU per file and is logged.
+- **GPU decoding.** New: `-hwaccel vaapi -hwaccel_output_format vaapi` with `scale_vaapi`, and for
+  HDR `hwdownload,format=p010le` into the zimg tone map. The CPU half was run on the image's ffmpeg
+  5.1; the GPU half never ran here. Check the Activity log after a few conversions: *(transcode,
+  GPU)* with a speed, not *GPU decoding failed 3 times in a row*. If HDR files dominate and stay
+  slow, the next step is tone mapping on the GPU through libplacebo (in Debian's ffmpeg build;
+  needs `mesa-vulkan-drivers` in the image).
 - **Web version disk use.** Roughly the size of what gets converted. Watch `WEB_ROOT` for a
   week; switch to *Only when someone presses play* if it grows too fast.
 - **Multi-track web versions on the real ffmpeg.** Every audio track is now an HLS rendition

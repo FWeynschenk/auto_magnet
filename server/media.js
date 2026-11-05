@@ -74,9 +74,10 @@ const rows = {
                 WHERE kind = ? AND item_id = ?`).run(...cols.map(c => data[c]), kind, id);
   },
   remove: (kind, id) => db.prepare('DELETE FROM media_files WHERE kind = ? AND item_id = ?').run(kind, id),
-  nextQueued: () => db.prepare(
-    "SELECT * FROM media_files WHERE web_state = 'queued' ORDER BY web_priority DESC, updated_at LIMIT 1"
-  ).get(),
+  /** The next job for a lane: 'remux' or 'transcode'. */
+  nextQueued: (plan) => db.prepare(
+    "SELECT * FROM media_files WHERE web_state = 'queued' AND plan = ? ORDER BY web_priority DESC, updated_at LIMIT 1"
+  ).get(plan),
   queue: () => db.prepare(
     "SELECT kind, item_id, web_state, web_progress, web_priority, plan FROM media_files WHERE web_state IN ('queued','encoding') ORDER BY web_state DESC, web_priority DESC, updated_at"
   ).all(),
@@ -463,7 +464,7 @@ const webDir  = (kind, id) => path.join(WEB_ROOT, `${kind}-${id}`);
 const subsDir = (kind, id) => path.join(WEB_ROOT, 'subs', `${kind}-${id}`);
 
 function removeWebVersion(kind, id) {
-  if (current && current.kind === kind && current.id === id) current.proc.kill('SIGKILL');
+  for (const job of running.values()) if (job.kind === kind && job.id === id) job.proc.kill('SIGKILL');
   fs.rmSync(webDir(kind, id), { recursive: true, force: true });
   fs.rmSync(subsDir(kind, id), { recursive: true, force: true });
 }
@@ -504,18 +505,47 @@ function bitrateFor(height) {
 }
 
 /**
+ * Whether the GPU can decode this video too, not just encode the result —
+ * HEVC, AV1, VP9 and MPEG-2 in 8 or 10-bit 4:2:0 (AMD since Polaris/RDNA,
+ * Intel since Kaby Lake). 10-bit H.264 and 4:2:2/4:4:4 have no hardware
+ * decoder anywhere; those are decoded on the CPU and only encoded on the GPU.
+ */
+function gpuDecodable(video) {
+  return !!video?.width && !!video?.height
+    && ['hevc', 'av1', 'vp9', 'mpeg2video', 'h264'].includes(video.codec_name)
+    && (video.codec_name === 'h264' ? ['yuv420p', 'yuvj420p'] : ['yuv420p', 'yuvj420p', 'yuv420p10le'])
+      .includes(video.pix_fmt);
+}
+
+/** Width and height to scale to, or null when the video already fits. */
+function scaledSize(video, maxHeight) {
+  if (!video.height || video.height <= maxHeight || !video.width) return null;
+  return { w: Math.round(video.width * maxHeight / video.height / 2) * 2, h: maxHeight };
+}
+
+/** HDR → SDR (Hable), on the CPU: zimg, threaded per slice in ffmpeg 5.1. */
+const TONEMAP = ['format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv'];
+
+/**
  * ffmpeg arguments for one web version. Pure, so the decisions in it can be
  * tested without running an encode.
+ *
+ * `hwDecode` (VAAPI only) keeps the frames on the GPU from decoder to encoder,
+ * scaling there too. Decoding 4K HEVC and scaling it down on the CPU are what
+ * make a GPU encode slow otherwise: the encoder waits on them. HDR still comes
+ * down to the CPU for tone mapping — at 1080p, after the GPU scaled it.
  */
-function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted }) {
+function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted, hwDecode = false }) {
   const video = mainVideo(info.streams);
   const audio = audioRenditions(info.streams, wanted);
   const args = ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
   const transcode = plan === 'transcode';
+  const gpuDecode = transcode && encoder === 'vaapi' && hwDecode && gpuDecodable(video);
 
   if (transcode && encoder === 'vaapi') {
     args.push('-init_hw_device', `vaapi=va:${VAAPI_DEVICE}`, '-filter_hw_device', 'va');
   }
+  if (gpuDecode) args.push('-hwaccel', 'vaapi', '-hwaccel_device', 'va', '-hwaccel_output_format', 'vaapi');
   args.push('-i', path.resolve(input), '-map', `0:${video.index}`);
   for (const a of audio) args.push('-map', `0:${a.stream}`);
   args.push('-map_metadata', '-1', '-map_chapters', '-1', '-sn', '-dn', '-max_muxing_queue_size', '4096');
@@ -523,6 +553,20 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted 
   let outHeight = video.height || 1080;
   if (!transcode) {
     args.push('-c:v', 'copy');
+  } else if (gpuDecode) {
+    const size = scaledSize(video, maxHeight);
+    if (size) outHeight = size.h;
+    const dims = size ? `w=${size.w}:h=${size.h}:` : '';
+    const filters = isHdr(video)
+      // Downloaded as decoded (p010 for 10-bit); zimg scales on the way into
+      // linear light, so the float tone mapping runs at 1080p, not 4K.
+      ? ['hwdownload', `format=${/10/.test(video.pix_fmt) ? 'p010le' : 'nv12'}`,
+        `zscale=${dims}t=linear:npl=100`, ...TONEMAP, 'format=nv12', 'hwupload']
+      : [`scale_vaapi=${dims}format=nv12`];
+    const br = bitrateFor(outHeight);
+    args.push('-vf', filters.join(','), '-c:v', 'h264_vaapi', '-profile:v', 'high',
+      '-rc_mode', 'VBR', '-b:v', String(br), '-maxrate', String(Math.round(br * 1.5)),
+      '-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_SECONDS})`);
   } else {
     const filters = [];
     if (video.height && video.height > maxHeight) {
@@ -531,8 +575,7 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted 
     }
     if (isHdr(video)) {
       // Tone-map HDR to SDR; without it, HDR shown as SDR looks washed out.
-      filters.push('zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709',
-        'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv');
+      filters.push('zscale=t=linear:npl=100', ...TONEMAP);
     }
     const kf = `expr:gte(t,n_forced*${SEGMENT_SECONDS})`;
     if (encoder === 'vaapi') {
@@ -581,25 +624,39 @@ function webBandwidth({ plan, info, size, duration, maxHeight = 1080 }) {
   return size && duration ? Math.round((size * 8 / duration) * 1.5) : 12_000_000;
 }
 
-let current = null;   // { kind, id, proc }
-let pumping = false;
+/**
+ * Two lanes, each one job at a time: repackaging (a copy, mostly disk) and
+ * converting (the GPU or CPU, for an hour or more a film). Separate, so a
+ * long conversion queue never holds up files that need only a minute.
+ */
+const LANES = ['remux', 'transcode'];
+const running = new Map();   // lane → { kind, id, proc }
+const pumping = new Set();
 
-/** Run queued encodes one at a time. */
-async function pump() {
-  if (pumping) return;
-  pumping = true;
+/** After this many GPU decode failures in a row, decode on the CPU until restart. */
+const GPU_DECODE_GIVE_UP = 3;
+let gpuDecodeFailures = 0;
+
+function pump() {
+  for (const lane of LANES) runLane(lane);
+}
+
+async function runLane(lane) {
+  if (pumping.has(lane)) return;
+  pumping.add(lane);
   try {
     for (;;) {
-      const job = rows.nextQueued();
+      const job = rows.nextQueued(lane);
       if (!job) break;
-      await encode(job);
+      await encode(job, { lane });
     }
   } finally {
-    pumping = false;
+    pumping.delete(lane);
   }
 }
 
 async function encode(job, opts = {}) {
+  const lane = opts.lane || job.plan;
   const { kind, item_id: id } = job;
   const outDir = webDir(kind, id);
   fs.rmSync(outDir, { recursive: true, force: true });
@@ -614,7 +671,9 @@ async function encode(job, opts = {}) {
   const encoder = job.plan === 'transcode' ? (opts.encoder || await pickEncoder()) : 'copy';
   const maxHeight = Number(settings.get('web_max_height')) || 1080;
   const wanted = wantedLanguages();
-  const args = buildEncodeArgs({ input: job.path, info, plan: job.plan, encoder, maxHeight, wanted });
+  const hwDecode = encoder === 'vaapi' && (opts.hwDecode ?? gpuDecodeFailures < GPU_DECODE_GIVE_UP)
+    && gpuDecodable(mainVideo(info.streams));
+  const args = buildEncodeArgs({ input: job.path, info, plan: job.plan, encoder, maxHeight, wanted, hwDecode });
   // Written before ffmpeg starts: a player that opens it while the encode
   // runs finds the playlists it names filling up.
   fs.writeFileSync(path.join(outDir, 'master.m3u8'), masterPlaylist({
@@ -627,7 +686,7 @@ async function encode(job, opts = {}) {
 
   const result = await new Promise((resolve) => {
     const proc = spawn(FFMPEG, args, { cwd: outDir, stdio: ['ignore', 'pipe', 'pipe'] });
-    current = { kind, id, proc };
+    running.set(lane, { kind, id, proc });
     let stderr = '';
     let lastWrite = 0;
     proc.stdout.on('data', (chunk) => {
@@ -644,7 +703,7 @@ async function encode(job, opts = {}) {
     proc.on('close', (code, signal) => resolve(code === 0 ? { ok: true }
       : { ok: false, error: signal ? `stopped (${signal})` : (stderr.trim().split('\n').pop() || `ffmpeg exited ${code}`) }));
   });
-  current = null;
+  running.delete(lane);
 
   // Removed, re-recorded or cleared while it ran: whatever is there now wins.
   const now = rows.get(kind, id);
@@ -656,14 +715,27 @@ async function encode(job, opts = {}) {
     try { repairInitSegments(kind, id); } catch (err) { log.warn(`init segment check failed: ${err.message}`, { type: kind, id }); }
     rows.update(kind, id, { web_state: 'ready', web_progress: 1 });
     prewarmSubtitles(rows.get(kind, id)).catch(() => {});
-    log.info(`web version ready (${job.plan}, ${encoder}) in ${Math.round((Date.now() - started) / 1000)}s`, { type: kind, id });
+    if (hwDecode) gpuDecodeFailures = 0;
+    const secs = (Date.now() - started) / 1000;
+    const how = encoder === 'vaapi' ? `GPU${hwDecode ? '' : ', decoded on the CPU'}` : encoder;
+    const speed = job.duration ? `, ${(job.duration / secs).toFixed(1)}× real time` : '';
+    log.info(`web version ready (${job.plan}, ${how}) in ${Math.round(secs)}s${speed}`, { type: kind, id });
   } else {
-    // A VAAPI failure on one odd file shouldn't need a settings change: retry
-    // it once on the CPU.
+    // A GPU failure on one odd file shouldn't need a settings change: retry it
+    // decoding on the CPU, then entirely on the CPU.
+    if (hwDecode) {
+      if (++gpuDecodeFailures === GPU_DECODE_GIVE_UP) {
+        log.warn(`GPU decoding failed ${GPU_DECODE_GIVE_UP} times in a row; decoding on the CPU until the server restarts`);
+      }
+      log.warn(`GPU decode failed (${result.error}); retrying with the CPU decoding`, { type: kind, id });
+      rows.update(kind, id, { web_state: 'queued' });
+      await encode(rows.get(kind, id), { lane, encoder: 'vaapi', hwDecode: false });
+      return;
+    }
     if (encoder === 'vaapi') {
       log.warn(`GPU encode failed (${result.error}); retrying on the CPU`, { type: kind, id });
       rows.update(kind, id, { web_state: 'queued' });
-      await encode(rows.get(kind, id), { encoder: 'x264' });
+      await encode(rows.get(kind, id), { lane, encoder: 'x264' });
       return;
     }
     rows.update(kind, id, { web_state: 'failed', web_error: result.error.slice(0, 500) });
@@ -764,7 +836,7 @@ function cacheSize() {
  * after seeding is the only copy left, so it stays.
  */
 function clearWebVersions() {
-  if (current) current.proc.kill('SIGKILL');
+  for (const job of running.values()) job.proc.kill('SIGKILL');
   for (const r of rows.all()) if (!r.original_removed_at) removeWebVersion(r.kind, r.item_id);
   db.prepare("UPDATE media_files SET web_state = 'none', web_progress = 0, web_error = NULL WHERE original_removed_at IS NULL").run();
 }
@@ -989,7 +1061,7 @@ async function prewarmSubtitles(media) {
 
 module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
-  record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir,
+  record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir, gpuDecodable,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),

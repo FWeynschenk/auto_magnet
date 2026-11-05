@@ -561,7 +561,20 @@ log records each removal and the space freed.
 With an AMD or Intel GPU, encoding runs through VAAPI. In Docker, uncomment the `devices` and
 `group_add` lines in `docker-compose.yml` and set `RENDER_GID` in `.env` to
 `getent group render | cut -d: -f3`. **Settings → Watch library** shows which encoder is in use.
-A file the GPU fails on is retried once on the CPU.
+
+The GPU decodes and scales too, not just encodes: HEVC, AV1, VP9 and MPEG-2 (8 or 10-bit) stay on
+the GPU from decoder to encoder. 10-bit H.264 has no hardware decoder, so it is decoded on the CPU.
+HDR comes down to the CPU once for tone mapping, after it is scaled to 1080p.
+That tone mapping is the slow part: expect roughly 1–2× real time for 4K HDR, against several
+times real time for SDR.
+
+A file that fails is retried decoding on the CPU, then entirely on the CPU. After three GPU
+decoding failures in a row, decoding stays on the CPU until the server restarts. The Activity log
+shows how each web version was made and how fast, e.g. *web version ready (transcode, GPU) in
+512s, 13.4× real time*.
+
+Repackaging and converting run side by side, one of each at a time, so a long conversion queue
+never holds up files that need only a minute.
 
 ### Subtitles in the player
 

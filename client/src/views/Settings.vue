@@ -304,6 +304,10 @@
               <option value="2160">2160p (keep 4K)</option>
             </select>
           </label>
+          <label>Keep free (GB)
+            <span class="hint">web versions pause below this; 0 = off</span>
+            <input v-model.number="form.web_min_free_gb" type="number" min="0" step="5" />
+          </label>
           <label class="check-label span2">
             <input v-model="autosyncBool" type="checkbox" class="checkbox" />
             Align fetched subtitles to the audio when they weren't matched to the exact file

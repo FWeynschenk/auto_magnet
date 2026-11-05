@@ -55,6 +55,7 @@ test.before(async () => {
     settings.set('movie_path', ${JSON.stringify(lib.movies)});
     settings.set('shows_path', ${JSON.stringify(lib.series)});
     settings.set('web_encoder', 'x264');
+    settings.set('web_min_free_gb', '0'); // a CI runner has ~15 GB free
     db.prepare("INSERT INTO movies (id, title, year, status) VALUES (1, 'Direct Film', 2020, 'done'), (2, 'Remux Film', 2021, 'done'), (3, 'Missing Film', 2019, 'done'), (4, 'Dual Audio Film', 2022, 'done')").run();
     db.prepare("INSERT INTO shows (id, tmdb_id, title) VALUES (1, 999, 'Hevc Show')").run();
     db.prepare("INSERT INTO episodes (id, show_id, season, episode, status) VALUES (1, 1, 1, 2, 'done')").run();

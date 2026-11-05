@@ -25,6 +25,9 @@ These shipped but can only be confirmed on the real box.
   GPU)* with a speed, not *GPU decoding failed 3 times in a row*. If HDR files dominate and stay
   slow, the next step is tone mapping on the GPU through libplacebo (in Debian's ffmpeg build;
   needs `mesa-vulkan-drivers` in the image).
+- **Keep free.** New: web versions pause below 20 GB free on the disk holding `WEB_ROOT`
+  (`statfs`). Check Settings → Watch library shows the real free space for that disk. Is 20 GB the
+  right reserve next to Transmission's downloads?
 - **Web version disk use.** Roughly the size of what gets converted. Watch `WEB_ROOT` for a
   week; switch to *Only when someone presses play* if it grows too fast.
 - **Multi-track web versions on the real ffmpeg.** Every audio track is now an HLS rendition

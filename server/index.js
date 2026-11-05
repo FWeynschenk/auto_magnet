@@ -1,6 +1,33 @@
 'use strict';
 
 require('dotenv').config();
+
+// A full disk used to crash the server on every start — a SQLite write failed
+// somewhere during startup — leaving Docker restarting it in a loop with
+// nothing but a stack trace to go on. Say plainly what is wrong, and keep
+// serving: the dashboard still loads, and once there is space again writes
+// succeed without a restart.
+const isDiskFull = (err) => err?.code === 'ENOSPC' || err?.code === 'SQLITE_FULL'
+  || /no space left on device|database or disk is full|SQLITE_FULL|ENOSPC/i.test(String(err?.message || err));
+let diskFullWarned = 0;
+function warnDiskFull(err) {
+  if (Date.now() - diskFullWarned < 60_000) return;   // one line a minute, not one per write
+  diskFullWarned = Date.now();
+  console.error(`auto_magnet: THE DISK IS FULL (${err?.message || err}). Free some space — `
+    + "`docker system df`, `docker builder prune`, or the web versions folder — and it carries on by itself.");
+}
+process.on('uncaughtException', (err) => {
+  if (isDiskFull(err)) return warnDiskFull(err);
+  console.error('auto_magnet: fatal error:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  if (isDiskFull(err)) return warnDiskFull(err);
+  // A background job (an encode, a scheduler step) failing must not take the
+  // whole server down; log it as the bug it is.
+  console.error('auto_magnet: unhandled error in background work:', err);
+});
+
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
@@ -91,13 +118,20 @@ app.listen(PORT, HOST, () => {
   if (auth.users.count() === 0) {
     console.warn('auto_magnet: no accounts yet — open the dashboard to create the admin account');
   }
-  auth.sessions.prune();
+  // Each step on its own: one failing (a full disk) must not skip the rest.
+  const step = (name, fn) => {
+    try { fn(); } catch (err) {
+      if (isDiskFull(err)) warnDiskFull(err);
+      else console.error(`auto_magnet: ${name} failed at startup:`, err);
+    }
+  };
+  step('session cleanup', () => auth.sessions.prune());
   // Encoding web versions is local work and never touches Transmission, so it
   // runs even with the scheduler switched off.
-  require('./media').startWorker();
+  step('web version worker', () => require('./media').startWorker());
   if (SCHEDULER_DISABLED) {
     console.warn('auto_magnet: AMAGNET_NO_SCHEDULER=1 — scheduler is OFF, nothing will be grabbed');
     return;
   }
-  require('./scheduler').start();
+  step('scheduler', () => require('./scheduler').start());
 });

@@ -358,6 +358,7 @@ router.get('/admin/status', requireAdmin, wrap(async () => {
       return { ...q, title: i ? (i.kind === 'episode' ? `${i.show_title} S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}` : i.title) : '?' };
     }),
     failed: db.prepare("SELECT kind, item_id, web_error FROM media_files WHERE web_state = 'failed' LIMIT 50").all(),
+    space: media.spaceStatus(),
     originalsRemoved: db.prepare('SELECT COUNT(*) AS n FROM media_files WHERE original_removed_at IS NOT NULL').get().n,
   };
 }));

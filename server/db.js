@@ -296,6 +296,10 @@ const defaultSettings = {
   web_encoder:               'auto',
   // Re-encoded video is scaled down to this height; copied video is never touched.
   web_max_height:            '1080',
+  // Web versions pause while the disk holding them has less than this free
+  // (GB), so they can never fill it — a full disk takes the database down too.
+  // 0 turns the check off.
+  web_min_free_gb:           '20',
   // Fetched subtitles not matched by file hash are aligned to the audio.
   subtitle_autosync:         '1',
   // Removing originals once they have seeded, keeping only the web version.

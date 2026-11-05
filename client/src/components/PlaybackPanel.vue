@@ -14,7 +14,17 @@
         <div><span class="k">Converted</span> {{ count('transcode', 'ready') }} / {{ count('transcode') }}</div>
         <div v-if="st.unindexed"><span class="k">Not yet indexed</span> {{ st.unindexed }}</div>
         <div v-if="st.originalsRemoved"><span class="k">Originals removed after seeding</span> {{ st.originalsRemoved }}</div>
+        <div v-if="st.space && st.space.free != null">
+          <span class="k">Free space</span> {{ size(st.space.free) }}
+          <span v-if="st.space.min" class="muted">· keeping {{ size(st.space.min) }} free</span>
+        </div>
       </div>
+
+      <p v-if="st.space?.paused" class="paused">
+        <strong>Web versions are paused:</strong> only {{ size(st.space.free) }} is free where they are kept,
+        under the {{ size(st.space.min) }} set in Settings. They carry on by themselves once there is room —
+        free some space, lower <em>Keep free</em>, or turn on <em>Remove originals after seeding</em>.
+      </p>
 
       <div v-if="st.queue.length" class="queue">
         <div class="k">Queue</div>
@@ -105,5 +115,7 @@ h2 { font-size: 15px; font-weight: 600; }
 .pct { color: var(--accent); font-variant-numeric: tabular-nums; }
 .actions { display: flex; gap: 8px; margin: 14px 0 8px; }
 .danger { color: var(--red); }
+.paused { margin-top: 12px; padding: 8px 10px; font-size: 13px; line-height: 1.45;
+  border-left: 3px solid var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent); border-radius: 4px; }
 @media (max-width: 640px) { .stats { grid-template-columns: 1fr; } }
 </style>

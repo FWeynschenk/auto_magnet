@@ -211,6 +211,7 @@ Advanced settings (UI only, not in `.env`):
 | Prepare web versions | as soon as checked | Or only when someone presses play |
 | Encoder | automatic | GPU (VAAPI) when available, else libx264 |
 | Converted video height | `1080p` | Converted video is scaled down to this; repackaged video is never touched |
+| Keep free | `20` GB | Web versions pause while the disk holding them has less free than this, and carry on once there is room. `0` turns it off |
 | Align fetched subtitles | on | Sync subtitles not matched by file hash to the audio |
 | Remove originals after seeding | never | Or *repackaged only*, or *repackaged and converted* — see [Removing originals after seeding](#removing-originals-after-seeding) |
 | … once the ratio reaches | `2` | Upload ratio a torrent must reach first |
@@ -576,6 +577,19 @@ shows how each web version was made and how fast, e.g. *web version ready (trans
 
 Repackaging and converting run side by side, one of each at a time, so a long conversion queue
 never holds up files that need only a minute.
+
+### Disk space
+
+Web versions never fill the disk. Below **Keep free** (20 GB by default) no new one starts.
+**Settings → Watch library** then says they are paused, the Activity log records it once, and they
+carry on by themselves once there is room again (checked every five minutes). One already running
+is stopped if free space falls to half the reserve (downloads share the disk). It is queued again
+to start over.
+
+If the disk fills anyway (downloads, Docker's build cache), the server no longer crashes on every
+start. It logs `THE DISK IS FULL` once a minute and keeps serving, and it carries on without a
+restart once space is freed. Docker's build cache is a common culprit after a few rebuilds:
+`docker system df`, then `docker builder prune`.
 
 ### Subtitles in the player
 

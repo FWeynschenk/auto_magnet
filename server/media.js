@@ -624,6 +624,65 @@ function webBandwidth({ plan, info, size, duration, maxHeight = 1080 }) {
   return size && duration ? Math.round((size * 8 / duration) * 1.5) : 12_000_000;
 }
 
+// ─── Free space ──────────────────────────────────────────────────────────────
+
+const GB = 1e9;   // as the dashboard shows sizes
+const SPACE_RECHECK_MS = 5 * 60_000;
+/** While an encode runs, free space is checked this often. */
+const SPACE_WATCH_MS = 30_000;
+
+/** Bytes free to this process on the disk holding `dir`; null when it can't be read. */
+function freeBytes(dir = WEB_ROOT) {
+  // The folder may not exist yet: the disk it will be on is its nearest parent that does.
+  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+    if (fs.existsSync(d)) {
+      try {
+        const s = fs.statfsSync(d);
+        return Number(s.bavail) * Number(s.bsize);
+      } catch (_) { return null; }
+    }
+    if (path.dirname(d) === d) return null;
+  }
+}
+
+function minFreeBytes() {
+  const n = Number(settings.get('web_min_free_gb'));
+  return (Number.isFinite(n) && n >= 0 ? n : 20) * GB;
+}
+
+const gb = (b) => `${(b / GB).toFixed(1)} GB`;
+
+let lowSpace = null;   // { free, min, since } while web versions are paused
+
+/**
+ * Whether there is room to start another web version. Below the minimum the
+ * queue pauses — logged once — and resumes by itself once there is room again.
+ */
+function spaceOk(free = freeBytes()) {
+  const min = minFreeBytes();
+  if (free === null || min === 0 || free >= min) {
+    if (lowSpace) {
+      log.info(`${free === null ? 'free space unknown' : `${gb(free)} free`} on ${WEB_ROOT} again; web versions continue`);
+      lowSpace = null;
+      setImmediate(pump);
+    }
+    return true;
+  }
+  if (!lowSpace) {
+    lowSpace = { free, min, since: new Date().toISOString() };
+    log.warn(`only ${gb(free)} free on ${WEB_ROOT} (keeping ${gb(min)} free): web versions are paused until there is room`);
+  }
+  lowSpace.free = free;
+  return false;
+}
+
+/** For the Watch library panel. */
+function spaceStatus() {
+  const free = freeBytes();
+  spaceOk(free);   // as things stand now, not as when a job last started
+  return { path: WEB_ROOT, free, min: minFreeBytes(), paused: !!lowSpace, since: lowSpace?.since || null };
+}
+
 /**
  * Two lanes, each one job at a time: repackaging (a copy, mostly disk) and
  * converting (the GPU or CPU, for an hour or more a film). Separate, so a
@@ -646,6 +705,7 @@ async function runLane(lane) {
   pumping.add(lane);
   try {
     for (;;) {
+      if (!spaceOk()) break;
       const job = rows.nextQueued(lane);
       if (!job) break;
       await encode(job, { lane });
@@ -699,8 +759,21 @@ async function encode(job, opts = {}) {
       }
     });
     proc.stderr.on('data', (c) => { stderr = (stderr + c).slice(-4000); });
-    proc.on('error', (err) => resolve({ ok: false, error: err.message }));
-    proc.on('close', (code, signal) => resolve(code === 0 ? { ok: true }
+    // Started with room to spare, but a 4K film writes gigabytes, and
+    // downloads share the disk: stop before it fills, half way into the reserve.
+    let outOfSpace = false;
+    const watch = setInterval(() => {
+      const free = freeBytes();
+      const min = minFreeBytes();
+      if (free !== null && min > 0 && free < min / 2) { outOfSpace = true; proc.kill('SIGKILL'); }
+    }, SPACE_WATCH_MS);
+    watch.unref?.();
+    const done = (r) => {
+      clearInterval(watch);
+      resolve(outOfSpace ? { ok: false, outOfSpace: true, error: 'disk nearly full' } : r);
+    };
+    proc.on('error', (err) => done({ ok: false, error: err.message }));
+    proc.on('close', (code, signal) => done(code === 0 ? { ok: true }
       : { ok: false, error: signal ? `stopped (${signal})` : (stderr.trim().split('\n').pop() || `ffmpeg exited ${code}`) }));
   });
   running.delete(lane);
@@ -709,6 +782,15 @@ async function encode(job, opts = {}) {
   const now = rows.get(kind, id);
   if (!now || now.path !== job.path || now.web_state !== 'encoding') {
     if (!now || now.web_state === 'none') fs.rmSync(outDir, { recursive: true, force: true });
+    return;
+  }
+  // Out of space, or ffmpeg failing because the disk already is: not this
+  // file's fault. Back in the queue to start over, and pause.
+  if (!result.ok && (result.outOfSpace || /No space left|ENOSPC/i.test(result.error))) {
+    fs.rmSync(outDir, { recursive: true, force: true });
+    rows.update(kind, id, { web_state: 'queued', web_progress: 0 });
+    log.warn(`web version stopped: the disk holding ${WEB_ROOT} is nearly full; it starts over once there is room`, { type: kind, id });
+    spaceOk(Math.min(freeBytes() ?? 0, minFreeBytes() - 1));
     return;
   }
   if (result.ok) {
@@ -752,6 +834,8 @@ function startWorker() {
     if (n) log.info(`${n} file(s) with several audio tracks get a web version so a browser can switch between them`);
   } catch (err) { console.error('[media] re-plan failed:', err.message); }
   setImmediate(pump);
+  // Paused for space: look again now and then, and carry on once there is room.
+  setInterval(() => { if (lowSpace) spaceOk(); }, SPACE_RECHECK_MS).unref();
   // Index what finished before playback existed, a batch at a time, so the
   // back catalogue becomes watchable without anyone pressing a button.
   const tick = () => indexPass().catch(err => console.error('[media] index pass failed:', err.message));
@@ -1061,7 +1145,7 @@ async function prewarmSubtitles(media) {
 
 module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
-  record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir, gpuDecodable,
+  record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),

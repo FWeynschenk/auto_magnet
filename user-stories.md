@@ -629,3 +629,21 @@ time.
 CPU tone-map chain about 48–52 fps whether zimg or swscale does the resize. On the server's CPU, tone
 mapping is the ceiling for HDR. libplacebo on Vulkan would lift it, but can't be tested without
 the GPU.
+
+## Implementation notes (2026-11-06): the disk filled up
+
+**What happened.** After the faster conversions shipped, web versions were being written much
+sooner. The disk filled, and the container restarted in a loop. A SQLite write failed during
+startup, and with no handler for uncaught errors, Node exited every time.
+
+**Guard.** `web_min_free_gb` (default 20). `spaceOk()` runs before each job in both lanes: below the minimum
+the queue pauses, logs once, and `spaceStatus()` reports it to the Watch library panel. A timer
+(5 min) — or any status read — notices room again and pumps the queue. During an encode, free
+space is checked every 30 s, and below half the reserve ffmpeg is killed and the job requeued, as
+is any job whose ffmpeg fails with ENOSPC. `freeBytes()` walks up to the nearest existing parent,
+since `WEB_ROOT` is only created when the worker starts.
+
+**Crash handling.** `index.js` now handles `uncaughtException` and `unhandledRejection`. Disk-full
+errors (ENOSPC, SQLITE_FULL) are logged plainly at most once a minute and the server keeps going.
+Other uncaught exceptions still exit, and unhandled rejections from background work are logged.
+Startup steps run one by one, so one failing doesn't skip the rest.

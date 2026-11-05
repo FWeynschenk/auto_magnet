@@ -13,6 +13,7 @@
         <div><span class="k">Repackaged</span> {{ count('remux', 'ready') }} / {{ count('remux') }}</div>
         <div><span class="k">Converted</span> {{ count('transcode', 'ready') }} / {{ count('transcode') }}</div>
         <div v-if="st.unindexed"><span class="k">Not yet indexed</span> {{ st.unindexed }}</div>
+        <div v-if="st.originalsRemoved"><span class="k">Originals removed after seeding</span> {{ st.originalsRemoved }}</div>
       </div>
 
       <div v-if="st.queue.length" class="queue">
@@ -40,7 +41,8 @@
       </div>
       <p class="muted small">
         Originals are never changed — web versions live in their own folder, so torrents keep seeding.
-        Deleted web versions are rebuilt when needed.
+        Deleted web versions are rebuilt when needed. Web versions whose original was removed after seeding
+        are the only copy, so "Delete all" keeps them.
       </p>
     </template>
   </section>

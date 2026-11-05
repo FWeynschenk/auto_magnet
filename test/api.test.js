@@ -32,6 +32,8 @@ async function call(method, p, body, { tok, raw, headers = {}, jar = true } = {}
   return { status: r.status, body: j };
 }
 
+const probeOf = (file) => execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,pix_fmt', '-of', 'csv', file]).toString();
+
 const until = async (fn, ms = 120_000) => {
   const t0 = Date.now();
   for (;;) {
@@ -119,17 +121,33 @@ test('playback', { skip }, async (t) => {
         if (b.state === 'failed') throw new Error(b.error);
         return b.mode === 'hls' && b.complete ? b : null;
       });
-      const pl = await (await call('GET', pb.url, null, { tok: token, raw: true })).text();
-      assert.match(pl, /#EXT-X-ENDLIST/);
+      assert.match(pb.url, /\/hls\/master\.m3u8$/);
+      const master = await (await call('GET', pb.url, null, { tok: token, raw: true })).text();
+      assert.match(master, /#EXT-X-STREAM-INF:BANDWIDTH=\d+,AUDIO="aud"\nv\/index\.m3u8/);
+      for (const rel of ['v/index.m3u8', 'a0/index.m3u8']) {
+        const pl = await (await call('GET', pb.url.replace('master.m3u8', rel), null, { tok: token, raw: true })).text();
+        assert.match(pl, /#EXT-X-ENDLIST/, rel);
+      }
     }
-    const probe = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name,pix_fmt', '-of', 'csv',
-      path.join(dir, 'web', 'episode-1', 'index.m3u8')]).toString();
-    assert.match(probe, /h264,yuv420p\b/);
-    assert.match(probe, /aac/);
+    assert.match(probeOf(path.join(dir, 'web', 'episode-1', 'v', 'index.m3u8')), /h264,yuv420p\b/);
+    assert.match(probeOf(path.join(dir, 'web', 'episode-1', 'a0', 'index.m3u8')), /aac/);
+  });
+  await t.test('every audio track is kept, the preferred one first', async () => {
+    const pb = (await call('GET', '/api/watch/items/movie/2/playback', null, { tok: token })).body;
+    const master = await (await call('GET', pb.url, null, { tok: token, raw: true })).text();
+    const lines = master.split('\n').filter(l => l.startsWith('#EXT-X-MEDIA:'));
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /NAME="English",LANGUAGE="en",DEFAULT=YES.*URI="a0\/index\.m3u8"/);
+    assert.match(lines[1], /NAME="Dutch",LANGUAGE="nl",DEFAULT=NO.*URI="a1\/index\.m3u8"/);
+    const a1 = await call('GET', pb.url.replace('master.m3u8', 'a1/index.m3u8'), null, { tok: token, raw: true });
+    assert.match(await a1.text(), /#EXT-X-ENDLIST/);
+    assert.match(probeOf(path.join(dir, 'web', 'movie-2', 'a1', 'index.m3u8')), /aac/);
   });
   await t.test('HLS file names are whitelisted', async () => {
-    const r = await call('GET', '/api/watch/items/episode/1/hls/..%2F..%2Fapi.db', null, { tok: token, raw: true });
-    assert.equal(r.status, 404);
+    for (const p of ['..%2F..%2Fapi.db', 'x/index.m3u8', '..%2F..%2Fweb/index.m3u8', 'v/..%2F..%2F..%2Fapi.db']) {
+      const r = await call('GET', `/api/watch/items/episode/1/hls/${p}`, null, { tok: token, raw: true });
+      assert.equal(r.status, 404, p);
+    }
   });
   await t.test('the original stays untouched', async () => {
     assert.ok(fs.existsSync(path.join(dir, 'media', 'Movies', 'Remux.Film.2021', 'Remux.Film.2021.mkv')));

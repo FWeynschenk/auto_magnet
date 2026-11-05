@@ -31,7 +31,7 @@ const SRT = '1\n00:00:01,000 --> 00:00:03,000\nHello there\n\n2\n00:00:05,000 --
 /**
  * A small library on disk, one file per plan:
  *   Movies/Direct.Film.2020/…mp4   H.264 + AAC in MP4      → direct
- *   Movies/Remux.Film.2021/…mkv    H.264 + AC-3 + SRT, MKV → remux
+ *   Movies/Remux.Film.2021/…mkv    H.264 + English AC-3 + SRT + Dutch AAC, MKV → remux
  *   Series/Hevc Show/…S01E02…mkv   10-bit H.264            → transcode (+ sidecar .en.srt)
  */
 function makeLibrary(root, { seconds = 12 } = {}) {
@@ -44,8 +44,10 @@ function makeLibrary(root, { seconds = 12 } = {}) {
   const v = ['-f', 'lavfi', '-i', `testsrc2=d=${seconds}:s=320x240:r=24`, '-f', 'lavfi', '-i', `sine=f=440:d=${seconds}`];
   ffmpeg([...v, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
     path.join(movies, 'Direct.Film.2020', 'Direct.Film.2020.1080p.mp4')]);
-  ffmpeg([...v, '-i', srt, '-map', '0', '-map', '1', '-map', '2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-    '-c:a', 'ac3', '-c:s', 'srt', '-metadata:s:a:0', 'language=eng', '-metadata:s:s:0', 'language=eng',
+  ffmpeg([...v, '-i', srt, '-f', 'lavfi', '-i', `sine=f=660:d=${seconds}`,
+    '-map', '0', '-map', '1', '-map', '2', '-map', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+    '-c:a:0', 'ac3', '-c:a:1', 'aac', '-c:s', 'srt', '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=dut',
+    '-metadata:s:s:0', 'language=eng',
     path.join(movies, 'Remux.Film.2021', 'Remux.Film.2021.mkv')]);
   const ep = path.join(series, 'Hevc.Show.S01E02.1080p.mkv');
   ffmpeg([...v, '-c:v', 'libx264', '-profile:v', 'high10', '-pix_fmt', 'yuv420p10le', '-c:a', 'aac', ep]);

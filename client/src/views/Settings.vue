@@ -304,6 +304,28 @@
             <input v-model="autosyncBool" type="checkbox" class="checkbox" />
             Align fetched subtitles to the audio when they weren't matched to the exact file
           </label>
+          <label class="span2">Remove originals after seeding
+            <span class="hint">frees the disk twice over: the web version stays and is what every player uses</span>
+            <select v-model="form.seed_cleanup">
+              <option value="off">Never — keep originals</option>
+              <option value="remux">Repackaged items only (same video, nothing re-encoded)</option>
+              <option value="all">Repackaged and converted items</option>
+            </select>
+          </label>
+          <template v-if="form.seed_cleanup && form.seed_cleanup !== 'off'">
+            <label>Once the upload ratio reaches
+              <input v-model.number="form.seed_cleanup_ratio" type="number" min="0.1" step="0.1" />
+            </label>
+            <label>Or after seeding for <span class="hint">days, 0 = ratio only</span>
+              <input v-model.number="form.seed_cleanup_days" type="number" min="0" />
+            </label>
+            <p class="section-note span2">
+              The whole torrent goes — files, folder and Transmission entry — but only when every video in it
+              has a finished web version. Files that play as they are, and torrents that were already in
+              Transmission, are never removed. Media servers and network shares lose the original too, and
+              "Converted" items keep only the converted quality (at most the height chosen above).
+            </p>
+          </template>
         </div>
       </section>
 

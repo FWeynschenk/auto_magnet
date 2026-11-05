@@ -57,6 +57,12 @@
     </div>
 
     <footer v-if="item && pb && (pb.mode === 'file' || pb.mode === 'hls')" class="tools">
+      <label v-if="audioTracks.length > 1" class="sub-pick">Audio
+        <select v-model.number="audioIdx" @change="selectAudio">
+          <option v-for="t in audioTracks" :key="t.idx" :value="t.idx">{{ t.name }}</option>
+        </select>
+      </label>
+
       <label class="sub-pick">Subtitles
         <select v-model="subId" @change="selectSub">
           <option value="">Off</option>
@@ -85,7 +91,7 @@
         </span>
         <button v-if="item.next" class="btn-ghost btn-sm" @click="playNext">Next ▸</button>
         <button class="btn-ghost btn-sm" @click="toggleWatched">{{ item.progress?.watched ? 'Mark unwatched' : 'Mark watched' }}</button>
-        <a class="btn-ghost btn-sm dl" :href="`/api/watch/items/${kind}/${id}/file?download=1`" title="Download the original file">Download</a>
+        <a v-if="pb.original !== false" class="btn-ghost btn-sm dl" :href="`/api/watch/items/${kind}/${id}/file?download=1`" title="Download the original file">Download</a>
       </div>
     </footer>
   </div>
@@ -114,6 +120,8 @@ const countdown = ref(0);
 const subId = ref('');
 const offset = ref(0);
 const subBusy = ref('');
+const audioTracks = ref([]);   // [{ idx, name }]
+const audioIdx = ref(0);
 
 let hls = null;
 let pollTimer = null;
@@ -195,10 +203,18 @@ function attach() {
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
         else fatal.value = `Playback failed: ${data.details}`;
       });
+      // Every audio track of the file is an alternative rendition.
+      const syncAudio = () => {
+        audioTracks.value = hls.audioTracks.map((t, idx) => ({ idx, name: t.name || t.lang || `Track ${idx + 1}` }));
+        audioIdx.value = hls.audioTrack;
+      };
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncAudio);
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, syncAudio);
       hls.loadSource(pb.value.url);
       hls.attachMedia(v);
     } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
       v.src = pb.value.url; // Safari plays HLS natively
+      v.addEventListener('loadedmetadata', syncNativeAudio, { once: true });
       if (start) v.addEventListener('loadedmetadata', () => { v.currentTime = start; }, { once: true });
     } else {
       fatal.value = 'This browser can\'t play HLS';
@@ -219,12 +235,29 @@ function teardown() {
   clearInterval(nextTimer);
   if (hls) { hls.destroy(); hls = null; }
   attachedUrl = null;
+  audioTracks.value = [];
   const v = video.value;
   if (v) {
     v.removeAttribute('src');
     for (const t of [...v.querySelectorAll('track')]) t.remove();
     v.load();
   }
+}
+
+// ─── Audio tracks ────────────────────────────────────────────────────────────
+
+/** Safari's own HLS player exposes the renditions as video.audioTracks. */
+function syncNativeAudio() {
+  const list = video.value?.audioTracks;
+  if (!list || list.length < 2) return;
+  audioTracks.value = [...list].map((t, idx) => ({ idx, name: t.label || t.language || `Track ${idx + 1}` }));
+  audioIdx.value = Math.max(0, [...list].findIndex(t => t.enabled));
+}
+
+function selectAudio() {
+  if (hls) { hls.audioTrack = audioIdx.value; return; }
+  const list = video.value?.audioTracks;
+  if (list) [...list].forEach((t, i) => { t.enabled = i === audioIdx.value; });
 }
 
 // ─── Subtitles ───────────────────────────────────────────────────────────────
@@ -398,6 +431,11 @@ function onKey(e) {
   else if (k === 'z') nudge(-250);
   else if (k === 'x') nudge(250);
   else if (k === 'n') playNext();
+  else if (k === 'a' && audioTracks.value.length > 1) {
+    audioIdx.value = (audioIdx.value + 1) % audioTracks.value.length;
+    selectAudio();
+    notifySuccess(`Audio: ${audioTracks.value[audioIdx.value].name}`);
+  }
   else return;
   e.preventDefault();
 }

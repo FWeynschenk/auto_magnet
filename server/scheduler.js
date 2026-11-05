@@ -6,6 +6,7 @@ const { getSeasonDetails, getTvDetails } = require('./tmdb');
 const { findCandidates } = require('./pipeline');
 const { afterAdd, verdictHandler, sweepQuarantine, sweepUnscreened } = require('./quarantine');
 const { postProcessCompleted } = require('./postprocess');
+const { sweepSeeded } = require('./cleanup');
 const { showDir } = require('./paths');
 const log = require('./log');
 
@@ -688,6 +689,8 @@ async function run() {
     await syncDownloading();
     // Check what just finished — the real streams, and subtitles.
     await postProcessCompleted().catch(err => log.error(`post-processing failed: ${err.message}`));
+    // Then let go of originals that have seeded enough and have a web version.
+    await sweepSeeded().catch(err => log.error(`seed cleanup failed: ${err.message}`));
   } finally {
     _running = false;
   }

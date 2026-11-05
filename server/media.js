@@ -19,6 +19,18 @@
 // The original file is never modified — Transmission keeps seeding it — and
 // because the playlist grows as segments are written, playback can start
 // while the encode is still running.
+//
+// Layout of a web version:
+//   master.m3u8        written by us: one video stream, every audio track as
+//                      an alternative rendition the players can switch to
+//   v/index.m3u8       the video, its init segment and segments
+//   a0/, a1/, …        one folder per audio track; a0 is the default
+// Web versions made before audio tracks were kept are a single index.m3u8 at
+// the top, video and one audio track together. They still play.
+//
+// Once a torrent has seeded enough, cleanup.js may remove the original and
+// keep only the web version (original_removed_at). From then on the web
+// version is the only copy: nothing here may delete or rebuild it.
 
 const fs   = require('fs');
 const path = require('path');
@@ -163,6 +175,53 @@ function chooseAudio(streams, wanted = wantedLanguages()) {
     if (hit.length) return hit.find(a => a.disposition?.default) || hit[0];
   }
   return pool.find(a => a.disposition?.default) || pool[0];
+}
+
+/**
+ * Every audio track, as the web version carries them: the one chooseAudio()
+ * picks first (it is the default), then the rest in file order. Commentary
+ * and audio description are kept but never chosen automatically.
+ */
+function audioRenditions(streams, wanted = wantedLanguages()) {
+  const audio = streams.filter(s => s.codec_type === 'audio');
+  if (audio.length === 0) return [];
+  const chosen = chooseAudio(streams, wanted);
+  const used = new Map();
+  return [chosen, ...audio.filter(a => a !== chosen)].map((a, i) => {
+    const title = String(a.tags?.title || '').replace(/["\r\n]/g, '').trim().slice(0, 48);
+    const commentary = !!a.disposition?.comment || /commentary/i.test(title);
+    const ad = !commentary && !!(a.disposition?.visual_impaired || a.disposition?.descriptions || AD_TITLE_RE.test(title));
+    const code = normLang(a.tags?.language);
+    const raw = a.tags?.language && a.tags.language !== 'und' ? String(a.tags.language).replace(/[^A-Za-z-]/g, '') : null;
+    let name = LANG_NAMES[code] || raw || 'Unknown';
+    if (title && title.toLowerCase() !== name.toLowerCase()) name += ` — ${title}`;
+    else if (ad) name += ' — audio description';
+    else if (commentary) name += ' — commentary';
+    const seen = (used.get(name) || 0) + 1;
+    used.set(name, seen);
+    if (seen > 1) name += ` (${seen})`;
+    return {
+      stream: a.index, codec: a.codec_name, channels: a.channels || 2,
+      lang: code || raw || null, name, default: i === 0, autoselect: !ad && !commentary, ad,
+    };
+  });
+}
+
+/** The master playlist for a web version. Pure. */
+function masterPlaylist({ renditions, bandwidth }) {
+  const out = ['#EXTM3U', '#EXT-X-VERSION:7', '#EXT-X-INDEPENDENT-SEGMENTS'];
+  renditions.forEach((r, i) => {
+    const attrs = ['TYPE=AUDIO', 'GROUP-ID="aud"', `NAME="${r.name}"`];
+    if (r.lang) attrs.push(`LANGUAGE="${r.lang}"`);
+    attrs.push(`DEFAULT=${r.default ? 'YES' : 'NO'}`, `AUTOSELECT=${r.autoselect || r.default ? 'YES' : 'NO'}`);
+    if (r.ad) attrs.push('CHARACTERISTICS="public.accessibility.describes-video"');
+    attrs.push(`URI="a${i}/index.m3u8"`);
+    out.push(`#EXT-X-MEDIA:${attrs.join(',')}`);
+  });
+  // BANDWIDTH is the peak of the video plus the audio played with it.
+  const bw = Math.round(bandwidth + (renditions.length ? 200_000 : 0));
+  out.push(`#EXT-X-STREAM-INF:BANDWIDTH=${bw}${renditions.length ? ',AUDIO="aud"' : ''}`, 'v/index.m3u8', '');
+  return out.join('\n');
 }
 
 function mainVideo(streams) {
@@ -313,6 +372,7 @@ async function record(kind, id, file, { probed = null } = {}) {
     probe: JSON.stringify({ streams: info.streams, format: { format_name: info.format?.format_name, duration: info.format?.duration } }),
     plan, plan_reason: reason,
     web_state: 'none', web_progress: 0, web_error: null,
+    original_removed_at: null, subs_snapshot: null,
   });
   if (plan === 'remux' || plan === 'transcode') {
     if (settings.get('web_prepare') !== 'demand') enqueue(kind, id);
@@ -329,6 +389,10 @@ async function locate(kind, id) {
   const item = itemFor(kind, id);
   if (!item) throw Object.assign(new Error('Not found'), { status: 404 });
   const existing = rows.get(kind, id);
+  if (existing?.original_removed_at) {
+    if (existing.web_state === 'ready' && hlsPlayable(kind, id)) return existing;
+    throw Object.assign(new Error('The original was removed after seeding, and its web version is missing'), { status: 410 });
+  }
   if (existing) {
     try {
       const st = fs.statSync(existing.path);
@@ -426,17 +490,17 @@ function bitrateFor(height) {
  * ffmpeg arguments for one web version. Pure, so the decisions in it can be
  * tested without running an encode.
  */
-function buildEncodeArgs({ input, outDir, info, plan, encoder, maxHeight = 1080, wanted }) {
+function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted }) {
   const video = mainVideo(info.streams);
-  const audio = chooseAudio(info.streams, wanted);
+  const audio = audioRenditions(info.streams, wanted);
   const args = ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
   const transcode = plan === 'transcode';
 
   if (transcode && encoder === 'vaapi') {
     args.push('-init_hw_device', `vaapi=va:${VAAPI_DEVICE}`, '-filter_hw_device', 'va');
   }
-  args.push('-i', input, '-map', `0:${video.index}`);
-  if (audio) args.push('-map', `0:${audio.index}`);
+  args.push('-i', path.resolve(input), '-map', `0:${video.index}`);
+  for (const a of audio) args.push('-map', `0:${a.stream}`);
   args.push('-map_metadata', '-1', '-map_chapters', '-1', '-sn', '-dn', '-max_muxing_queue_size', '4096');
 
   let outHeight = video.height || 1080;
@@ -468,19 +532,36 @@ function buildEncodeArgs({ input, outDir, info, plan, encoder, maxHeight = 1080,
     }
   }
 
-  if (audio) {
-    if (audio.codec_name === 'aac' && (audio.channels || 2) <= 2) args.push('-c:a', 'copy');
-    else args.push('-c:a', 'aac', '-ac', '2', '-b:a', '192k');
-  } else {
-    args.push('-an');
-  }
+  // Every track becomes stereo AAC (copied when it already is), in its own
+  // folder: a0 for the default, a1… for the rest.
+  audio.forEach((a, i) => {
+    if (a.codec === 'aac' && a.channels <= 2) args.push(`-c:a:${i}`, 'copy');
+    else args.push(`-c:a:${i}`, 'aac', `-ac:a:${i}`, '2', `-b:a:${i}`, '192k');
+  });
+  if (audio.length === 0) args.push('-an');
+  const streamMap = [audio.length ? 'v:0,agroup:aud,name:v' : 'v:0,name:v',
+    ...audio.map((_, i) => `a:${i},agroup:aud,name:a${i}`)].join(' ');
 
   args.push('-f', 'hls', '-hls_time', String(SEGMENT_SECONDS), '-hls_playlist_type', 'event',
     '-hls_segment_type', 'fmp4', '-hls_fmp4_init_filename', 'init.mp4',
-    '-hls_segment_filename', path.join(outDir, 'seg_%05d.m4s'),
+    // Relative to outDir, which ffmpeg runs in: given absolute paths, some
+    // builds (4.4 on Windows) write the init segments to their own cwd.
+    '-hls_segment_filename', '%v/seg_%05d.m4s',
     '-hls_flags', 'independent_segments+temp_file', '-start_number', '0',
-    path.join(outDir, 'index.m3u8'));
+    '-var_stream_map', streamMap,
+    '%v/index.m3u8');
   return args;
+}
+
+/** Peak bits per second of a web version's video, for the master playlist. */
+function webBandwidth({ plan, info, size, duration, maxHeight = 1080 }) {
+  if (plan === 'transcode') {
+    const h = Math.min(mainVideo(info.streams)?.height || 1080, maxHeight);
+    return Math.round(bitrateFor(h) * 1.5);
+  }
+  const v = Number(mainVideo(info.streams)?.bit_rate);
+  if (v > 0) return Math.round(v * 1.5);
+  return size && duration ? Math.round((size * 8 / duration) * 1.5) : 12_000_000;
 }
 
 let current = null;   // { kind, id, proc }
@@ -514,16 +595,21 @@ async function encode(job, opts = {}) {
     return;
   }
   const encoder = job.plan === 'transcode' ? (opts.encoder || await pickEncoder()) : 'copy';
-  const args = buildEncodeArgs({
-    input: job.path, outDir, info, plan: job.plan, encoder,
-    maxHeight: Number(settings.get('web_max_height')) || 1080, wanted: wantedLanguages(),
-  });
+  const maxHeight = Number(settings.get('web_max_height')) || 1080;
+  const wanted = wantedLanguages();
+  const args = buildEncodeArgs({ input: job.path, info, plan: job.plan, encoder, maxHeight, wanted });
+  // Written before ffmpeg starts: a player that opens it while the encode
+  // runs finds the playlists it names filling up.
+  fs.writeFileSync(path.join(outDir, 'master.m3u8'), masterPlaylist({
+    renditions: audioRenditions(info.streams, wanted),
+    bandwidth: webBandwidth({ plan: job.plan, info, size: job.size, duration: job.duration, maxHeight }),
+  }));
   rows.update(kind, id, { web_state: 'encoding', web_progress: 0, web_error: null, web_encoder: encoder });
   const started = Date.now();
   const label = `${kind} #${id}`;
 
   const result = await new Promise((resolve) => {
-    const proc = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(FFMPEG, args, { cwd: outDir, stdio: ['ignore', 'pipe', 'pipe'] });
     current = { kind, id, proc };
     let stderr = '';
     let lastWrite = 0;
@@ -595,19 +681,58 @@ function cacheSize() {
   return total;
 }
 
+/**
+ * Delete every web version that can be rebuilt. One whose original was removed
+ * after seeding is the only copy left, so it stays.
+ */
 function clearWebVersions() {
   if (current) current.proc.kill('SIGKILL');
-  for (const r of rows.all()) removeWebVersion(r.kind, r.item_id);
-  db.prepare("UPDATE media_files SET web_state = 'none', web_progress = 0, web_error = NULL").run();
+  for (const r of rows.all()) if (!r.original_removed_at) removeWebVersion(r.kind, r.item_id);
+  db.prepare("UPDATE media_files SET web_state = 'none', web_progress = 0, web_error = NULL WHERE original_removed_at IS NULL").run();
 }
 
-/** True once the HLS playlist has at least one segment to play. */
+/** The playlist a player opens: master.m3u8, or index.m3u8 for an older web version. */
+function hlsEntry(kind, id) {
+  return fs.existsSync(path.join(webDir(kind, id), 'master.m3u8')) ? 'master.m3u8' : 'index.m3u8';
+}
+
+/** Every media playlist of a web version, as paths relative to its folder. */
+function hlsPlaylists(kind, id) {
+  if (hlsEntry(kind, id) === 'index.m3u8') return ['index.m3u8'];
+  let master = '';
+  try { master = fs.readFileSync(path.join(webDir(kind, id), 'master.m3u8'), 'utf8'); } catch (_) { return []; }
+  const uris = [...master.matchAll(/URI="([^"]+)"/g)].map(m => m[1]);
+  for (const line of master.split('\n')) if (line && !line.startsWith('#')) uris.push(line.trim());
+  return uris;
+}
+
+const playlistHas = (kind, id, rel, re) => {
+  try { return re.test(fs.readFileSync(path.join(webDir(kind, id), rel), 'utf8')); } catch (_) { return false; }
+};
+
+/** True once every playlist has at least one segment to play. */
 function hlsPlayable(kind, id) {
-  try {
-    return /#EXTINF/.test(fs.readFileSync(path.join(webDir(kind, id), 'index.m3u8'), 'utf8'));
-  } catch (_) {
-    return false;
-  }
+  const lists = hlsPlaylists(kind, id);
+  return lists.length > 0 && lists.every(rel => playlistHas(kind, id, rel, /#EXTINF/));
+}
+
+/** True once every playlist is finished — ffmpeg writes ENDLIST only on success. */
+function hlsComplete(kind, id) {
+  const lists = hlsPlaylists(kind, id);
+  return lists.length > 0 && lists.every(rel => playlistHas(kind, id, rel, /#EXT-X-ENDLIST/));
+}
+
+/**
+ * Whether the web version carries every audio track of the original. An
+ * older one has a single track, which is all of them only for a file that
+ * had one.
+ */
+function webHasAllAudio(row) {
+  let info = null;
+  try { info = JSON.parse(row.probe); } catch (_) {}
+  const want = (info?.streams || []).filter(s => s.codec_type === 'audio').length;
+  if (hlsEntry(row.kind, row.item_id) === 'index.m3u8') return want <= 1;
+  return hlsPlaylists(row.kind, row.item_id).filter(u => /^a\d+\//.test(u)).length === want;
 }
 
 // ─── Subtitles ────────────────────────────────────────────────────────────────
@@ -631,6 +756,11 @@ const shortId = (s) => crypto.createHash('sha1').update(s).digest('hex').slice(0
  * as unavailable.
  */
 function listSubtitles(media) {
+  // The original is gone: what was there when it was removed, served from the
+  // WebVTT copies kept with the web version. Nothing is editable any more.
+  if (media.original_removed_at) {
+    try { return JSON.parse(media.subs_snapshot || '[]').map(s => ({ ...s, editable: false })); } catch (_) { return []; }
+  }
   const out = [];
   const dir = path.dirname(media.path);
   const stem = path.basename(media.path).replace(/\.[^.]+$/, '');
@@ -694,6 +824,11 @@ async function vttFor(media, subId) {
   if (!sub) throw Object.assign(new Error('No such subtitle'), { status: 404 });
   if (!sub.available) throw Object.assign(new Error('Image-based subtitles can\'t be shown as text'), { status: 415 });
   const dir = subsDir(media.kind, media.item_id);
+  if (media.original_removed_at) {
+    const kept = cachedVtt(dir, subId);
+    if (!kept) throw Object.assign(new Error('This subtitle wasn\'t kept when the original was removed'), { status: 404 });
+    return kept;
+  }
   fs.mkdirSync(dir, { recursive: true });
   // The cache is named after what it was made from: a subtitle file's
   // content (small, and re-timing it can leave size and timestamp unchanged —
@@ -727,6 +862,14 @@ async function vttFor(media, subId) {
   return out;
 }
 
+/** The WebVTT copy of a subtitle already in the cache, whatever version it is. */
+function cachedVtt(dir, subId) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return null; }
+  const hit = names.find(n => n.startsWith(`${subId}.`) && n.endsWith('.vtt'));
+  return hit ? path.join(dir, hit) : null;
+}
+
 /** Convert every text subtitle ahead of time, so the first play doesn't wait. */
 async function prewarmSubtitles(media) {
   for (const s of listSubtitles(media).filter(x => x.available)) {
@@ -737,6 +880,7 @@ async function prewarmSubtitles(media) {
 module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
   record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir,
-  hlsPlayable, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles,
+  hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
+  videoFilesIn, subsDir,
   normLang, langFromName, wantedLanguages, searchDisk, queue: () => rows.queue(),
 };

@@ -198,6 +198,11 @@ const migrations = [
   'CREATE INDEX IF NOT EXISTS idx_progress_user ON playback_progress(user_id, updated_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_media_web_state ON media_files(web_state)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
+  // When the original was removed after seeding, leaving the web version as
+  // the only copy, and the subtitles it had then (their WebVTT copies are kept
+  // with the web version).
+  'ALTER TABLE media_files ADD COLUMN original_removed_at TEXT',
+  'ALTER TABLE media_files ADD COLUMN subs_snapshot TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -286,6 +291,13 @@ const defaultSettings = {
   web_max_height:            '1080',
   // Fetched subtitles not matched by file hash are aligned to the audio.
   subtitle_autosync:         '1',
+  // Removing originals once they have seeded, keeping only the web version.
+  // 'off' | 'remux' (repackaged only: same video) | 'all' (converted too).
+  seed_cleanup:              'off',
+  // Upload ratio a torrent must reach first.
+  seed_cleanup_ratio:        '2',
+  // Or after this many days seeding, whatever the ratio. 0 = ratio only.
+  seed_cleanup_days:         '0',
 };
 
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');

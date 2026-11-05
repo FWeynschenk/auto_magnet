@@ -57,20 +57,52 @@ test('audio choice skips commentary and audio description and prefers the wanted
 
 // ─── Encode arguments ────────────────────────────────────────────────────────
 
-const args = (o) => media.buildEncodeArgs({ input: '/in.mkv', outDir: '/out', maxHeight: 1080, wanted: ['en'], ...o });
+const args = (o) => media.buildEncodeArgs({ input: '/in.mkv', maxHeight: 1080, wanted: ['en'], ...o });
 
 test('remux copies the video and converts only the audio', () => {
   const x = args({ plan: 'remux', encoder: 'copy', info: { streams: [v(), a({ codec_name: 'ac3', channels: 6 })] } });
   assert.deepEqual(x.slice(x.indexOf('-c:v'), x.indexOf('-c:v') + 2), ['-c:v', 'copy']);
-  assert.ok(x.includes('aac') && x.includes('-ac'));
+  assert.deepEqual(x.slice(x.indexOf('-c:a:0'), x.indexOf('-c:a:0') + 6), ['-c:a:0', 'aac', '-ac:a:0', '2', '-b:a:0', '192k']);
   assert.ok(!x.includes('-vf'));
-  assert.equal(x.at(-1), '/out/index.m3u8');
+  assert.equal(x.at(-1), '%v/index.m3u8', 'relative: ffmpeg runs in the output folder');
   assert.ok(x.includes('event') && x.includes('fmp4'), 'growing fMP4 HLS playlist');
 });
 
 test('stereo AAC is copied rather than re-encoded', () => {
   const x = args({ plan: 'remux', encoder: 'copy', info: { streams: [v(), a()] } });
-  assert.deepEqual(x.slice(x.indexOf('-c:a'), x.indexOf('-c:a') + 2), ['-c:a', 'copy']);
+  assert.deepEqual(x.slice(x.indexOf('-c:a:0'), x.indexOf('-c:a:0') + 2), ['-c:a:0', 'copy']);
+});
+
+test('every audio track is mapped, the preferred one first, each in its own rendition', () => {
+  const streams = [v(),
+    a({ index: 1, codec_name: 'ac3', channels: 6, tags: { language: 'ger' }, disposition: { default: 1 } }),
+    a({ index: 2, tags: { language: 'eng' } }),
+    a({ index: 3, tags: { language: 'eng', title: 'Director\'s Commentary' } })];
+  const x = args({ plan: 'remux', encoder: 'copy', info: { streams } });
+  const maps = x.flatMap((s, i) => (s === '-map' ? [x[i + 1]] : []));
+  assert.deepEqual(maps, ['0:0', '0:2', '0:1', '0:3']);
+  assert.equal(x[x.indexOf('-var_stream_map') + 1],
+    'v:0,agroup:aud,name:v a:0,agroup:aud,name:a0 a:1,agroup:aud,name:a1 a:2,agroup:aud,name:a2');
+  assert.deepEqual(x.slice(x.indexOf('-c:a:1'), x.indexOf('-c:a:1') + 2), ['-c:a:1', 'aac'], 'the 5.1 AC-3 becomes AAC');
+  assert.deepEqual(x.slice(x.indexOf('-c:a:0'), x.indexOf('-c:a:0') + 2), ['-c:a:0', 'copy']);
+});
+
+test('the master playlist names each track and marks the default', () => {
+  const r = media.audioRenditions([v(),
+    a({ index: 1, tags: { language: 'eng' } }),
+    a({ index: 2, tags: { language: 'dut' } }),
+    a({ index: 3, tags: { language: 'eng' }, disposition: { visual_impaired: 1 } }),
+    a({ index: 4, tags: { language: 'eng', title: 'Commentary "with" cast' } }),
+    a({ index: 5, tags: { language: 'dut' } })], ['en']);
+  assert.deepEqual(r.map(x => x.name),
+    ['English', 'Dutch', 'English — audio description', 'English — Commentary with cast', 'Dutch (2)']);
+  const m = media.masterPlaylist({ renditions: r, bandwidth: 8_000_000 });
+  const lines = m.split('\n');
+  assert.match(lines[3], /^#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="a0\/index\.m3u8"$/);
+  assert.match(lines[5], /DEFAULT=NO,AUTOSELECT=NO,CHARACTERISTICS="public\.accessibility\.describes-video",URI="a2/);
+  assert.match(lines[6], /AUTOSELECT=NO,URI="a3/, 'commentary is never picked automatically');
+  assert.ok(m.includes('#EXT-X-STREAM-INF:BANDWIDTH=8200000,AUDIO="aud"\nv/index.m3u8'));
+  assert.ok(!media.masterPlaylist({ renditions: [], bandwidth: 1 }).includes('AUDIO='), 'a silent file has no audio group');
 });
 
 test('4K HEVC is scaled down and encoded on the GPU', () => {
@@ -91,6 +123,7 @@ test('subtitle-only and silent files map only what exists', () => {
   const x = args({ plan: 'transcode', encoder: 'x264', info: { streams: [v({ codec_name: 'mpeg4' })] } });
   assert.ok(x.includes('-an'));
   assert.equal(x.filter(s => s === '-map').length, 1);
+  assert.equal(x[x.indexOf('-var_stream_map') + 1], 'v:0,name:v');
 });
 
 test('language from subtitle filenames', () => {

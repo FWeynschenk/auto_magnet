@@ -21,6 +21,15 @@ These shipped but can only be confirmed on the real box.
   CPU per file and is logged.
 - **Web version disk use.** Roughly the size of what gets converted. Watch `WEB_ROOT` for a
   week; switch to *Only when someone presses play* if it grows too fast.
+- **Multi-track web versions on the real ffmpeg.** Every audio track is now an HLS rendition
+  (`-var_stream_map`, `master.m3u8` written by us). Tested here with ffmpeg 4.4; CI runs the same tests on
+  6.1 once pushed; the Docker image's Debian ffmpeg is 5.1. After the deploy, play a file with two languages
+  in the browser and in the app and switch between them (app: the gear → Audio).
+- **Removing originals after seeding.** Off by default. Tested here against a stand-in for
+  Transmission only, so the first real removal is its first run against `torrent-get`'s
+  `uploadRatio`/`secondsSeeding` and `torrent-remove`. Turn it on with *Repackaged items only*,
+  check the Activity log for `original removed after seeding`, and play that item (with
+  subtitles) before widening it to converted items.
 - **Back catalogue indexing.** 40 items per half hour, or *Scan library now*. Items whose
   torrents were removed are found by searching the show/movie folders; anything still missing
   says so in the player.
@@ -122,12 +131,11 @@ enforces the documented limits — so they can be rebuilt rather than rediscover
 
 - **Subtitle timing in the Android app.** The web player can nudge/save/auto-sync; the app can
   only pick a track. Saved fixes reach the app on the next play.
-- **Multiple audio tracks.** A web version carries one audio track (the preferred language,
-  never commentary/AD). A language switch in the player would need one rendition per track.
 - **Adaptive bitrate for away-from-home.** One rendition per file today. A 720p/2 Mbps variant
   in the HLS master would make streaming over a phone connection workable.
 - **Web version clean-up.** Nothing deletes web versions except *Delete all* or removing the item.
-  A "watched by everyone, older than N days" sweep would bound the disk use.
+  A "watched by everyone, older than N days" sweep would bound the disk use. (Removing originals
+  after seeding, the other half of the disk, shipped.)
 - **Chromecast / TV.** Not started. Media3 has a Cast extension; HLS output is Cast-compatible.
 
 ## Smaller

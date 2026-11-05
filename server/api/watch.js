@@ -125,8 +125,9 @@ function playback(kind, id, m) {
   if (m.plan === 'unplayable') return { mode: 'unavailable', error: m.plan_reason };
   const file = { url: `${base(kind, id)}/file`, size: m.size };
   if (m.plan === 'direct') return { mode: 'file', url: file.url, download: { type: 'file', ...file }, reason: m.plan_reason };
-  const hls = `${base(kind, id)}/hls/index.m3u8`;
-  const info = { plan: m.plan, reason: m.plan_reason, state: m.web_state, progress: m.web_progress, encoder: m.web_encoder };
+  const hls = `${base(kind, id)}/hls/${media.hlsEntry(kind, id)}`;
+  const info = { plan: m.plan, reason: m.plan_reason, state: m.web_state, progress: m.web_progress, encoder: m.web_encoder,
+    original: !m.original_removed_at };
   if (m.web_state === 'ready') return { mode: 'hls', url: hls, complete: true, download: { type: 'hls', url: hls }, ...info };
   if (m.web_state === 'encoding' && media.hlsPlayable(kind, id)) return { mode: 'hls', url: hls, complete: false, ...info };
   return { mode: 'preparing', ...info, error: m.web_error || null };
@@ -190,6 +191,7 @@ router.post('/items/:kind/:id/prepare', wrap(async (req) => {
 router.get('/items/:kind/:id/file', wrap(async (req, res) => {
   const { kind, id } = params(req);
   const m = await media.locate(kind, id);
+  if (m.original_removed_at) throw bad('The original was removed after seeding; only the web version is left', 410);
   if (req.query.download) {
     res.attachment(path.basename(m.path));
   }
@@ -201,13 +203,15 @@ router.get('/items/:kind/:id/file', wrap(async (req, res) => {
   });
 }));
 
-const HLS_NAME = /^(index\.m3u8|init\.mp4|seg_\d{5}\.m4s)$/;
+const HLS_NAME = /^(master\.m3u8|index\.m3u8|init(_\d+)?\.mp4|seg_\d{5}\.m4s)$/;
+// The video's folder and one per audio track (see media.js).
+const HLS_DIR = /^(v|a\d{1,2})$/;
 
-router.get('/items/:kind/:id/hls/:name', wrap(async (req, res) => {
+const sendHls = wrap(async (req, res) => {
   const { kind, id } = params(req);
-  const name = req.params.name;
-  if (!HLS_NAME.test(name)) throw bad('Not found', 404);
-  const file = path.join(media.webDir(kind, id), name);
+  const { dir, name } = req.params;
+  if (!HLS_NAME.test(name) || (dir !== undefined && !HLS_DIR.test(dir))) throw bad('Not found', 404);
+  const file = path.join(media.webDir(kind, id), ...(dir ? [dir] : []), name);
   if (!fs.existsSync(file)) throw bad('Not ready', 404);
   if (name.endsWith('.m3u8')) {
     res.type('application/vnd.apple.mpegurl');
@@ -217,7 +221,9 @@ router.get('/items/:kind/:id/hls/:name', wrap(async (req, res) => {
     res.set('Cache-Control', 'private, max-age=31536000, immutable');
   }
   await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));
-}));
+});
+router.get('/items/:kind/:id/hls/:name', sendHls);
+router.get('/items/:kind/:id/hls/:dir/:name', sendHls);
 
 // ─── Subtitles ────────────────────────────────────────────────────────────────
 
@@ -349,6 +355,7 @@ router.get('/admin/status', requireAdmin, wrap(async () => {
       return { ...q, title: i ? (i.kind === 'episode' ? `${i.show_title} S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}` : i.title) : '?' };
     }),
     failed: db.prepare("SELECT kind, item_id, web_error FROM media_files WHERE web_state = 'failed' LIMIT 50").all(),
+    originalsRemoved: db.prepare('SELECT COUNT(*) AS n FROM media_files WHERE original_removed_at IS NOT NULL').get().n,
   };
 }));
 
@@ -375,7 +382,8 @@ router.post('/admin/clear', requireAdmin, wrap(() => {
 
 router.post('/items/:kind/:id/reencode', requireAdmin, wrap(async (req) => {
   const { kind, id } = params(req);
-  await media.locate(kind, id);
+  const m = await media.locate(kind, id);
+  if (m.original_removed_at) throw bad('The original was removed after seeding, so there is nothing to re-encode from', 409);
   media.removeWebVersion(kind, id);
   media.rows.update(kind, id, { web_state: 'none', web_progress: 0, web_error: null });
   return playback(kind, id, media.enqueue(kind, id, { priority: 5 }));

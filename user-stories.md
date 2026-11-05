@@ -524,3 +524,45 @@ peak's z-score is ≥ 4. Synthetic tests recover offsets and a 25/23.976 stretch
 checked by mtime served the pre-restore file when a restore followed a shift within the same
 tick; the cache is now keyed on the subtitle's content hash. `node --test test/` treats the
 directory as a file on Node 22 — the script globs `test/*.test.js`.
+
+## Implementation notes (2026-11-05, later): removing originals after seeding
+
+**What for.** A repackaged or converted item takes its space twice — the seeding original and
+the web version. Once a torrent has given back (ratio 2 by default, or N days), the original has
+done its job. Opt-in, because the original is also what Samba, Jellyfin and Plex see, and a
+converted web version is a lower quality than its source.
+
+**What qualifies.** Per torrent, never per file: Transmission removes a torrent's data as a whole.
+Every video in it (samples aside) must map to a library item with a finished web version
+(`#EXT-X-ENDLIST` written) and an allowed plan. A video in it that nothing tracks keeps the whole
+torrent — that is the guard against deleting something the user wanted from inside a pack. Direct
+play never qualifies; a `duplicate`-origin torrent never does.
+
+**After.** `media_files.original_removed_at` marks the web version as the only copy: `locate()`
+returns the row without looking for the file, "Delete all web versions" and re-encode leave it
+alone, and `record()` clears the mark if the item is downloaded again. Subtitles are converted to
+WebVTT before the torrent goes and listed from `subs_snapshot` afterwards. The row is marked
+before the purge and unmarked if it fails, so a restart in between can't make the player drop
+the row as "file missing".
+
+**Android build.** Moved to Gradle 9.7.1 + AGP 9.4.1 + Kotlin 2.4.20 (built-in Kotlin, no
+kotlin-android plugin) so it builds with Android Studio's current JBR (JDK 25), which Gradle 8
+refuses.
+
+## Implementation notes (2026-11-05, later still): every audio track
+
+**Why now.** A web version held one audio track, which was fine while the original stayed beside
+it. Once originals can be removed after seeding, the other languages would be lost for good.
+
+**How.** Each audio track becomes its own HLS rendition (`-var_stream_map`, folders `v/`, `a0/`,
+`a1/`…), every one stereo AAC. The master playlist is written by us rather than ffmpeg, whose
+`NAME="audio_1"` is useless in a menu: names come from the language and the track title,
+commentary and audio description are never AUTOSELECT, and the track `chooseAudio()` picks is
+`a0` and DEFAULT. hls.js and Media3 both switch renditions natively; Media3's downloader takes
+every rendition when no stream keys are given. Older single-track web versions keep playing from
+their `index.m3u8`; seed cleanup rebuilds one first when its original has more than one track.
+
+**Found while testing.** ffmpeg 4.4 on Windows, given absolute output paths, writes the fMP4
+init segments into its own working directory — the stray `init.mp4` in the repo root, and the
+three API tests that only ever failed on Windows. ffmpeg now runs inside the output folder with
+relative paths.

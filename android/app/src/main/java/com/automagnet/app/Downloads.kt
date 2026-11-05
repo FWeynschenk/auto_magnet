@@ -109,6 +109,9 @@ object Downloads {
             LocalSubtitle(s.id, s.label, s.lang, f.absolutePath, s.default)
         }
         val meta = DownloadMeta(detail.asItem(), dl.type, subs)
+        // No stream keys: an HLS download then takes every rendition in the
+        // master playlist, so all audio tracks are there offline too, and the
+        // player's settings menu can switch between them.
         val request = DownloadRequest.Builder(idFor(detail.kind, detail.id), Uri.parse(Api.abs(dl.url)))
             .setMimeType(if (dl.type == "hls") MimeTypes.APPLICATION_M3U8 else null)
             .setData(Api.json.encodeToString(DownloadMeta.serializer(), meta).toByteArray())

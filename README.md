@@ -211,6 +211,9 @@ Advanced settings (UI only, not in `.env`):
 | Encoder | automatic | GPU (VAAPI) when available, else libx264 |
 | Converted video height | `1080p` | Converted video is scaled down to this; repackaged video is never touched |
 | Align fetched subtitles | on | Sync subtitles not matched by file hash to the audio |
+| Remove originals after seeding | never | Or *repackaged only*, or *repackaged and converted* — see [Removing originals after seeding](#removing-originals-after-seeding) |
+| … once the ratio reaches | `2` | Upload ratio a torrent must reach first |
+| … or after seeding for | `0` days | Remove anyway after this long; `0` = ratio only |
 
 ---
 
@@ -489,12 +492,19 @@ Each finished file is probed once and given one of three plans:
 | Plan | When | What happens |
 |---|---|---|
 | **Direct** | MP4 with H.264 video and AAC/MP3 audio | Served as it is, with range requests |
-| **Repackage** | Video is fine, but the file is MKV, or the audio is AC-3/DTS/TrueHD, or the right audio track isn't the first one | Video copied untouched, audio converted to AAC. Takes about a minute, no quality loss |
+| **Repackage** | Video is fine, but the file is MKV, or the audio is AC-3/DTS/TrueHD, or the right audio track isn't the first one | Video copied untouched, audio converted to stereo AAC. Takes about a minute, no loss of picture quality |
 | **Convert** | HEVC, 10-bit, HDR (tone-mapped to SDR), MPEG-4 Part 2, VC-1 | Re-encoded to 8-bit H.264, scaled to at most 1080p (configurable) |
 
 Repackaged and converted versions are HLS, written to their own folder (`WEB_PATH`, the `./web`
 volume in Docker) — **the original is never touched**, so Transmission keeps seeding it. The
 playlist grows as the encode runs, so playback can begin after the first few seconds are done.
+
+**Every audio track is kept**, each as stereo AAC (about 85 MB an hour per extra track). The one
+in your first subtitle language — never commentary or audio description — plays by default; the
+others are named after their language and title. Switch with the **Audio** menu under the video
+(or `A`) in the browser, and the settings (gear) button in the Android player — downloads carry
+every track too. Web versions made before this have one track; they keep playing, and are rebuilt
+with all of them before *Remove originals after seeding* lets their original go.
 
 By default a web version is built as soon as a download passes its file check. Set **Settings →
 Playback → Prepare web versions** to *Only when someone presses play* to save disk space; the
@@ -502,6 +512,35 @@ first play then waits for the first segment. Budget roughly the size of the conv
 
 Files downloaded before this existed are indexed in the background, 40 every half hour, or all
 at once with **Settings → Watch library → Scan library now**.
+
+### Removing originals after seeding
+
+A repackaged or converted item is on disk twice: the original, which Transmission seeds, and its
+web version. **Settings → Playback → Remove originals after seeding** (off by default) lets go of
+the original once the torrent has given back enough, and keeps the web version as the only copy.
+
+| Setting | Removes |
+|---|---|
+| Never | Nothing |
+| Repackaged items only | Originals whose web version has the same video, copied untouched. Every audio track is kept; lost are surround sound (each track is stereo AAC) and image subtitles |
+| Repackaged and converted | Also originals that were re-encoded — the web version is then the only quality left (8-bit SDR H.264, at most the *Converted video height*) |
+
+At the end of each scheduler run, a torrent is removed — files, folder and Transmission entry —
+when it has finished and reached the ratio (default `2`), or has seeded for the set number of
+days, **and every video file in it** belongs to an item whose web version is complete. So a season
+pack waits until its last episode is converted, and a pack holding a video nothing tracks is never
+removed. Files that play as they are (*direct*) have no second copy and are never removed, and
+neither is a torrent that was already in Transmission before auto_magnet asked for it.
+
+Before the torrent goes, every subtitle the player can show is converted to WebVTT and kept with
+the web version; fetched `.srt` files beside the video are then deleted with it. They can no longer
+be re-timed or saved — the player's offset still works. **Delete all web versions** skips these,
+since there is nothing to rebuild them from, and so does **Retry**.
+
+Two things to know before turning it on: anything else reading the media folder — a Samba share,
+Jellyfin or Plex — loses the original too; and if Transmission stops seeding at a lower ratio than
+this one (its own *seed ratio limit*), only the day limit will ever remove anything. The Activity
+log records each removal and the space freed.
 
 ### GPU encoding
 
@@ -534,12 +573,13 @@ was made, so progress uploaded late from a phone never overwrites newer progress
 
 ### Keyboard (player)
 
-`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `N` next episode
+`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `N` next episode
 
 ### Android app
 
 The app is in `android/`. Every CI run builds it — download `auto_magnet-android` from the run's
-artifacts — or build it yourself with JDK 17+ and the Android SDK:
+artifacts — or build it yourself with the Android SDK and JDK 17 or newer (Android Studio's bundled
+JBR works; the build uses Gradle 9.7 and AGP 9.4):
 
 ```bash
 cd android && ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
@@ -547,8 +587,8 @@ cd android && ./gradlew assembleDebug   # app/build/outputs/apk/debug/app-debug.
 
 Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an account. Then:
 
-- **Play** streams, resuming where that account left off, with subtitles; at the end of an
-  episode the next one starts.
+- **Play** streams, resuming where that account left off, with subtitles and every audio track
+  (switch in the settings menu); at the end of an episode the next one starts.
 - **Download** keeps a copy on the phone: the original file for direct-play items, the web
   version for the rest (available once it has finished converting). Subtitles come with it.
   Downloads wait for Wi-Fi unless you switch that off on the Downloads tab.
@@ -660,6 +700,7 @@ auto_magnet/
 │   ├── auth.js           # Accounts, sessions, the API guard
 │   ├── media.js          # Watch library: locating files, play plans, encode queue, subtitles
 │   ├── progress.js       # Per-user resume points, continue watching, next up
+│   ├── cleanup.js        # Removing originals that have seeded, keeping the web version
 │   ├── subsync.js        # Aligning subtitles to the audio
 │   ├── subtitle-text.js  # SRT/WebVTT parsing and writing
 │   ├── sources/

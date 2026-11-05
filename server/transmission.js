@@ -141,6 +141,22 @@ async function getTorrentInfo(id, target = null) {
   };
 }
 
+/** How much a torrent has seeded: its upload ratio and time spent seeding. */
+async function getSeedInfo(id, target = null) {
+  const args = await rpc('torrent-get', {
+    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'uploadRatio', 'secondsSeeding', 'doneDate'],
+  }, target);
+  const t = args?.torrents?.[0];
+  if (!t) return null;
+  return {
+    id: t.id, name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
+    // Transmission reports -1 (no data) and -2 (infinite: nothing downloaded) as ratios.
+    uploadRatio: t.uploadRatio === -2 ? Infinity : Math.max(0, Number(t.uploadRatio) || 0),
+    secondsSeeding: Number(t.secondsSeeding) || 0,
+    files: (t.files || []).map(f => ({ name: f.name, length: f.length })),
+  };
+}
+
 async function startTorrent(id, target = null) { await rpc('torrent-start',  { ids: [id] }, target); }
 async function stopTorrent(id, target = null)  { await rpc('torrent-stop',   { ids: [id] }, target); }
 async function purgeTorrent(id, target = null) { await rpc('torrent-remove', { ids: [id], 'delete-local-data': true }, target); }
@@ -494,7 +510,7 @@ function removeTorrent(id, targetName = null) {
 
 module.exports = {
   addTorrent, getTorrentProgress, testConnection, removeTorrent,
-  getTorrentFiles, getTorrentInfo, startTorrent, stopTorrent, purgeTorrent,
+  getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent,
   listTorrents, setTorrentLocation,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
   listTargets, resolveTarget, progressKey,

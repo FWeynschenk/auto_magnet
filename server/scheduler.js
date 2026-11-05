@@ -31,19 +31,44 @@ function hasAired(airDate) {
   return base + bufferHours * 3600 * 1000 <= Date.now();
 }
 
+const DAY_MS = 24 * 3600 * 1000;
+
 /**
- * Smarter aired check: if any later episode in the same season has a confirmed past
- * air date, all preceding episodes are also considered aired — even if TMDB hasn't
- * populated their individual dates yet.
+ * Smarter aired check, for one episode of a season:
+ *
+ * - If a later episode has a confirmed past air date, this one has aired too,
+ *   even if TMDB hasn't filled in its own date.
+ * - An episode without a date of its own is assumed to follow the nearest dated
+ *   episode before it (or the season premiere) weekly. TMDB often lists a new
+ *   season's episodes before it dates them: with only E01 dated next July, E02
+ *   onward must not count as "aired" and be searched for every run. A season
+ *   that aired long ago with a gap in its dates still estimates into the past.
+ * - With nothing dated at all, the episode counts as aired, so content without
+ *   metadata isn't skipped.
  */
-function effectivelyAired(epNumber, seasonEpisodes) {
-  const latestConfirmed = (seasonEpisodes || [])
+function effectivelyAired(epNumber, seasonEpisodes, seasonAirDate = null) {
+  const eps = seasonEpisodes || [];
+  const latestConfirmed = eps
     .filter(e => e.air_date && hasAired(e.air_date))
     .reduce((max, e) => Math.max(max, e.episode_number), 0);
   if (epNumber <= latestConfirmed) return true;
 
-  const ep = (seasonEpisodes || []).find(e => e.episode_number === epNumber);
-  return hasAired(ep?.air_date ?? null);
+  const ep = eps.find(e => e.episode_number === epNumber);
+  if (ep?.air_date) return hasAired(ep.air_date);
+  return hasAired(estimatedAirDate(epNumber, eps, seasonAirDate));
+}
+
+/** A weekly estimate from the nearest dated episode before this one; null when nothing is dated. */
+function estimatedAirDate(epNumber, eps, seasonAirDate) {
+  const before = eps
+    .filter(e => e.air_date && e.episode_number < epNumber)
+    .reduce((best, e) => (!best || e.episode_number > best.episode_number ? e : best), null);
+  const ref = before ? { date: before.air_date, n: before.episode_number }
+    : seasonAirDate ? { date: seasonAirDate, n: 1 } : null;
+  if (!ref) return null;
+  const t = new Date(ref.date + 'T00:00:00Z').getTime();
+  if (Number.isNaN(t)) return null;
+  return new Date(t + (epNumber - ref.n) * 7 * DAY_MS).toISOString().slice(0, 10);
 }
 
 // --- Episode sync ---
@@ -94,7 +119,7 @@ async function syncEpisodes(show, fetchSeason) {
       const key  = `${s}x${ep.episode_number}`;
       const row  = existing.get(key);
       const airs = ep.air_date || null;
-      const aired = effectivelyAired(ep.episode_number, season.episodes);
+      const aired = effectivelyAired(ep.episode_number, season.episodes, season.season_air_date);
 
       if (!row) {
         episodes.insert({

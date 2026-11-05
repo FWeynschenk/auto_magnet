@@ -246,6 +246,7 @@ The scheduler runs automatically on the configured interval. You can also trigge
 
 - Grabs all aired, not-yet-downloaded episodes in a single pass (up to 15 per show)
 - Uses smarter air date inference: if episode 5 has a confirmed past air date, episodes 1–4 are treated as aired even if TMDB hasn't populated their individual dates
+- An episode without a date is assumed to air weekly after the nearest dated one before it (or the season premiere). A new season whose later episodes are listed but not yet dated stays *upcoming* instead of being searched every run; a gap in an old season's dates still counts as aired
 - Populates a 60-day upcoming timeline so future episodes appear in the Timeline view before they air
 - Monitors active downloads in Transmission and marks them done on completion
 - Automatically retries stale downloads (stuck for more than 24 hours) with the next best result

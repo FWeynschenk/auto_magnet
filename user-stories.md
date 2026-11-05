@@ -566,3 +566,24 @@ their `index.m3u8`; seed cleanup rebuilds one first when its original has more t
 init segments into its own working directory — the stray `init.mp4` in the repo root, and the
 three API tests that only ever failed on Windows. ffmpeg now runs inside the output folder with
 relative paths.
+
+## Implementation notes (2026-11-05, evening): subtitle retries, picture-in-picture
+
+**Subtitle retries.** A search that finds nothing ('unavailable') is repeated at 12, 24, 36, 120
+and 240 hours after completion (`subtitle_retry_hours`); `subs_checked_at` records each try, so a
+point is used once and points missed during downtime collapse into one try. Items more than two
+days past their last point are left alone, so the first run after the upgrade doesn't spend the
+day's OpenSubtitles downloads on the back catalogue. Seed cleanup waits for outstanding retries.
+
+**Picture-in-picture.** `setAutoEnterEnabled` on Android 12+, `onUserLeaveHint` before that;
+RemoteActions for ±10 s and play/pause through a non-exported receiver. The player is
+`singleTask`, so opening another item while one plays in PiP switches it (onNewIntent), and the
+next episode now plays in the same activity instead of starting a new one. onStop while in PiP
+means the window was closed: save and finish.
+
+**Found while testing on the emulator.** Media3 could not play any HLS web version made by
+ffmpeg 4.4: that release writes the first fragment into the fMP4 init segment and leaves segment
+0 a bare `styp` (trac #9193). hls.js tolerates it, Media3 throws in `TimestampAdjuster`. This
+predates multi-track audio — the original single-playlist layout had it too. The server now moves
+the fragment back after each encode, and fixes existing web versions at startup. Newer ffmpeg
+likely doesn't need it; the repair leaves a correct file alone.

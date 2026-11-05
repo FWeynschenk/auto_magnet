@@ -31,6 +31,7 @@
         <activity
             android:name=".PlayerActivity"
             android:exported="false"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.AutoMagnet.Player"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:supportsPictureInPicture="true" />

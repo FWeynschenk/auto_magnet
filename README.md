@@ -200,6 +200,7 @@ Advanced settings (UI only, not in `.env`):
 | Check finished downloads | on | Probe completed files and fetch missing subtitles |
 | When a file is unusable | replace | `replace` deletes and re-grabs; `flag` keeps it and says why |
 | Subtitle languages | `en` | 2-letter codes; the first is the one fetched |
+| Search again for missing subtitles | `12,24,36,120,240` | Hours after a download at which a search that found nothing is repeated |
 | OpenSubtitles API key | — | Required for subtitles (Free consumer tier: 5 downloads/day) |
 | OpenSubtitles username / password | — | Optional; raises downloads to 20/day |
 | Media path mapping | — | Only if the container sees files under a different path than Transmission |
@@ -342,6 +343,14 @@ Your **login is optional** but worth adding — it raises the limit:
 Searching doesn't count, only downloads, and the counters reset at midnight UTC.
 20 a day covers new episodes comfortably; a backfilled season pack takes a day
 or two.
+
+**Something that has only just come out** often has no subtitles yet. A search that finds
+nothing is repeated **12, 24, 36, 120 and 240 hours** after the download completed (Settings →
+*Search again for missing subtitles*); the card says when the next try is. A try missed while
+the server was down is made once when it is back, not once per missed point, and items whose
+last try passed more than two days ago — the back catalogue, on the first run after upgrading —
+aren't retried. Remove originals after seeding waits for these tries, so a subtitle found late
+still has a video to sit beside.
 
 The free consumer tier also allows **5 requests per second**. auto_magnet paces
 itself to 4, waits out any `429`, logs in once a day, and — once the day's
@@ -593,6 +602,12 @@ Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an accou
   version for the rest (available once it has finished converting). Subtitles come with it.
   Downloads wait for Wi-Fi unless you switch that off on the Downloads tab.
 - Progress made offline is uploaded when the app is next opened online.
+- **Picture-in-picture**: going Home while something plays shrinks it to a floating window
+  (automatically on Android 12+), with back 10 s, play/pause and forward 10 s. Closing the window
+  saves the position. Opening another item while one plays there switches to it.
+
+The app is for watching: adding movies and shows, Browse/Choose, and settings are in the web
+dashboard.
 
 Reaching the server away from home needs a route to it: a VPN such as WireGuard or Tailscale
 is the safe one. Exposing the port to the internet is not recommended.

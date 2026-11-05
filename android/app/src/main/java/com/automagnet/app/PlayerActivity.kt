@@ -3,19 +3,30 @@
 package com.automagnet.app
 
 import android.app.Activity
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Rational
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -24,6 +35,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.offline.Download
@@ -41,12 +53,21 @@ import java.io.File
  * Full-screen playback. A finished download plays from the device; anything
  * else streams. The position is saved every ten seconds and whenever playback
  * stops, to ProgressStore first and the server when it can be reached.
+ *
+ * Leaving the app while something plays shrinks it to picture-in-picture
+ * (automatically on Android 12+, on Home/Recents before that). The PiP window
+ * has rewind, play/pause and forward buttons. There is only ever one player
+ * (singleTask): opening another item while one plays in PiP switches it.
  */
 class PlayerActivity : Activity() {
     companion object {
         fun start(ctx: Context, kind: String, id: Int) {
             ctx.startActivity(Intent(ctx, PlayerActivity::class.java).putExtra("kind", kind).putExtra("id", id))
         }
+        private const val ACTION_PIP = "com.automagnet.app.PIP_CONTROL"
+        private const val CMD_REWIND = 1
+        private const val CMD_TOGGLE = 2
+        private const val CMD_FORWARD = 3
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -59,11 +80,24 @@ class PlayerActivity : Activity() {
     private var duration: Double? = null
     private var next: Item? = null
     private var lastSaved = -1.0
+    private val pipSupported by lazy { packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE) }
+
+    private val pipReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val p = player ?: return
+            when (intent.getIntExtra("cmd", 0)) {
+                CMD_REWIND -> p.seekTo((p.currentPosition - 10_000).coerceAtLeast(0))
+                CMD_TOGGLE -> if (p.isPlaying) p.pause() else p.play()
+                CMD_FORWARD -> p.seekTo(p.currentPosition + 10_000)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         kind = intent.getStringExtra("kind") ?: return finish()
         id = intent.getIntExtra("id", 0)
+        ContextCompat.registerReceiver(this, pipReceiver, IntentFilter(ACTION_PIP), ContextCompat.RECEIVER_NOT_EXPORTED)
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         view = PlayerView(this).apply {
@@ -84,6 +118,89 @@ class PlayerActivity : Activity() {
         setContentView(root)
         immersive()
         scope.launch { load() }
+    }
+
+    /** Another item opened while this one plays (in PiP, usually): switch to it. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val k = intent.getStringExtra("kind") ?: return
+        val i = intent.getIntExtra("id", 0)
+        if (k == kind && i == id) return
+        switchTo(k, i)
+    }
+
+    private fun switchTo(newKind: String, newId: Int) {
+        handler.removeCallbacks(ticker)
+        save(force = true)
+        player?.release()
+        player = null
+        view.player = null
+        kind = newKind
+        id = newId
+        duration = null
+        next = null
+        lastSaved = -1.0
+        message.text = "Loading…"
+        message.visibility = View.VISIBLE
+        scope.launch { load() }
+    }
+
+    // ─── Picture-in-picture ──────────────────────────────────────────────────
+
+    private fun pipAction(cmd: Int, icon: Int, title: String) = RemoteAction(
+        Icon.createWithResource(this, icon), title, title,
+        PendingIntent.getBroadcast(
+            this, cmd, Intent(ACTION_PIP).setPackage(packageName).putExtra("cmd", cmd),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        ),
+    )
+
+    private fun pipParams(): PictureInPictureParams {
+        val p = player
+        val playing = p?.isPlaying == true
+        val b = PictureInPictureParams.Builder()
+            .setAspectRatio(aspect(p?.videoSize))
+            .setActions(listOf(
+                pipAction(CMD_REWIND, android.R.drawable.ic_media_rew, "Back 10 seconds"),
+                if (playing) pipAction(CMD_TOGGLE, android.R.drawable.ic_media_pause, "Pause")
+                else pipAction(CMD_TOGGLE, android.R.drawable.ic_media_play, "Play"),
+                pipAction(CMD_FORWARD, android.R.drawable.ic_media_ff, "Forward 10 seconds"),
+            ))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Going home while it plays shrinks it, without waiting for onUserLeaveHint.
+            b.setAutoEnterEnabled(playing).setSeamlessResizeEnabled(true)
+        }
+        return b.build()
+    }
+
+    /** The video's shape, within the range Android accepts for PiP. */
+    private fun aspect(size: VideoSize?): Rational {
+        if (size == null || size.width == 0 || size.height == 0) return Rational(16, 9)
+        val w = (size.width * size.pixelWidthHeightRatio).toInt().coerceAtLeast(1)
+        val ratio = w.toFloat() / size.height
+        return when {
+            ratio > 2.39f -> Rational(239, 100)
+            ratio < 1 / 2.39f -> Rational(100, 239)
+            else -> Rational(w, size.height)
+        }
+    }
+
+    private fun updatePip() {
+        if (pipSupported) runCatching { setPictureInPictureParams(pipParams()) }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Android 12+ enters on its own (setAutoEnterEnabled); before that, here.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && pipSupported && player?.isPlaying == true) {
+            runCatching { enterPictureInPictureMode(pipParams()) }
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        view.useController = !isInPictureInPictureMode
+        if (isInPictureInPictureMode) view.hideController() else immersive()
     }
 
     private fun immersive() {
@@ -158,10 +275,14 @@ class PlayerActivity : Activity() {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
                     save(force = true, ended = true)
-                    next?.let { n -> start(this@PlayerActivity, n.kind, n.id); finish() }
+                    next?.let { n -> switchTo(n.kind, n.id) }
                 }
             }
-            override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) save(force = true) }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (!isPlaying) save(force = true)
+                updatePip()
+            }
+            override fun onVideoSizeChanged(videoSize: VideoSize) = updatePip()
             override fun onPlayerError(error: PlaybackException) {
                 message.visibility = View.VISIBLE
                 message.text = "Playback failed: ${error.errorCodeName}"
@@ -193,9 +314,13 @@ class PlayerActivity : Activity() {
         super.onStop()
         save(force = true)
         player?.pause()
+        // Stopped while in PiP means the PiP window was closed: there is no
+        // screen left to come back to.
+        if (isInPictureInPictureMode) finish()
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(pipReceiver) }
         handler.removeCallbacks(ticker)
         save(force = true)
         player?.release()

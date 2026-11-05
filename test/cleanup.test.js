@@ -58,6 +58,11 @@ test('the web version must be finished', () => {
   assert.equal(cleanup.decide(torrent(), [row()], pol, { ...opts, check: () => ({ reason: 'x' }) }).ok, false);
 });
 
+test('an original waiting for a subtitle retry stays, so the subtitle has somewhere to go', () => {
+  assert.equal(cleanup.decide(torrent(), [row()], pol, { ...opts, subsPending: () => true }).ok, false);
+  assert.equal(cleanup.decide(torrent(), [row()], pol, { ...opts, subsPending: () => false }).ok, true);
+});
+
 test('a web version missing audio tracks is rebuilt first, not removed', () => {
   const rebuild = { ...opts, check: () => ({ reason: 'x', rebuild: true }) };
   const d = cleanup.decide(torrent(), [row()], pol, rebuild);

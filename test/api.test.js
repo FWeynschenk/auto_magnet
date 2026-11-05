@@ -129,6 +129,17 @@ test('playback', { skip }, async (t) => {
         assert.match(pl, /#EXT-X-ENDLIST/, rel);
       }
     }
+    // Init segments describe the tracks only; the media is in the segments
+    // (Media3 fails otherwise — see repairInitSegments).
+    for (const item of ['movie-2', 'episode-1']) {
+      for (const sub of fs.readdirSync(path.join(dir, 'web', item)).filter(n => /^(v|a\d+)$/.test(n))) {
+        const files = fs.readdirSync(path.join(dir, 'web', item, sub));
+        const init = files.find(n => /^init/.test(n));
+        const types = (f) => require('../server/media').mp4Boxes(fs.readFileSync(path.join(dir, 'web', item, sub, f))).map(b => b.type);
+        assert.deepEqual(types(init), ['ftyp', 'moov'], `${item}/${sub}/${init}`);
+        assert.ok(types('seg_00000.m4s').includes('moof'), `${item}/${sub}/seg_00000.m4s has media`);
+      }
+    }
     assert.match(probeOf(path.join(dir, 'web', 'episode-1', 'v', 'index.m3u8')), /h264,yuv420p\b/);
     assert.match(probeOf(path.join(dir, 'web', 'episode-1', 'a0', 'index.m3u8')), /aac/);
   });

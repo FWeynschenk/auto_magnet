@@ -26,6 +26,7 @@ const path = require('path');
 const { db, settings } = require('./db');
 const media = require('./media');
 const { mapPath } = require('./paths');
+const { subsRetryPending } = require('./postprocess');
 const log = require('./log');
 
 const PLANS = { off: [], remux: ['remux'], all: ['remux', 'transcode'] };
@@ -62,7 +63,7 @@ const key = (p) => path.resolve(p);
  * @param rows     media rows of the library items downloaded by this torrent
  * @returns {{ ok: boolean, reason: string, rows?: object[], rebuild?: object[] }}
  */
-function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue } = {}) {
+function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue, subsPending = subsRetryPending } = {}) {
   if (!torrent) return { ok: false, reason: 'no longer in Transmission' };
   if (!(torrent.percentDone >= 1)) return { ok: false, reason: 'still downloading' };
   if (rows.some(r => r.torrent_origin === 'duplicate')) return { ok: false, reason: 'was already in Transmission' };
@@ -82,6 +83,8 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue } = {}
     if (!r) return { ok: false, reason: `${f.name} isn't in the library` };
     if (r.original_removed_at) continue;
     if (!pol.plans.includes(r.plan)) return { ok: false, reason: `${f.name} plays as ${r.plan}` };
+    // A subtitle found on a later try is saved beside the original.
+    if (subsPending(r)) return { ok: false, reason: `${f.name} is still waiting for subtitles` };
     const issue = check(r);
     if (issue && !issue.rebuild) return { ok: false, reason: `${f.name} ${issue.reason}` };
     if (issue) rebuild.push(r);
@@ -100,10 +103,12 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue } = {}
 /** Finished items with a torrent, with their media rows, grouped per torrent. */
 function torrentGroups() {
   const items = db.prepare(`
-    SELECT 'movie' AS kind, m.id, m.torrent_id, m.torrent_origin, m.transmission_target AS target
+    SELECT 'movie' AS kind, m.id, m.torrent_id, m.torrent_origin, m.transmission_target AS target,
+           m.completed_at, m.post_processed_at, m.subs_state, m.subs_checked_at
       FROM movies m WHERE m.status = 'done' AND m.torrent_id IS NOT NULL
     UNION ALL
-    SELECT 'episode' AS kind, e.id, e.torrent_id, e.torrent_origin, s.transmission_target AS target
+    SELECT 'episode' AS kind, e.id, e.torrent_id, e.torrent_origin, s.transmission_target AS target,
+           e.completed_at, e.post_processed_at, e.subs_state, e.subs_checked_at
       FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.status = 'done' AND e.torrent_id IS NOT NULL
   `).all();
   const groups = new Map();
@@ -112,7 +117,10 @@ function torrentGroups() {
     if (!row) continue;
     const k = `${it.target || ''}:${it.torrent_id}`;
     if (!groups.has(k)) groups.set(k, { target: it.target || null, torrentId: it.torrent_id, rows: [] });
-    groups.get(k).rows.push({ ...row, torrent_origin: it.torrent_origin });
+    groups.get(k).rows.push({
+      ...row, torrent_origin: it.torrent_origin, completed_at: it.completed_at,
+      post_processed_at: it.post_processed_at, subs_state: it.subs_state, subs_checked_at: it.subs_checked_at,
+    });
   }
   return [...groups.values()];
 }

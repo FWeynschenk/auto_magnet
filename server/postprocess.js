@@ -158,6 +158,59 @@ function hoursSince(iso) {
   return Number.isFinite(t) ? (Date.now() - t) / 3600000 : Infinity;
 }
 
+// ─── Subtitle retries ─────────────────────────────────────────────────────────
+//
+// Subtitles for something that has just come out often appear a day or more
+// later. A search that found nothing ('unavailable') is repeated at each of
+// these points after the download completed. A point that passed while the
+// server was down is caught up once, not once per missed point.
+
+const HOUR = 3600_000;
+const CATCH_UP_HOURS = 48;
+
+function retryHours() {
+  return String(settings.get('subtitle_retry_hours') ?? '')
+    .split(/[\s,]+/).map(Number).filter(h => Number.isFinite(h) && h > 0).sort((a, b) => a - b);
+}
+
+/** The last schedule point that has passed, in ms since completion, or null. */
+function lastPoint(row, now, hours) {
+  const done = Date.parse(row.completed_at);
+  if (!Number.isFinite(done)) return null;
+  const passed = hours.filter(h => now - done >= h * HOUR);
+  return passed.length ? done + passed.at(-1) * HOUR : null;
+}
+
+/** Whether a search that found nothing is due to be repeated now. */
+function subsRetryDue(row, now = Date.now(), hours = retryHours()) {
+  if (row.subs_state !== 'unavailable') return false;
+  const point = lastPoint(row, now, hours);
+  if (point === null) return false;
+  // Catch-up is for a server that was down at the time, not for the back
+  // catalogue: an item well past its last point is left alone, so the first
+  // run after an upgrade doesn't spend the day's downloads on old searches.
+  if (now - point > CATCH_UP_HOURS * HOUR && point === Date.parse(row.completed_at) + hours.at(-1) * HOUR) return false;
+  const last = Date.parse(row.subs_checked_at || row.post_processed_at || row.completed_at);
+  return !Number.isFinite(last) || last < point;
+}
+
+/** Whether any retry is still to come (due now, or scheduled later). */
+function subsRetryPending(row, now = Date.now(), hours = retryHours()) {
+  if (row.subs_state !== 'unavailable' || hours.length === 0) return false;
+  const done = Date.parse(row.completed_at);
+  if (!Number.isFinite(done)) return false;
+  return now - done < hours.at(-1) * HOUR || subsRetryDue(row, now, hours);
+}
+
+/** "in 11h" / "in 3 days" until the next retry, or null when none are left. */
+function nextRetryIn(row, now = Date.now(), hours = retryHours()) {
+  const done = Date.parse(row.completed_at);
+  const next = hours.map(h => done + h * HOUR).find(t => t > now);
+  if (!Number.isFinite(next)) return null;
+  const h = Math.ceil((next - now) / HOUR);
+  return h >= 48 ? `in ${Math.round(h / 24)} days` : `in ${h}h`;
+}
+
 /** An unusable download: replace it where that is safe, flag it where it isn't. */
 async function handleUnusable(group, entry, reason, target) {
   const canReplace = settings.get('postprocess_action') !== 'flag'
@@ -288,10 +341,13 @@ async function postProcessCompleted({ limit = 25 } = {}) {
   if (settings.get('postprocess_enabled') === '0') return;
   const wanted = wantedLanguages();
 
+  // Searches that found nothing come back only when their retry is due.
+  const now0 = Date.now(), hours = retryHours();
   const due = [
     ...movies.needingPostProcess().map(r => ({ kind: 'movie',   id: r.id, row: r, target: r.transmission_target || DEFAULT })),
     ...episodes.needingPostProcess().map(r => ({ kind: 'episode', id: r.id, row: r, target: r.show_target || DEFAULT })),
-  ].slice(0, limit);
+  ].filter(d => d.row.subs_state !== 'unavailable' || !d.row.post_processed_at || subsRetryDue(d.row, now0, hours))
+    .slice(0, limit);
   if (due.length === 0) return;
 
   const groups = new Map();
@@ -311,8 +367,10 @@ async function postProcessCompleted({ limit = 25 } = {}) {
       const now = new Date().toISOString();
 
       if (!info) {
-        store.update(entry.id, { post_processed_at: now, subs_state: entry.row.subs_state || 'missing' });
-        continue; // removed from Transmission since — nothing left to check
+        // Removed from Transmission since — nothing left to check. A retry
+        // counts as made, so it isn't attempted again every pass.
+        store.update(entry.id, { post_processed_at: now, subs_state: entry.row.subs_state || 'missing', subs_checked_at: now });
+        continue;
       }
 
       const file = pickFile(info.files, entry.row, entry.kind);
@@ -359,9 +417,24 @@ async function postProcessCompleted({ limit = 25 } = {}) {
         store.update(entry.id, { subs_state: 'present' });
         continue;
       }
-      store.update(entry.id, { subs_state: await fetchSubtitles(entry, local, info, wanted) });
+      const retry = entry.row.subs_state === 'unavailable';
+      const state = await fetchSubtitles(entry, local, info, wanted);
+      const update = { subs_state: state, subs_checked_at: new Date().toISOString() };
+      const next = state === 'unavailable' ? nextRetryIn(entry.row) : null;
+      if (state === 'unavailable') {
+        update.last_error = `No ${LANG_NAMES[wanted[0]] || wanted[0]} subtitles found on OpenSubtitles`
+          + (next ? ` — trying again ${next}` : '');
+      }
+      store.update(entry.id, update);
+      if (retry && state === 'fetched') log.info('subtitles found on a later try', { type: entry.kind, id: entry.id });
+      else if (retry && state === 'unavailable') {
+        log.info(`subtitle retry: still none${next ? `, trying again ${next}` : ' — no more retries'}`, { type: entry.kind, id: entry.id });
+      }
     }
   }
 }
 
-module.exports = { postProcessCompleted, assess, probe, pickFile, hasSidecarSubs, mapPath };
+module.exports = {
+  postProcessCompleted, assess, probe, pickFile, hasSidecarSubs, mapPath,
+  subsRetryDue, subsRetryPending, nextRetryIn, retryHours,
+};

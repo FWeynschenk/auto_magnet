@@ -37,10 +37,10 @@ These shipped but can only be confirmed on the real box.
   Real dialogue under music is harder: check the log lines `subtitles aligned to the audio` /
   `not re-timed` for the first few fetched subtitles, and try **Auto-sync** in the player on a
   known-bad one.
-- **Android app on a real phone.** It builds, its models parse captured server responses, and
-  lint is clean, but there was no emulator here (no KVM), so the UI, playback, downloads and the
-  offline progress merge have never actually run. Install the APK from CI and try: sign in,
-  stream a direct and a converted item, download one, play it in airplane mode, reconnect.
+- **Android app on a real phone.** Run on an API 33 emulator against a local server: sign in,
+  direct play, a repackaged HLS item with subtitles, switching its audio track, picture-in-picture
+  (Home, the window's buttons, closing it, opening another item while it plays). Not yet tried:
+  downloads, playing one in airplane mode, and the offline progress merge on reconnect.
 
 - **The Docker image builds.** The Dockerfile now installs `ffmpeg` for `ffprobe`. It
   couldn't be built on the dev machine (no Docker daemon running there), so the first

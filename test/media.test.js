@@ -126,6 +126,25 @@ test('subtitle-only and silent files map only what exists', () => {
   assert.equal(x[x.indexOf('-var_stream_map') + 1], 'v:0,name:v');
 });
 
+test('a first fragment written into the init segment is moved back into segment 0', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const box = (type, n = 8) => { const b = Buffer.alloc(n); b.writeUInt32BE(n); b.write(type, 4, 'latin1'); return b; };
+  const dirV = path.join(media.webDir('movie', 77), 'v');
+  fs.mkdirSync(dirV, { recursive: true });
+  fs.writeFileSync(path.join(media.webDir('movie', 77), 'master.m3u8'), '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv/index.m3u8\n');
+  fs.writeFileSync(path.join(dirV, 'index.m3u8'), '#EXTM3U\n#EXT-X-MAP:URI="init_0.mp4"\n#EXTINF:6,\nseg_00000.m4s\n#EXT-X-ENDLIST\n');
+  const tail = Buffer.concat([box('sidx', 20), box('moof', 30), box('mdat', 100)]);
+  fs.writeFileSync(path.join(dirV, 'init_0.mp4'), Buffer.concat([box('ftyp', 16), box('moov', 40), tail]));
+  fs.writeFileSync(path.join(dirV, 'seg_00000.m4s'), box('styp', 24));
+
+  assert.equal(media.repairInitSegments('movie', 77), 1);
+  const types = (f) => media.mp4Boxes(fs.readFileSync(path.join(dirV, f))).map(b => b.type);
+  assert.deepEqual(types('init_0.mp4'), ['ftyp', 'moov']);
+  assert.deepEqual(types('seg_00000.m4s'), ['styp', 'sidx', 'moof', 'mdat']);
+  assert.equal(media.repairInitSegments('movie', 77), 0, 'a correct one is left alone');
+});
+
 test('language from subtitle filenames', () => {
   assert.equal(media.langFromName('Show.S01E02.en.srt'), 'en');
   assert.equal(media.langFromName('2_English.srt'), 'en');

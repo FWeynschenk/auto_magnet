@@ -201,6 +201,10 @@ const migrations = [
   // When the original was removed after seeding, leaving the web version as
   // the only copy, and the subtitles it had then (their WebVTT copies are kept
   // with the web version).
+  // When OpenSubtitles was last searched for this item, so a search that found
+  // nothing can be repeated on a schedule (subtitle_retry_hours).
+  'ALTER TABLE movies   ADD COLUMN subs_checked_at TEXT',
+  'ALTER TABLE episodes ADD COLUMN subs_checked_at TEXT',
   'ALTER TABLE media_files ADD COLUMN original_removed_at TEXT',
   'ALTER TABLE media_files ADD COLUMN subs_snapshot TEXT',
 ];
@@ -275,6 +279,9 @@ const defaultSettings = {
   // already in Transmission are only ever flagged, whatever this says.
   postprocess_action:        'replace',
   subtitle_languages:        'en',
+  // Hours after a download completes at which a subtitle search that found
+  // nothing is tried again — new releases often get subtitles a day or more later.
+  subtitle_retry_hours:      '12,24,36,120,240',
   opensubtitles_api_key:     '',
   opensubtitles_username:    '',
   opensubtitles_password:    '',
@@ -357,7 +364,7 @@ const movies = {
   needingPostProcess: () => db.prepare(`
     SELECT * FROM movies
     WHERE status = 'done' AND completed_at IS NOT NULL AND torrent_id IS NOT NULL
-      AND (post_processed_at IS NULL OR subs_state = 'pending')
+      AND (post_processed_at IS NULL OR subs_state IN ('pending', 'unavailable'))
   `).all(),
 };
 
@@ -452,7 +459,7 @@ const episodes = {
            s.imdb_id AS show_imdb_id, s.tmdb_id AS show_tmdb_id, s.title AS show_title
     FROM episodes e JOIN shows s ON s.id = e.show_id
     WHERE e.status = 'done' AND e.completed_at IS NOT NULL AND e.torrent_id IS NOT NULL
-      AND (e.post_processed_at IS NULL OR e.subs_state = 'pending')
+      AND (e.post_processed_at IS NULL OR e.subs_state IN ('pending', 'unavailable'))
   `).all(),
 
   // First pending episode only — manual mode queues one approval at a time.

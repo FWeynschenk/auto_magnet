@@ -176,6 +176,10 @@
             <input v-model="form.subtitle_languages" type="text" placeholder="en" />
             <span class="hint">2-letter codes, comma-separated; the first is the one fetched</span>
           </label>
+          <label>Search again for missing subtitles
+            <input v-model="form.subtitle_retry_hours" type="text" placeholder="12,24,36,120,240" />
+            <span class="hint">hours after the download; new releases often get subtitles a day or more later</span>
+          </label>
           <label>OpenSubtitles API key
             <input v-model="form.opensubtitles_api_key" type="password" placeholder="leave blank to keep current" />
             <span class="hint">create one under “API consumers” on opensubtitles.com</span>

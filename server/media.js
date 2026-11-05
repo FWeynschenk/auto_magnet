@@ -636,6 +636,7 @@ async function encode(job, opts = {}) {
     return;
   }
   if (result.ok) {
+    try { repairInitSegments(kind, id); } catch (err) { log.warn(`init segment check failed: ${err.message}`, { type: kind, id }); }
     rows.update(kind, id, { web_state: 'ready', web_progress: 1 });
     prewarmSubtitles(rows.get(kind, id)).catch(() => {});
     log.info(`web version ready (${job.plan}, ${encoder}) in ${Math.round((Date.now() - started) / 1000)}s`, { type: kind, id });
@@ -663,6 +664,62 @@ function startWorker() {
   const tick = () => indexPass().catch(err => console.error('[media] index pass failed:', err.message));
   setTimeout(tick, 30_000).unref();
   setInterval(tick, 30 * 60_000).unref();
+  // Web versions made before the init-segment repair existed.
+  setTimeout(() => {
+    let fixed = 0;
+    for (const r of rows.all().filter(x => x.web_state === 'ready')) {
+      try { fixed += repairInitSegments(r.kind, r.item_id); } catch (_) {}
+    }
+    if (fixed) log.info(`repaired ${fixed} web version init segment(s) for the Android player`);
+  }, 10_000).unref();
+}
+
+// ─── fMP4 init segments ───────────────────────────────────────────────────────
+
+/** Top-level MP4 boxes: [{ type, start, end }]. */
+function mp4Boxes(buf) {
+  const out = [];
+  let i = 0;
+  while (i + 8 <= buf.length) {
+    let n = buf.readUInt32BE(i);
+    if (n === 1 && i + 16 <= buf.length) n = Number(buf.readBigUInt64BE(i + 8));
+    if (n < 8 || i + n > buf.length) break;
+    out.push({ type: buf.toString('latin1', i + 4, i + 8), start: i, end: i + n });
+    i += n;
+  }
+  return out;
+}
+
+/**
+ * Some ffmpeg builds (4.4; trac #9193) put the first fragment — sidx, moof,
+ * mdat — into the fMP4 init segment and leave segment 0 a bare styp. hls.js
+ * plays that; Media3 (the Android app) fails on it. Move the fragment back
+ * where it belongs. sidx offsets are relative to the sidx itself, so moving
+ * the boxes together keeps them valid. Returns how many playlists it fixed.
+ */
+function repairInitSegments(kind, id) {
+  let fixed = 0;
+  for (const rel of hlsPlaylists(kind, id)) {
+    const dir = path.join(webDir(kind, id), path.dirname(rel));
+    let pl;
+    try { pl = fs.readFileSync(path.join(webDir(kind, id), rel), 'utf8'); } catch (_) { continue; }
+    const map = /#EXT-X-MAP:URI="([^"]+)"/.exec(pl);
+    const first = pl.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'));
+    if (!map || !first) continue;
+    const initPath = path.join(dir, map[1]), segPath = path.join(dir, first);
+    let init, seg;
+    try { init = fs.readFileSync(initPath); seg = fs.readFileSync(segPath); } catch (_) { continue; }
+    const ib = mp4Boxes(init);
+    const moov = ib.find(b => b.type === 'moov');
+    if (!moov || !ib.some(b => b.type === 'moof')) continue;
+    if (mp4Boxes(seg).some(b => b.type === 'moof')) continue; // segment 0 has its own data: leave it
+    fs.writeFileSync(`${segPath}.fix`, Buffer.concat([seg, init.subarray(moov.end)]));
+    fs.writeFileSync(`${initPath}.fix`, init.subarray(0, moov.end));
+    fs.renameSync(`${segPath}.fix`, segPath);
+    fs.renameSync(`${initPath}.fix`, initPath);
+    fixed++;
+  }
+  return fixed;
 }
 
 /** Total bytes in the web-version folder. */
@@ -881,6 +938,6 @@ module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
   record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
-  videoFilesIn, subsDir,
+  videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, wantedLanguages, searchDisk, queue: () => rows.queue(),
 };

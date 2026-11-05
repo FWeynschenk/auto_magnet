@@ -17,7 +17,7 @@ const ALLOWED_KEYS = [
   'blocked_tags', 'trusted_only',
   'search_cache_mins', 'allow_disc_images', 'title_match_min', 'quarantine_hold_hours',
   'transmission_extra',
-  'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'media_path_map',
+  'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'subtitle_retry_hours', 'media_path_map',
   'opensubtitles_api_key', 'opensubtitles_username', 'opensubtitles_password',
   'web_prepare', 'web_encoder', 'web_max_height', 'subtitle_autosync',
   'seed_cleanup', 'seed_cleanup_ratio', 'seed_cleanup_days',

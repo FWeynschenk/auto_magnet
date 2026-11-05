@@ -157,3 +157,121 @@ data class DownloadMeta(
 
 @Serializable
 data class LocalSubtitle(val id: String, val label: String, val lang: String? = null, val path: String, val default: Boolean = false)
+
+// ─── Managing the library (admin) ─────────────────────────────────────────────
+
+/** A tracked movie, as GET /api/movies returns it. */
+@Serializable
+data class AdminMovie(
+    val id: Int,
+    @SerialName("tmdb_id") val tmdbId: Int,
+    val title: String,
+    val year: Int? = null,
+    @SerialName("poster_url") val posterUrl: String? = null,
+    val status: String = "pending",
+    val quality: String = "1080p",
+    val mode: String = "auto",
+    val progress: Int? = 0,
+    @SerialName("release_date") val releaseDate: String? = null,
+    @SerialName("last_error") val lastError: String? = null,
+    @SerialName("transmission_target") val target: String? = null,
+) {
+    /** Manual mode, waiting for someone to pick a release. */
+    val needsChoice get() = mode == "manual" && status == "pending"
+}
+
+@Serializable
+data class AdminEpisode(
+    val id: Int,
+    val season: Int,
+    val episode: Int,
+    val status: String = "pending",
+    val progress: Int? = 0,
+    @SerialName("air_date") val airDate: String? = null,
+    @SerialName("last_error") val lastError: String? = null,
+) {
+    val code get() = "S%02dE%02d".format(season, episode)
+}
+
+/** A tracked show with its episodes, as GET /api/shows returns it. */
+@Serializable
+data class AdminShow(
+    val id: Int,
+    @SerialName("tmdb_id") val tmdbId: Int,
+    val title: String,
+    @SerialName("poster_url") val posterUrl: String? = null,
+    val active: Int = 1,
+    val quality: String = "1080p",
+    val mode: String = "auto",
+    @SerialName("prefer_season_pack") val preferPack: Int? = 0,
+    @SerialName("show_status") val showStatus: String? = null,
+    @SerialName("transmission_target") val target: String? = null,
+    val episodes: List<AdminEpisode> = emptyList(),
+) {
+    /** The episode a manual-mode show waits on, if any: the scheduler queues one at a time. */
+    val waitingOn: AdminEpisode?
+        get() = if (mode == "manual") episodes.filter { it.status == "pending" }.minWithOrNull(compareBy({ it.season }, { it.episode })) else null
+
+    fun count(status: String) = episodes.count { it.status == status }
+}
+
+@Serializable
+data class TmdbResult(
+    @SerialName("tmdb_id") val tmdbId: Int,
+    val type: String,                       // "movie" | "tv"
+    val title: String,
+    val year: String? = null,
+    @SerialName("poster_url") val posterUrl: String? = null,
+    val overview: String? = null,
+)
+
+/** One release in the torrent picker. Every accepted row has a magnet. */
+@Serializable
+data class Candidate(
+    val title: String,
+    val source: String? = null,
+    val indexer: String? = null,
+    val seeders: Int = 0,
+    val size: Long = 0,
+    val magnet: String? = null,
+    @SerialName("download_url") val downloadUrl: String? = null,
+    @SerialName("info_hash") val infoHash: String? = null,
+    @SerialName("file_count") val fileCount: Int = 0,
+    @SerialName("_quality") val quality: String? = null,
+    @SerialName("_score") val score: Double? = null,
+    @SerialName("_warnings") val warnings: List<String> = emptyList(),
+    @SerialName("_mirrors") val mirrors: Int? = null,
+    @SerialName("_reason") val reason: String? = null,
+)
+
+@Serializable
+data class PreviewResponse(
+    val results: List<Candidate> = emptyList(),
+    val rejected: List<Candidate> = emptyList(),
+    val cached: Boolean = false,
+    @SerialName("cache_age_ms") val cacheAgeMs: Long? = null,
+    val query: String? = null,
+)
+
+@Serializable
+data class GrabResponse(
+    val success: Boolean = false,
+    @SerialName("torrent_id") val torrentId: Int? = null,
+    val quarantined: Boolean = false,
+    val duplicate: Boolean = false,
+)
+
+@Serializable
+data class TxTarget(val name: String, val host: String? = null)
+
+/** What the torrent picker is choosing for. */
+data class PickFor(
+    val type: String,                       // "movie" | "show"
+    val tmdbId: Int,
+    val mediaId: Int,                       // the movie's id, or the show's
+    val title: String,
+    val quality: String,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val episodeId: Int? = null,
+)

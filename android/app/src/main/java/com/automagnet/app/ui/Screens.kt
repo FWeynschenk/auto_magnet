@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
@@ -154,13 +155,25 @@ fun LoginScreen(onDone: () -> Unit) {
 
 // ─── Main tabs ────────────────────────────────────────────────────────────────
 
+/** Where the Manage tab's pieces open. */
+class ManageNav(
+    val movie: (Int) -> Unit,
+    val show: (Int) -> Unit,
+    val add: () -> Unit,
+    val pick: (com.automagnet.app.PickFor) -> Unit,
+)
+
 @Composable
-fun MainScreen(openItem: (Item) -> Unit, openShow: (Int) -> Unit, onSignOut: () -> Unit, onAuth: () -> Unit) {
+fun MainScreen(openItem: (Item) -> Unit, openShow: (Int) -> Unit, manage: ManageNav, onSignOut: () -> Unit, onAuth: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf(false) }
     var refresh by remember { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
-    val titles = listOf("Home", "Movies", "Shows", "Downloads")
+    val titles = listOf("Home", "Movies", "Shows", "Downloads", "Manage")
+    // Admins also run the downloader. Sessions from before this was stored
+    // learn their role here; offline, the last known one stands.
+    var admin by remember { mutableStateOf(Prefs.isAdmin) }
+    LaunchedEffect(Unit) { runCatching { Api.me() }; admin = Prefs.isAdmin; if (!admin && tab == 4) tab = 0 }
 
     Scaffold(
         topBar = {
@@ -185,7 +198,10 @@ fun MainScreen(openItem: (Item) -> Unit, openShow: (Int) -> Unit, onSignOut: () 
                 NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
                 NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.Star, null) }, label = { Text("Movies") })
                 NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.AutoMirrored.Filled.List, null) }, label = { Text("Shows") })
-                NavigationBarItem(tab == 3, { tab = 3 }, { Icon(painterResource(R.drawable.ic_download), null) }, label = { Text("Downloads") })
+                // Five tabs leave too little width for "Downloads" on one line at the default size.
+                NavigationBarItem(tab == 3, { tab = 3 }, { Icon(painterResource(R.drawable.ic_download), null) },
+                    label = { Text("Downloads", maxLines = 1, softWrap = false, fontSize = if (admin) 11.sp else 12.sp) })
+                if (admin) NavigationBarItem(tab == 4, { tab = 4 }, { Icon(Icons.Default.Build, null) }, label = { Text("Manage") })
             }
         },
     ) { pad ->
@@ -194,6 +210,7 @@ fun MainScreen(openItem: (Item) -> Unit, openShow: (Int) -> Unit, onSignOut: () 
                 0 -> HomeTab(refresh, openItem, onAuth) { tab = 3 }
                 1 -> MoviesTab(refresh, openItem, onAuth)
                 2 -> ShowsTab(refresh, openShow, onAuth)
+                4 -> ManageTab(refresh, manage.movie, manage.show, manage.add, manage.pick, onAuth)
                 else -> DownloadsTab(openItem)
             }
         }

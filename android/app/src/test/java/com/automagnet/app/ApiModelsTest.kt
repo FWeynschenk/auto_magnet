@@ -69,6 +69,48 @@ class ApiModelsTest {
         assertNull(rows.first { it.kind == "episode" }.duration)
     }
 
+    // ─── Managing (captured from a server with TMDB, Prowlarr and Transmission stubbed) ───
+
+    @Test fun me() {
+        assertEquals("admin", Api.json.decodeFromString<User>(res("admin-me.json")).role)
+    }
+
+    @Test fun tmdbSearchKeepsMoviesAndShowsOnly() {
+        val found = Api.json.decodeFromString<List<TmdbResult>>(res("admin-tmdb.json"))
+        assertEquals(listOf("movie", "tv"), found.map { it.type })
+        assertEquals("1999", found[0].year)
+    }
+
+    @Test fun trackedMoviesAndShows() {
+        val m = Api.json.decodeFromString<List<AdminMovie>>(res("admin-movies.json")).single()
+        assertEquals(603, m.tmdbId)
+        assertTrue("manual + pending waits for a choice", m.needsChoice)
+        val sh = Api.json.decodeFromString<List<AdminShow>>(res("admin-shows.json")).single()
+        assertEquals(3, sh.episodes.size)
+        assertEquals("S01E01", sh.waitingOn!!.code)
+        assertEquals(3, sh.count("pending"))
+    }
+
+    @Test fun pickerResults() {
+        val p = Api.json.decodeFromString<PreviewResponse>(res("admin-preview-movie.json"))
+        assertEquals(3, p.results.size)
+        assertEquals("1080p", p.results[0].quality)
+        assertTrue(p.results.all { it.magnet != null && it.size > 0 && it.seeders > 0 })
+        assertNotNull(p.results[0].score)
+        assertTrue(p.rejected.single().reason!!.contains("cam"))
+        val e = Api.json.decodeFromString<PreviewResponse>(res("admin-preview-episode.json"))
+        assertTrue(e.results.all { "S01E02" in it.title })
+    }
+
+    @Test fun aCandidateGoesBackWithWhatTheServerNeedsToGrabIt() {
+        val c = Api.json.decodeFromString<PreviewResponse>(res("admin-preview-movie.json")).results[0]
+        val back = Api.json.encodeToJsonElement(Candidate.serializer(), c).toString()
+        // The server grabs by magnet, finds known file lists by info hash, and logs the title.
+        for (k in listOf("\"magnet\"", "\"info_hash\"", "\"title\"")) assertTrue(k, k in back)
+        val g = Api.json.decodeFromString<GrabResponse>(res("admin-grab.json"))
+        assertTrue(g.success)
+    }
+
     @Test fun downloadMetaRoundTrip() {
         val item = Api.json.decodeFromString<ItemDetail>(res("item-episode.json")).asItem()
         val meta = DownloadMeta(item, "hls", listOf(LocalSubtitle("f1", "English", "en", "/x.vtt", true)))

@@ -6,6 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -13,6 +16,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /** Server address and session, kept across launches. */
@@ -34,6 +38,13 @@ object Prefs {
     var username: String?
         get() = sp.getString("username", null)
         set(v) = sp.edit().putString("username", v).apply()
+
+    /** "admin" runs the downloader and sees the Manage tab; "viewer" only watches. */
+    var role: String?
+        get() = sp.getString("role", null)
+        set(v) = sp.edit().putString("role", v).apply()
+
+    val isAdmin get() = role == "admin"
 
     var wifiOnly: Boolean
         get() = sp.getBoolean("wifi_only", true)
@@ -92,6 +103,7 @@ object Api {
         val r: LoginResponse = json.decodeFromString(call("POST", "/api/auth/login", body))
         Prefs.token = r.token
         Prefs.username = r.user.username
+        Prefs.role = r.user.role
         return r
     }
 
@@ -99,6 +111,9 @@ object Api {
         runCatching { call("POST", "/api/auth/logout") }
         Prefs.token = null
     }
+
+    /** Refresh the role: sessions from before the Manage tab never stored one. */
+    suspend fun me(): User = get<User>("/api/auth/me").also { Prefs.role = it.role }
 
     suspend fun home(): Home = get("/api/watch/home")
     suspend fun movies(): List<Item> = get("/api/watch/movies")
@@ -113,6 +128,61 @@ object Api {
 
     suspend fun syncProgress(items: List<PendingProgress>): List<ProgressRow> =
         json.decodeFromString(call("POST", "/api/watch/progress/sync", json.encodeToString(SyncRequest(items))))
+
+    // ─── Managing the library (admin only) ─────────────────────────────────────
+
+    /** A JSON object from pairs, leaving out nulls. */
+    private fun obj(vararg pairs: Pair<String, Any?>): String = buildJsonObject {
+        for ((k, v) in pairs) when (v) {
+            null -> {}
+            is String -> put(k, v)
+            is Number -> put(k, v)
+            is Boolean -> put(k, v)
+            is JsonElement -> put(k, v)
+            else -> error("Unsupported value for $k")
+        }
+    }.toString()
+
+    suspend fun trackedMovies(): List<AdminMovie> = get("/api/movies")
+    suspend fun trackedShows(): List<AdminShow> = get("/api/shows")
+    suspend fun targets(): List<TxTarget> = get("/api/settings/targets")
+    suspend fun searchTmdb(q: String): List<TmdbResult> = get("/api/search/tmdb?q=" + URLEncoder.encode(q, "UTF-8"))
+
+    suspend fun addMovie(tmdbId: Int, quality: String, mode: String, target: String?): AdminMovie =
+        json.decodeFromString(call("POST", "/api/movies", obj(
+            "tmdb_id" to tmdbId, "quality" to quality, "mode" to mode, "transmission_target" to target,
+        )))
+
+    suspend fun addShow(tmdbId: Int, quality: String, mode: String, startSeason: Int, startEpisode: Int, preferPack: Boolean, target: String?): AdminShow =
+        json.decodeFromString(call("POST", "/api/shows", obj(
+            "tmdb_id" to tmdbId, "quality" to quality, "mode" to mode, "start_season" to startSeason,
+            "start_episode" to startEpisode, "prefer_season_pack" to (if (preferPack) 1 else 0), "transmission_target" to target,
+        )))
+
+    suspend fun updateMovie(id: Int, vararg fields: Pair<String, Any?>): AdminMovie =
+        json.decodeFromString(call("PUT", "/api/movies/$id", obj(*fields)))
+    suspend fun updateShow(id: Int, vararg fields: Pair<String, Any?>): AdminShow =
+        json.decodeFromString(call("PUT", "/api/shows/$id", obj(*fields)))
+    suspend fun deleteMovie(id: Int) { call("DELETE", "/api/movies/$id") }
+    suspend fun deleteShow(id: Int) { call("DELETE", "/api/shows/$id") }
+    suspend fun redoMovie(id: Int) { call("POST", "/api/movies/$id/redo") }
+    suspend fun redoEpisode(showId: Int, epId: Int) { call("POST", "/api/shows/$showId/episodes/$epId/redo") }
+    suspend fun skipEpisode(showId: Int, epId: Int) { call("POST", "/api/shows/$showId/episodes/$epId/skip") }
+    suspend fun refreshTmdb(showId: Int) { call("POST", "/api/shows/$showId/refresh-tmdb") }
+
+    suspend fun preview(p: PickFor, refresh: Boolean, query: String?): PreviewResponse =
+        json.decodeFromString(call("POST", "/api/search/preview", obj(
+            "type" to p.type, "tmdb_id" to p.tmdbId, "quality" to p.quality, "season" to p.season, "episode" to p.episode,
+            "movie_id" to (if (p.type == "movie") p.mediaId else null), "episode_id" to p.episodeId,
+            "refresh" to refresh, "query" to query?.takeIf { it.isNotBlank() },
+        )))
+
+    /** Hand one release to Transmission. The candidate goes back as the server sent it. */
+    suspend fun grab(p: PickFor, c: Candidate): GrabResponse =
+        json.decodeFromString(call("POST", "/api/search/grab", obj(
+            "torrent" to json.encodeToJsonElement(Candidate.serializer(), c),
+            "media_id" to p.mediaId, "media_type" to p.type, "season" to p.season, "episode" to p.episode,
+        )))
 
     /** Save a subtitle to a local file, for playing a download offline. */
     suspend fun downloadTo(path: String, dest: File) = withContext(Dispatchers.IO) {

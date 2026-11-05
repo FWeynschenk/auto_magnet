@@ -1,6 +1,7 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
@@ -31,9 +32,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     lint { disable += "UnsafeOptInUsageError" }
+}
+
+kotlin {
+    // No toolchain: compile on whichever JDK runs Gradle (Android Studio's JBR) and emit 17.
+    compilerOptions { jvmTarget = JvmTarget.JVM_17 }
 }
 
 dependencies {

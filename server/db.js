@@ -206,6 +206,9 @@ const migrations = [
   'ALTER TABLE movies   ADD COLUMN subs_checked_at TEXT',
   'ALTER TABLE episodes ADD COLUMN subs_checked_at TEXT',
   'ALTER TABLE media_files ADD COLUMN original_removed_at TEXT',
+  // Bytes a web version is expected to take: estimated before it starts,
+  // replaced by what it actually wrote if it ever ran out of room.
+  'ALTER TABLE media_files ADD COLUMN web_estimate INTEGER',
   'ALTER TABLE media_files ADD COLUMN subs_snapshot TEXT',
 ];
 for (const sql of migrations) {

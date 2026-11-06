@@ -119,6 +119,17 @@ router.get('/shows/:id', wrap((req) => {
 
 // ─── One item ─────────────────────────────────────────────────────────────────
 
+/**
+ * Someone is waiting on the player for this item: start (or keep) its web
+ * version as an on-demand job. A no-op for files that play as they are.
+ */
+function wantNow(kind, id, m) {
+  if (m && ['none', 'queued', 'encoding'].includes(m.web_state) && ['remux', 'transcode'].includes(m.plan)) {
+    return media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY });
+  }
+  return m;
+}
+
 /** How to play it right now, from its media row. */
 function playback(kind, id, m) {
   if (!m) return { mode: 'unavailable', error: 'not indexed' };
@@ -154,13 +165,9 @@ router.get('/items/:kind/:id', wrap(async (req) => {
   let m = null, error = null;
   try {
     m = await media.locate(kind, id);
-    // Opening an item is the strongest hint someone wants to watch it: put it
-    // at the front of the queue if it still needs work.
-    // Queued or already running in the background counts too: it starts now,
-    // or keeps going with the room kept back for on-demand work.
-    if (['none', 'queued', 'encoding'].includes(m.web_state) && ['remux', 'transcode'].includes(m.plan)) {
-      m = media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY });
-    }
+    // Only a player asks with ?play=1. A details page (the Android app's, or
+    // anything browsing) reads the same item without starting a conversion.
+    if (req.query.play) m = wantNow(kind, id, m);
   } catch (err) {
     error = err.message;
   }
@@ -188,16 +195,23 @@ router.get('/items/:kind/:id', wrap(async (req) => {
 }));
 
 /** Lightweight poll for the "preparing" screen. */
+// Polled by a player that is waiting. Being polled is what keeps a request
+// alive: it starts the conversion if it hasn't (older apps open the item
+// without ?play=1 and then poll here), and a request nobody polls any more
+// expires back to background work.
 router.get('/items/:kind/:id/playback', wrap((req) => {
   const { kind, id } = params(req);
-  return playback(kind, id, media.rows.get(kind, id));
+  return playback(kind, id, wantNow(kind, id, media.rows.get(kind, id)));
 }));
 
+// Ask for a web version ahead of time. { soon: true } for the next episode or a
+// download — ahead of other background work, without stopping anything;
+// otherwise as if someone pressed play.
 router.post('/items/:kind/:id/prepare', wrap(async (req) => {
   const { kind, id } = params(req);
   await media.locate(kind, id);
-  const m = media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY });
-  return playback(kind, id, m);
+  const priority = req.body?.soon ? media.SOON_PRIORITY : media.DEMAND_PRIORITY;
+  return playback(kind, id, media.enqueue(kind, id, { priority }));
 }));
 
 // ─── Streaming ────────────────────────────────────────────────────────────────
@@ -230,6 +244,10 @@ const sendHls = wrap(async (req, res) => {
   const file = path.join(media.webDir(kind, id), ...(dir ? [dir] : []), name);
   if (!fs.existsSync(file)) throw bad('Not ready', 404);
   if (name.endsWith('.m3u8')) {
+    // A player reloads the playlist while the encode is still growing it:
+    // someone is watching, so the request stays alive.
+    const m = media.rows.get(kind, id);
+    if (m?.web_state === 'encoding') wantNow(kind, id, m);
     res.type('application/vnd.apple.mpegurl');
     res.set('Cache-Control', 'no-cache');
   } else {

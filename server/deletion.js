@@ -125,8 +125,12 @@ async function deleteEverything(kind, id, { tx = require('./transmission'), by =
     // Before the video goes: subtitles beside it are found by its name.
     const sidecars = media.listSubtitles(row).filter(s => s.source === 'file').map(s => s.file);
     const index = info ? info.files.findIndex(f => key(mapPath(path.join(info.downloadDir, f.name))) === key(row.path)) : -1;
+    // The whole torrent goes when nothing else in it is still wanted: a single
+    // film, or the last episode left of a pack whose others were deleted.
+    const othersWanted = info ? media.videoFilesIn(info.files)
+      .filter(f => f.name !== info.files[index]?.name && f.wanted !== false).length : 0;
     const onlyThis = info && index >= 0 && sharers(item, torrentId, target).length === 0
-      && media.videoFilesIn(info.files).length <= 1 && item.row.torrent_origin !== 'duplicate';
+      && othersWanted === 0 && item.row.torrent_origin !== 'duplicate';
 
     if (onlyThis) {
       await tx.purgeTorrent(torrentId, tx.resolveTarget(target));

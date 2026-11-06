@@ -141,9 +141,11 @@ enforces the documented limits — so they can be rebuilt rather than rediscover
 
 ## Playback — next steps
 
-- **Deleting from the Android app.** Delete web version / delete from disk, and the
-  disk-full and failure messages, are in the web player and Settings only. The app's admin screens
-  could call the same `DELETE /api/watch/items/:kind/:id[/web]`.
+- **Deleting from the Android app.** Delete web version / delete from disk are in the web player
+  and Settings only (the app's player now shows the disk-full and failure reasons). The app's
+  admin screens could call the same `DELETE /api/watch/items/:kind/:id[/web]`.
+- **Torrents left empty before this fix.** Packs whose every episode was deleted one by one before
+  the last-episode purge existed are still in Transmission with nothing wanted. Remove by hand.
 - **Seeking past what's converted.** Opening an item starts its conversion at once, but from the
   beginning: jumping to minute 40 of a film that's 10 minutes in still waits. Starting a second
   encode at the seek point (as Jellyfin does) would fix that, at the cost of a lot more complexity.

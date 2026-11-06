@@ -83,7 +83,12 @@ data class Playback(
     val state: String? = null,
     val progress: Double? = null,
     val error: String? = null,
+    /** Why a queued web version hasn't started: "space" (with bytes) or "busy". */
+    val waiting: Waiting? = null,
 )
+
+@Serializable
+data class Waiting(val reason: String, val free: Double? = null, val need: Double? = null, val running: Int? = null)
 
 @Serializable
 data class Subtitle(

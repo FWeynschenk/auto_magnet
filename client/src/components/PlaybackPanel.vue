@@ -37,6 +37,7 @@
         <div v-for="q in st.queue" :key="q.kind + q.item_id" class="q">
           <span class="qt">{{ q.title }}</span>
           <span v-if="q.web_priority >= 10" class="tag">requested</span>
+          <span v-else-if="q.web_priority >= 5" class="tag">soon</span>
           <span class="muted">{{ q.plan }}</span>
           <span v-if="q.web_state === 'encoding'" class="pct">{{ Math.round(q.web_progress * 100) }}%</span>
           <span v-else class="muted">queued</span>

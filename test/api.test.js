@@ -249,9 +249,14 @@ test('disk space and deleting', { skip }, async (t) => {
     assert.ok(fs.existsSync(path.join(dir, 'media', 'Movies', 'Remux.Film.2021', 'Remux.Film.2021.mkv')));
   });
 
-  await t.test('with the disk full, the player is told so — with the numbers', async () => {
+  await t.test('opening the details alone starts no conversion; a player opening it does', async () => {
     assert.equal((await call('PUT', '/api/settings', { web_min_free_gb: '1000000000' })).status, 200);
-    const pb = (await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body.playback;
+    const browse = (await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body.playback;
+    assert.equal(browse.state, 'none', 'a details page leaves it alone');
+  });
+
+  await t.test('with the disk full, the player is told so — with the numbers', async () => {
+    const pb = (await call('GET', '/api/watch/items/movie/2?play=1', null, { tok: token })).body.playback;
     assert.equal(pb.mode, 'preparing');
     assert.equal(pb.state, 'queued');
     assert.equal(pb.waiting.reason, 'space');
@@ -264,6 +269,28 @@ test('disk space and deleting', { skip }, async (t) => {
     const pb = await until(async () => {
       const b = (await call('GET', '/api/watch/items/movie/2/playback', null, { tok: token })).body;
       if (b.state === 'failed') throw new Error(b.error);
+      return b.mode === 'hls' && b.complete ? b : null;
+    }, 60_000);
+    assert.equal(pb.state, 'ready');
+  });
+
+  await t.test('an older app that opens without ?play=1 still starts it by polling', async () => {
+    assert.equal((await call('DELETE', '/api/watch/items/movie/2/web')).status, 200);
+    assert.equal((await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body.playback.state, 'none');
+    const pb = await until(async () => {
+      const b = (await call('GET', '/api/watch/items/movie/2/playback', null, { tok: token })).body;
+      if (b.state === 'failed') throw new Error(b.error);
+      return b.mode === 'hls' && b.complete ? b : null;
+    }, 60_000);
+    assert.equal(pb.state, 'ready');
+  });
+
+  await t.test('"prepare soon" (a download, the next episode) starts it without anyone waiting', async () => {
+    assert.equal((await call('DELETE', '/api/watch/items/movie/2/web')).status, 200);
+    const r = await call('POST', '/api/watch/items/movie/2/prepare', { soon: true }, { tok: token });
+    assert.equal(r.status, 200);
+    const pb = await until(async () => {
+      const b = (await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body.playback;
       return b.mode === 'hls' && b.complete ? b : null;
     }, 60_000);
     assert.equal(pb.state, 'ready');

@@ -145,3 +145,111 @@ test('an item opened while it is already converting in the background is promote
   media.removeWebVersion('movie', 93);
   media.rows.update('movie', 93, { web_state: 'none' });
 });
+
+// ─── Size estimates: no start, fill, stop, start again ────────────────────────
+
+test('estimates: a repackage is about the original; a conversion is bitrate × length', () => {
+  settings.set('web_max_height', '1080');
+  const remux = { plan: 'remux', size: 30e9, duration: 7200, probe };
+  assert.equal(media.estimateBytes(remux), 30e9);
+  const conv = { plan: 'transcode', size: 60e9, duration: 3600, probe: JSON.stringify({
+    streams: [{ index: 0, codec_type: 'video', codec_name: 'hevc', height: 2160 }, { index: 1, codec_type: 'audio', codec_name: 'eac3' }], format: {} }) };
+  const est = media.estimateBytes(conv);
+  assert.ok(est > 3e9 && est < 5e9, `4K scaled to 1080p for an hour ≈ 3.7 GB, got ${(est / 1e9).toFixed(1)}`);
+  assert.equal(media.estimateBytes({ ...remux, web_estimate: 45e9 }), 45e9, 'a learned size wins');
+});
+
+test('a job too big for the space left does not start; the player gets its size', () => {
+  settings.set('web_min_free_gb', '0');
+  settings.set('web_reserve_gb', '0');
+  const free = media.freeBytes();
+  media.rows.upsert('movie', 100, { path: '/gone/huge.mkv', size: free * 2, plan: 'remux', plan_reason: 'MKV container', probe,
+    web_state: 'none', web_priority: 0, web_estimate: null });
+  media.enqueue('movie', 100, { priority: media.DEMAND_PRIORITY });
+  const r = media.rows.get('movie', 100);
+  assert.equal(r.web_state, 'queued', 'not started: it would fill the disk');
+  const w = media.waitingFor(r);
+  assert.equal(w.reason, 'space');
+  assert.equal(w.estimate, free * 2);
+  assert.ok(w.need >= free * 2);
+  media.rows.update('movie', 100, { web_state: 'none', web_priority: 0 });
+});
+
+test('a big job waiting for room does not hold up a small one behind it', async () => {
+  settings.set('web_min_free_gb', '0');
+  settings.set('web_reserve_gb', '0');
+  const free = media.freeBytes();
+  media.rows.upsert('movie', 101, { path: '/gone/big.mkv', size: free * 2, plan: 'remux', plan_reason: 'MKV container', probe,
+    web_state: 'none', web_priority: 0 });
+  media.rows.upsert('movie', 102, { path: '/gone/small.mkv', size: 1e6, plan: 'remux', plan_reason: 'MKV container', probe,
+    web_state: 'none', web_priority: 0 });
+  media.enqueue('movie', 101);
+  media.enqueue('movie', 102);
+  assert.equal(await until(() => media.rows.get('movie', 102).web_state === 'failed'), true, 'small one ran (and failed: no source)');
+  assert.equal(media.rows.get('movie', 101).web_state, 'queued', 'big one still waits');
+  media.rows.update('movie', 101, { web_state: 'none' });
+});
+
+test('after running out of room, the size it really needs is learned', () => {
+  const row = { plan: 'remux', size: 10e9, web_progress: 0.25 };
+  assert.equal(media.learnEstimate(row, 5e9), Math.round(5e9 / 0.25 * 1.1), 'scaled up from how far it got');
+  assert.equal(media.learnEstimate({ ...row, web_progress: 0 }, 1e9), Math.round(Math.max(15e9, 4e9)), 'no progress yet: a generous guess');
+  assert.equal(media.learnEstimate({ ...row, web_progress: 0.9 }, 1e9), 10e9, 'never below the estimate it had');
+});
+
+// ─── Requests expire ──────────────────────────────────────────────────────────
+
+test('a request nobody is waiting for any more becomes background work', () => {
+  settings.set('web_min_free_gb', String(1e9));   // keep it queued
+  media.rows.upsert('movie', 110, { path: '/gone/a.mkv', size: 1, plan: 'remux', plan_reason: 'MKV container', probe,
+    web_state: 'none', web_priority: 0 });
+  media.enqueue('movie', 110, { priority: media.DEMAND_PRIORITY });
+  media.expireRequests();
+  assert.equal(media.rows.get('movie', 110).web_priority, media.DEMAND_PRIORITY, 'still wanted just now');
+  media.expireRequests(Date.now() + media.DEMAND_TTL_MS + 1000);
+  assert.equal(media.rows.get('movie', 110).web_priority, 0, 'dropped after the timeout');
+
+  media.enqueue('movie', 110, { priority: media.SOON_PRIORITY });
+  media.expireRequests(Date.now() + media.DEMAND_TTL_MS + 1000);
+  assert.equal(media.rows.get('movie', 110).web_priority, media.SOON_PRIORITY, '"soon" lasts longer');
+  media.expireRequests(Date.now() + media.SOON_TTL_MS + 1000);
+  assert.equal(media.rows.get('movie', 110).web_priority, 0);
+  media.rows.update('movie', 110, { web_state: 'none' });
+  settings.set('web_min_free_gb', '0');
+});
+
+test('a running request nobody watches keeps going, but as background work', async () => {
+  settings.set('web_min_free_gb', '0');
+  settings.set('web_reserve_gb', '0');
+  hangingJob(111);
+  media.enqueue('movie', 111, { priority: media.DEMAND_PRIORITY });
+  assert.equal(media.rows.get('movie', 111).web_state, 'encoding');
+  media.expireRequests(Date.now() + media.DEMAND_TTL_MS + 1000);
+  assert.equal(media.rows.get('movie', 111).web_priority, 0);
+  // So a real request in its lane now pauses it.
+  hangingJob(112);
+  media.enqueue('movie', 112, { priority: media.DEMAND_PRIORITY });
+  assert.equal(media.rows.get('movie', 111).web_state, 'queued', 'paused for the new request');
+  assert.equal(media.rows.get('movie', 112).web_state, 'encoding');
+  for (const id of [111, 112]) { media.removeWebVersion('movie', id); media.rows.update('movie', id, { web_state: 'none' }); }
+});
+
+test('a job being stopped is never put back in the queue by a request arriving meanwhile', async () => {
+  settings.set('web_min_free_gb', '0');
+  settings.set('web_reserve_gb', '0');
+  hangingJob(120);
+  media.enqueue('movie', 120);
+  assert.equal(await until(() => media.rows.get('movie', 120).web_state === 'encoding'), true);
+  await new Promise(r => setTimeout(r, 100));   // its ffmpeg is running
+  // Deleted, and — before its process has exited — someone presses play on
+  // something else in the same lane.
+  media.removeWebVersion('movie', 120);
+  media.rows.update('movie', 120, { web_state: 'none' });
+  hangingJob(121);
+  media.enqueue('movie', 121, { priority: media.DEMAND_PRIORITY });
+  assert.equal(media.rows.get('movie', 120).web_state, 'none', 'stays deleted');
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(media.rows.get('movie', 120).web_state, 'none', 'not started again once its process exits');
+  media.removeWebVersion('movie', 121);
+  media.rows.update('movie', 121, { web_state: 'none' });
+});

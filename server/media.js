@@ -78,10 +78,12 @@ const rows = {
   queuedDemand: () => db.prepare(
     "SELECT * FROM media_files WHERE web_state = 'queued' AND web_priority >= ? ORDER BY web_priority DESC, updated_at"
   ).all(DEMAND_PRIORITY),
-  /** The next job for a lane: 'remux' or 'transcode'. */
-  nextQueued: (plan) => db.prepare(
-    "SELECT * FROM media_files WHERE web_state = 'queued' AND plan = ? ORDER BY web_priority DESC, updated_at LIMIT 1"
-  ).get(plan),
+  /** Queued jobs for a lane, 'remux' or 'transcode', in the order to try them. */
+  queuedIn: (plan) => db.prepare(
+    "SELECT * FROM media_files WHERE web_state = 'queued' AND plan = ? ORDER BY web_priority DESC, updated_at"
+  ).all(plan),
+  /** Rows marked as requested, to expire those nobody is waiting for any more. */
+  prioritised: () => db.prepare('SELECT kind, item_id, web_priority FROM media_files WHERE web_priority > 0').all(),
   queue: () => db.prepare(
     "SELECT kind, item_id, web_state, web_progress, web_priority, plan FROM media_files WHERE web_state IN ('queued','encoding') ORDER BY web_state DESC, web_priority DESC, updated_at"
   ).all(),
@@ -96,6 +98,34 @@ const KINDS = new Set(['movie', 'episode']);
 const DEMAND_PRIORITY = 10;
 /** At most this many on-demand jobs at once (several people, several files). */
 const MAX_DEMAND = 3;
+/**
+ * "Wanted soon" — the next episode of what someone is watching, or a download
+ * someone asked for. Ahead of other background work, but it doesn't stop
+ * anything to get there and doesn't use the room kept for on-demand work.
+ */
+const SOON_PRIORITY = 5;
+
+/**
+ * A request only counts while someone is still there. Players say so all the
+ * time — the waiting screen polls, a playing HLS stream reloads its playlist —
+ * so a request nobody has touched for this long is dropped back to ordinary
+ * background work. Without this, a film opened and abandoned would keep the
+ * machine busy, and the reserve used, until it finished — and come back as
+ * urgent after every restart.
+ */
+const DEMAND_TTL_MS = 10 * 60_000;
+const SOON_TTL_MS = 60 * 60_000;
+const wantedAt = new Map();   // "kind:id" → last time someone was waiting for it
+
+/** Someone is (still) waiting for this item. */
+function touch(kind, id) {
+  wantedAt.set(`${kind}:${id}`, Date.now());
+}
+
+function stillWanted(kind, id, ttl, now = Date.now()) {
+  const t = wantedAt.get(`${kind}:${id}`);
+  return !!t && now - t < ttl;
+}
 
 /** The library item behind a (kind, id), with what the Watch pages show. */
 function itemFor(kind, id) {
@@ -402,7 +432,7 @@ async function record(kind, id, file, { probed = null } = {}) {
     probe: JSON.stringify({ streams: info.streams, format: { format_name: info.format?.format_name, duration: info.format?.duration } }),
     plan, plan_reason: reason,
     web_state: 'none', web_progress: 0, web_error: null,
-    original_removed_at: null, subs_snapshot: null,
+    original_removed_at: null, subs_snapshot: null, web_estimate: null,
   });
   if (plan === 'remux' || plan === 'transcode') {
     if (settings.get('web_prepare') !== 'demand') enqueue(kind, id);
@@ -490,6 +520,7 @@ function removeWebVersion(kind, id) {
 function enqueue(kind, id, { priority = 0 } = {}) {
   const r = rows.get(kind, id);
   if (!r || !['remux', 'transcode'].includes(r.plan)) return r;
+  if (priority >= SOON_PRIORITY) touch(kind, id);
   if (r.web_state === 'ready') return r;
   const p = Math.max(priority, r.web_priority || 0);
   if (r.web_state === 'encoding') {
@@ -738,17 +769,68 @@ function spaceStatus() {
 }
 
 /**
- * Why a queued web version hasn't started, for the player: not enough space,
- * or every slot taken. null when it isn't waiting.
+ * Bytes a web version will take. A repackage is about the size of the
+ * original (video copied, audio re-encoded); a conversion is its bitrate times
+ * its length. Once a job has run out of room, what it actually wrote by then
+ * (scaled to the whole) replaces the guess, so the same file can't start,
+ * fill the disk and be stopped again in a loop.
+ */
+function estimateBytes(row) {
+  if (row.web_estimate > 0) return row.web_estimate;
+  if (row.plan === 'remux') return row.size || 0;
+  let info = null;
+  try { info = JSON.parse(row.probe); } catch (_) {}
+  const video = info && mainVideo(info.streams);
+  if (!video || !row.duration) return row.size || 0;
+  const h = Math.min(video.height || 1080, Number(settings.get('web_max_height')) || 1080);
+  const audio = info ? audioRenditions(info.streams, wantedLanguages()).length || 1 : 1;
+  return Math.round((bitrateFor(h) + audio * 192_000) * row.duration / 8);
+}
+
+/**
+ * After running out of room: how big the whole thing really is, from what it
+ * wrote and how far it got. Never smaller than the estimate it had.
+ */
+function learnEstimate(row, written) {
+  const done = Math.min(1, Math.max(0, row.web_progress || 0));
+  const seen = done > 0.02 ? written / done * 1.1 : Math.max(estimateBytes(row) * 1.5, written * 4);
+  return Math.round(Math.max(estimateBytes(row), seen));
+}
+
+/** Bytes the jobs already running are still going to write. */
+function bytesStillToWrite() {
+  let total = 0;
+  for (const j of running.values()) {
+    const r = rows.get(j.kind, j.id);
+    if (r) total += estimateBytes(r) * Math.max(0, 1 - (r.web_progress || 0));
+  }
+  return total;
+}
+
+/**
+ * Whether a job can start now and finish without being stopped for space:
+ * free space at least its start floor, and enough left after it — and after
+ * what running jobs still have to write — to stay above its stop floor.
+ * @returns {null | { reason: 'space', free, need, estimate, min }}
+ */
+function roomFor(row, demand, free = freeBytes()) {
+  if (free === null) return null;
+  const estimate = estimateBytes(row);
+  const toFinish = stopFloor(demand) + estimate + bytesStillToWrite();
+  const need = Math.max(startFloor(demand), toFinish);
+  if (need > 0 && free < need) return { reason: 'space', free, need, estimate, min: minFreeBytes() };
+  return null;
+}
+
+/**
+ * Why a queued web version hasn't started, for the player: not enough space
+ * (with how much it needs), or every slot taken. null when it isn't waiting.
  */
 function waitingFor(row) {
   if (!row || row.web_state !== 'queued') return null;
   const demand = (row.web_priority || 0) >= DEMAND_PRIORITY;
-  const free = freeBytes();
-  const need = startFloor(demand);
-  if (free !== null && need > 0 && free < need) {
-    return { reason: 'space', free, need, min: minFreeBytes() };
-  }
+  const short = roomFor(row, demand);
+  if (short) return short;
   const busy = [...running.values()].filter(j => (demand ? j.demand : j.lane === row.plan));
   return { reason: 'busy', running: busy.length };
 }
@@ -760,10 +842,11 @@ function waitingFor(row) {
  * mostly disk) and converting (GPU or CPU, an hour or more a film). Separate,
  * so a long conversion queue never holds up files that need only a minute.
  *
- * On-demand work — someone opened the item — doesn't queue behind either: it
- * starts at once (up to MAX_DEMAND together), and a background job in its lane
- * is stopped and put back in the queue to start again afterwards, so the
- * machine works on what someone is waiting for.
+ * On-demand work — someone is waiting on the player — doesn't queue behind
+ * either: it starts at once (up to MAX_DEMAND together), and a background job
+ * in its lane is stopped and put back in the queue to start again afterwards.
+ * "Soon" work (the next episode, a download) goes first among the background
+ * jobs. A job that won't fit is skipped, so a smaller one behind it can go.
  */
 const LANES = ['remux', 'transcode'];
 const running = new Map();   // "kind:id" → { kind, id, lane, demand, proc, cancelled }
@@ -778,10 +861,13 @@ function startJob(job, demand) {
   const key = jobKey(job.kind, job.item_id);
   // Marked before anything asynchronous, so the next pump can't start it twice.
   running.set(key, { kind: job.kind, id: job.item_id, lane, demand, proc: null, cancelled: false });
-  rows.update(job.kind, job.item_id, { web_state: 'encoding', web_progress: 0, web_error: null });
+  rows.update(job.kind, job.item_id, { web_state: 'encoding', web_progress: 0, web_error: null, web_estimate: estimateBytes(job) });
   if (demand) {
     for (const [k, other] of running) {
-      if (k === key || other.demand || other.lane !== lane) continue;
+      // Already being stopped (deleted, cleared, paused): leave it be. Its
+      // process may take a moment to exit, and putting it back in the queue
+      // here would bring back something that was just removed.
+      if (k === key || other.demand || other.cancelled || other.lane !== lane) continue;
       log.info(`paused to prepare something someone is waiting for; it starts again afterwards`, { type: other.kind, id: other.id });
       other.cancelled = true;
       rows.update(other.kind, other.id, { web_state: 'queued', web_progress: 0 });
@@ -799,22 +885,38 @@ function startJob(job, demand) {
     });
 }
 
+/** Requests nobody is waiting for any more become ordinary background work. */
+function expireRequests(now = Date.now()) {
+  for (const r of rows.prioritised()) {
+    const ttl = r.web_priority >= DEMAND_PRIORITY ? DEMAND_TTL_MS : SOON_TTL_MS;
+    if (stillWanted(r.kind, r.item_id, ttl, now)) continue;
+    rows.update(r.kind, r.item_id, { web_priority: 0 });
+    const job = running.get(jobKey(r.kind, r.item_id));
+    if (job) job.demand = false;   // keeps going, but as background work
+  }
+}
+
 function pump() {
+  expireRequests();
+  const space = { demand: spaceOk('demand'), background: spaceOk('background') };
   // What someone is waiting for first, however busy the lanes are.
   for (const job of rows.queuedDemand()) {
     if ([...running.values()].filter(j => j.demand).length >= MAX_DEMAND) break;
-    if (!spaceOk('demand')) break;
+    if (!space.demand) break;
+    if (roomFor(job, true)) continue;   // too big for the space left; the player says so
     startJob(job, true);
   }
   // Then background work, one job per lane, never alongside on-demand work in
   // the same lane.
   for (const lane of LANES) {
     if ([...running.values()].some(j => j.lane === lane)) continue;
-    const job = rows.nextQueued(lane);
-    if (!job) continue;
-    const demand = (job.web_priority || 0) >= DEMAND_PRIORITY;
-    if (!spaceOk(demand ? 'demand' : 'background')) continue;
-    startJob(job, demand);
+    for (const job of rows.queuedIn(lane)) {
+      const demand = (job.web_priority || 0) >= DEMAND_PRIORITY;
+      if (!(demand ? space.demand : space.background)) continue;
+      if (roomFor(job, demand)) continue;
+      startJob(job, demand);
+      break;
+    }
   }
 }
 
@@ -897,8 +999,11 @@ async function encode(job, opts = {}) {
   // Out of space, or ffmpeg failing because the disk already is: not this
   // file's fault. Back in the queue to start over, and pause.
   if (!result.ok && (result.outOfSpace || /No space left|ENOSPC/i.test(result.error))) {
+    // How big it really is: what it wrote, scaled up by how far it got. Kept,
+    // so it isn't started again until that much room exists.
+    const learned = learnEstimate(now, dirBytes(outDir));
     fs.rmSync(outDir, { recursive: true, force: true });
-    rows.update(kind, id, { web_state: 'queued', web_progress: 0 });
+    rows.update(kind, id, { web_state: 'queued', web_progress: 0, web_estimate: learned });
     const mode = entry.demand ? 'demand' : 'background';
     log.warn(entry.demand
       ? `web version stopped: the disk holding ${WEB_ROOT} is nearly full; it starts over once there is room`
@@ -1298,6 +1403,7 @@ async function prewarmSubtitles(media) {
 module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
   record, locate, indexPass, enqueue, startWorker, waitingFor, DEMAND_PRIORITY, MAX_DEMAND, reserveBytes, pump,
+  SOON_PRIORITY, DEMAND_TTL_MS, SOON_TTL_MS, touch, estimateBytes, roomFor, learnEstimate, expireRequests,
   dirBytes, largestWebVersions, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,

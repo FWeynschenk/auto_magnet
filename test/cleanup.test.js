@@ -34,6 +34,20 @@ test('a finished torrent past the ratio, with a ready web version, may go', () =
   assert.match(d.reason, /ratio 2\.40/);
 });
 
+test('an episode deleted from a pack does not keep the rest of the pack from going', () => {
+  const pack = torrent({ files: [
+    { name: 'Show/Show.S01E01.mkv', length: 1e9, wanted: false },   // deleted by hand, dropped from the torrent
+    { name: 'Show/Show.S01E02.mkv', length: 1e9 },
+  ] });
+  const e2 = row({ kind: 'episode', item_id: 2, path: path.resolve('/lib/Show/Show.S01E02.mkv') });
+  const d = cleanup.decide(pack, [e2], pol, opts);
+  assert.equal(d.ok, true, d.reason);
+  assert.deepEqual(d.rows.map(r => r.item_id), [2]);
+  // Still wanted but not in the library: that one does hold it back.
+  const kept = torrent({ files: [{ name: 'Show/Show.S01E01.mkv', length: 1e9 }, { name: 'Show/Show.S01E02.mkv', length: 1e9 }] });
+  assert.equal(cleanup.decide(kept, [e2], pol, opts).ok, false);
+});
+
 test('below the ratio it stays — unless the day limit has passed', () => {
   assert.equal(cleanup.decide(torrent({ uploadRatio: 1.2 }), [row()], pol, opts).ok, false);
   const t = torrent({ uploadRatio: 0.3, secondsSeeding: 15 * 86400 });

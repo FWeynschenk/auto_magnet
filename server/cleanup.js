@@ -74,7 +74,9 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue, subsP
     return { ok: false, reason: `ratio ${torrent.uploadRatio.toFixed(2)} of ${pol.ratio}` };
   }
 
-  const videos = media.videoFilesIn(torrent.files);
+  // Files dropped from the torrent (an episode deleted from a pack) are gone
+  // from disk and from the library: they don't hold the rest back.
+  const videos = media.videoFilesIn(torrent.files).filter(f => f.wanted !== false);
   if (videos.length === 0) return { ok: false, reason: 'no video files' };
   const byPath = new Map(rows.map(r => [key(r.path), r]));
   const covered = [], rebuild = [];

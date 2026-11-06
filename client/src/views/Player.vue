@@ -206,7 +206,7 @@ async function load() {
   resumedAt.value = 0;
   offset.value = 0;
   try {
-    item.value = await watch.item(props.kind, props.id);
+    item.value = await watch.item(props.kind, props.id, { play: true });
   } catch (err) {
     fatal.value = err.message;
     loading.value = false;
@@ -421,6 +421,23 @@ function onMeta() { applyOffset(); }
 
 function onTime() {
   if (Date.now() - lastReportAt > 10_000) report(false);
+  prepareNext();
+}
+
+let nextRequested = null;
+
+/**
+ * Four-fifths of the way through an episode, ask for the next one to be
+ * prepared, so it is ready (or well on its way) when this one ends. Asked
+ * once per episode; the server ignores it for files that play as they are.
+ */
+function prepareNext() {
+  const v = video.value, next = item.value?.next;
+  if (!v || !next || nextRequested === next.id) return;
+  const d = Number.isFinite(v.duration) && pb.value?.complete !== false ? v.duration : item.value.duration;
+  if (!d || v.currentTime / d < 0.8) return;
+  nextRequested = next.id;
+  watch.prepare(next.kind || 'episode', next.id, { soon: true }).catch(() => { nextRequested = null; });
 }
 
 /** Send the position. On leaving the page, by beacon so it survives the unload. */

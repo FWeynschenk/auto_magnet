@@ -229,7 +229,7 @@ class PlayerActivity : Activity() {
         }
 
         val detail = try {
-            Api.item(kind, id)
+            Api.item(kind, id, play = true)
         } catch (e: Exception) {
             message.text = "Can't reach the server: ${e.message}"
             return
@@ -240,12 +240,24 @@ class PlayerActivity : Activity() {
         if (pb.mode == "unavailable") { message.text = pb.error ?: "This can't be played"; return }
         // Converting on the server: wait for the first part, then start — the
         // rest keeps arriving while it plays.
+        var misses = 0
         while (pb.mode == "preparing") {
             if (pb.state == "failed") { message.text = "The server couldn't convert this:\n${pb.error ?: ""}"; return }
             val pct = ((pb.progress ?: 0.0) * 100).toInt()
-            message.text = if (pb.state == "queued") "Waiting for the server to start converting…" else "Preparing for playback… $pct%\n${pb.reason ?: ""}"
+            val w = pb.waiting
+            message.text = when {
+                w?.reason == "space" ->
+                    "The server's disk is nearly full, so this can't be prepared right now.\n" +
+                        "${gb(w.free)} free — it needs about ${gb(w.need)}. It starts by itself once there is room."
+                pb.state == "queued" && (w?.running ?: 0) > 0 ->
+                    "Waiting for ${w!!.running} other conversion${if (w.running == 1) "" else "s"} someone asked for…"
+                pb.state == "queued" -> "Starting…"
+                else -> "Preparing for playback… $pct%\n${pb.reason ?: ""}"
+            } + if (misses >= 3) "\n\nCan't reach the server — still trying…" else ""
             delay(2000)
-            pb = runCatching { Api.playback(kind, id) }.getOrElse { pb }
+            pb = runCatching { Api.playback(kind, id) }
+                .onSuccess { misses = 0 }
+                .getOrElse { misses++; pb }
         }
         val subs = detail.subtitles.filter { it.available && it.url != null }.map { s ->
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(Api.abs(s.url!!)))
@@ -293,10 +305,32 @@ class PlayerActivity : Activity() {
         handler.post(ticker)
     }
 
+    private fun gb(b: Double?) = if (b == null) "?" else "%.1f GB".format(b / 1e9)
+
     private val ticker = object : Runnable {
         override fun run() {
             save(force = false)
+            prepareNext()
             handler.postDelayed(this, 10_000)
+        }
+    }
+
+    private var nextRequested: Int? = null
+
+    /**
+     * Four-fifths of the way in, ask the server to prepare the next episode,
+     * so it's ready when this one ends. Once per episode; harmless for files
+     * that need no preparing.
+     */
+    private fun prepareNext() {
+        val p = player ?: return
+        val n = next ?: return
+        if (nextRequested == n.id) return
+        val dur = p.duration.takeIf { it > 0 && it != C.TIME_UNSET }?.let { it / 1000.0 } ?: duration ?: return
+        if (p.currentPosition / 1000.0 / dur < 0.8) return
+        nextRequested = n.id
+        scope.launch(Dispatchers.IO) {
+            runCatching { Api.prepare(n.kind, n.id, soon = true) }.onFailure { nextRequested = null }
         }
     }
 

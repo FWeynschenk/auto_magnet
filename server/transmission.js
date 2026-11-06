@@ -128,23 +128,35 @@ async function setTorrentLocation(id, location, { move = true, target = null } =
   await rpc('torrent-set-location', { ids: [id], location, move }, target);
 }
 
+/**
+ * A torrent's files, each with whether it is still wanted. A file dropped from
+ * a pack (deleted by hand, or deselected in Transmission) is unwanted: it is
+ * neither downloaded nor on disk any more. Transmission reports 0/1 or false/true.
+ */
+function filesOf(t) {
+  return (t.files || []).map((f, i) => ({
+    name: f.name, length: f.length,
+    wanted: !(Array.isArray(t.wanted) && (t.wanted[i] === 0 || t.wanted[i] === false)),
+  }));
+}
+
 /** Where a torrent lives and what is in it, or null if Transmission no longer has it. */
 async function getTorrentInfo(id, target = null) {
   const args = await rpc('torrent-get', {
-    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone'],
+    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'wanted'],
   }, target);
   const t = args?.torrents?.[0];
   if (!t) return null;
   return {
     id: t.id, name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
-    files: (t.files || []).map(f => ({ name: f.name, length: f.length })),
+    files: filesOf(t),
   };
 }
 
 /** How much a torrent has seeded: its upload ratio and time spent seeding. */
 async function getSeedInfo(id, target = null) {
   const args = await rpc('torrent-get', {
-    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'uploadRatio', 'secondsSeeding', 'doneDate'],
+    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'uploadRatio', 'secondsSeeding', 'doneDate', 'wanted'],
   }, target);
   const t = args?.torrents?.[0];
   if (!t) return null;
@@ -153,7 +165,7 @@ async function getSeedInfo(id, target = null) {
     // Transmission reports -1 (no data) and -2 (infinite: nothing downloaded) as ratios.
     uploadRatio: t.uploadRatio === -2 ? Infinity : Math.max(0, Number(t.uploadRatio) || 0),
     secondsSeeding: Number(t.secondsSeeding) || 0,
-    files: (t.files || []).map(f => ({ name: f.name, length: f.length })),
+    files: filesOf(t),
   };
 }
 

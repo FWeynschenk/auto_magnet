@@ -119,9 +119,13 @@ object Api {
     suspend fun movies(): List<Item> = get("/api/watch/movies")
     suspend fun shows(): List<ShowSummary> = get("/api/watch/shows")
     suspend fun show(id: Int): ShowDetail = get("/api/watch/shows/$id")
-    suspend fun item(kind: String, id: Int): ItemDetail = get("/api/watch/items/$kind/$id")
+    /** play = true only from the player: it starts a conversion the item still needs. */
+    suspend fun item(kind: String, id: Int, play: Boolean = false): ItemDetail =
+        get("/api/watch/items/$kind/$id" + if (play) "?play=1" else "")
     suspend fun playback(kind: String, id: Int): Playback = get("/api/watch/items/$kind/$id/playback")
-    suspend fun prepare(kind: String, id: Int): Playback = json.decodeFromString(call("POST", "/api/watch/items/$kind/$id/prepare"))
+    /** soon = true: for a download or the next episode — ahead of background work, without stopping anything. */
+    suspend fun prepare(kind: String, id: Int, soon: Boolean = false): Playback =
+        json.decodeFromString(call("POST", "/api/watch/items/$kind/$id/prepare", "{\"soon\":$soon}"))
 
     suspend fun setWatched(kind: String, id: Int, watched: Boolean): Progress =
         json.decodeFromString(call("POST", "/api/watch/progress/$kind/$id/watched", """{"watched":$watched}"""))

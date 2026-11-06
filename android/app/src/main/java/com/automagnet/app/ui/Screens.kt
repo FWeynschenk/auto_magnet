@@ -446,13 +446,23 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
                     else -> {
                         val pb = detail?.playback
                         val canDownload = pb?.download != null
+                        // Opening this page doesn't start a conversion; asking for a download does.
+                        val canPrepare = pb?.mode == "preparing" && (pb.state == null || pb.state == "none")
+                        val pct = ((pb?.progress ?: 0.0) * 100).toInt()
                         OutlinedButton(
-                            enabled = canDownload && !busy,
+                            enabled = (canDownload || canPrepare) && !busy,
                             onClick = {
                                 busy = true
                                 scope.launch {
-                                    runCatching { Downloads.start(ctx, detail!!) }
-                                        .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
+                                    if (canDownload) {
+                                        runCatching { Downloads.start(ctx, detail!!) }
+                                            .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
+                                    } else {
+                                        runCatching { Api.prepare(kind, id, soon = true) }
+                                            .onSuccess { Toast.makeText(ctx, "Preparing on the server — Download is ready when it's done", Toast.LENGTH_LONG).show() }
+                                            .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
+                                        refresh++
+                                    }
                                     busy = false
                                 }
                             },
@@ -462,8 +472,12 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
                                 when {
                                     download?.state == Download.STATE_FAILED -> "Download failed — retry"
                                     canDownload -> "Download" + (pb?.download?.size?.let { " (${fmtSize(it)})" } ?: "")
-                                    pb?.mode == "preparing" -> "Download once prepared (${((pb.progress ?: 0.0) * 100).toInt()}%)"
-                                    pb?.mode == "hls" -> "Download once converted (${((pb.progress ?: 0.0) * 100).toInt()}%)"
+                                    canPrepare -> "Prepare for download"
+                                    pb?.mode == "preparing" && pb.state == "failed" -> "Couldn't prepare: ${pb.error ?: "failed"}"
+                                    pb?.mode == "preparing" && pb.waiting?.reason == "space" -> "Server disk nearly full — waiting for room"
+                                    pb?.mode == "preparing" && pb.state == "queued" -> "Waiting to prepare…"
+                                    pb?.mode == "preparing" -> "Preparing for download… $pct%"
+                                    pb?.mode == "hls" -> "Download once converted ($pct%)"
                                     else -> "Not available offline"
                                 }
                             )

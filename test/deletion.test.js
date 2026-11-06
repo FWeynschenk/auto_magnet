@@ -121,6 +121,23 @@ test('an episode from a season pack: only its file goes, the pack keeps seeding'
   assert.equal(episodes.byId(2).status, 'done');
 });
 
+test('deleting the last episode left of a pack removes the whole torrent', async () => {
+  const dir = path.join(SHOWS, 'Show', 'Show.S02.1080p');
+  file(path.join(dir, 'Show.S02E01.mkv'));   // still on disk from before, but dropped from the torrent
+  const e2 = file(path.join(dir, 'Show.S02E02.mkv'));
+  db.prepare(`INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, torrent_origin)
+              VALUES (3, 1, 2, 1, 'deleted', 13, 'added'), (4, 1, 2, 2, 'done', 13, 'added')`).run();
+  row('episode', 4, e2);
+  const tx = fakeTx({ 13: { downloadDir: path.join(SHOWS, 'Show'), files: [
+    { name: 'Show.S02.1080p/Show.S02E01.mkv', wanted: false },
+    { name: 'Show.S02.1080p/Show.S02E02.mkv', wanted: true },
+  ] } });
+  const r = await deleteEverything('episode', 4, { tx });
+  assert.deepEqual(tx.calls, [['purge', 13]], 'nothing else in it is wanted: the torrent goes');
+  assert.match(r.original, /torrent removed/);
+  assert.equal(episodes.byId(4).status, 'deleted');
+});
+
 test('a torrent that was already in Transmission is never removed, only this file', async () => {
   const p = file(path.join(MOVIES, 'Theirs', 'Theirs.mkv'));
   db.prepare("INSERT INTO movies (id, title, status, torrent_id, torrent_origin) VALUES (4, 'Theirs', 'done', 11, 'duplicate')").run();

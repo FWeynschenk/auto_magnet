@@ -579,11 +579,26 @@ shows how each web version was made and how fast, e.g. *web version ready (trans
 Repackaging and converting run side by side, one of each at a time, so a long conversion queue
 never holds up files that need only a minute.
 
-**What someone opens starts at once.** Opening a movie or episode that still needs a web version
-doesn't put it in the queue: it starts straight away. A background job in the same lane
-(preparing something ahead of time) is stopped and starts over later, so the machine works on
-what someone is waiting for. Up to three requested items run at the same time. Anything already
-converting in the background when someone opens it just carries on, now as a request.
+**What someone plays starts at once.** Opening a movie or episode in the player (in the browser,
+or pressing Play in the app) doesn't put it in the queue: it starts straight away.
+- A background job in the same lane (preparing something ahead of time) is stopped and starts
+  over later, so the machine works on what someone is waiting for.
+- Up to three requested items run at the same time.
+- Anything already converting in the background when someone plays it carries on, now as a
+  request.
+
+Just looking at an item — the app's details page, a show's episode list — starts nothing.
+
+**A request lasts while someone is waiting.** The player keeps saying so: the waiting screen
+polls, and a playing stream reloads its playlist. Once nobody has for 10 minutes (a closed tab,
+a phone put away), the request becomes ordinary background work: it may be paused for the next
+real request, and stops at the background disk limit. Requests are also forgotten on restart, so
+a server coming back up doesn't treat yesterday's clicks as urgent.
+
+**Next episode, and downloads, come "soon".** Four-fifths of the way through an episode, the
+player asks for the next one. **Prepare for download** in the app does the same for an item that
+isn't ready to download yet. These go ahead of other background work but don't stop anything, and
+are dropped back after an hour if nobody follows up.
 
 ### What the player says while it waits
 
@@ -611,7 +626,11 @@ and from **Settings → Watch library → Largest web versions**:
   Where Transmission still has the torrent, it goes through Transmission:
   - a torrent holding only this item is removed along with its files;
   - for a season pack, or a torrent that was already in Transmission before auto_magnet asked
-    for it, only this file is dropped and deleted, and the rest keeps seeding.
+    for it, only this file is dropped and deleted, and the rest keeps seeding;
+  - deleting the last episode still wanted from a pack removes the whole torrent.
+
+  *Remove originals after seeding* ignores episodes deleted from a pack, so the rest of the pack can
+  still go once it has seeded.
 
   Nothing outside the movie and show folders is ever deleted. If Transmission can't be reached,
   nothing is deleted and it says why.
@@ -628,7 +647,16 @@ Two settings in **Settings → Playback**:
 
 So with the defaults, background work stops at 70 GB free and requests can go down to 20 GB. A
 running job is stopped halfway into its margin (background at 45 GB, requests at 10 GB), since
-downloads share the disk, and is queued to start over. **Settings → Watch library** shows which
+downloads share the disk, and is queued to start over.
+
+**A job only starts if it will fit.** Its size is estimated first: about the original's size for
+a repackage, bitrate × length for a conversion. It starts only if free space, minus that and minus
+what the running jobs still have to write, stays above its stop limit. Otherwise:
+- **A request:** the player says how much it needs.
+- **Background work:** smaller jobs behind it go first.
+
+If a job runs out of room anyway, how much it wrote compared with how far it got becomes its new
+estimate. So a file never starts, fills the disk, gets stopped and starts again in a loop. **Settings → Watch library** shows which
 kind of work is paused, and the Activity log records it once. Work carries on by itself once there
 is room, checked every minute, and straight away when a setting changes or someone is waiting on
 the player.
@@ -679,7 +707,8 @@ Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an accou
 - **Play** streams, resuming where that account left off, with subtitles and every audio track
   (switch in the settings menu); at the end of an episode the next one starts.
 - **Download** keeps a copy on the phone: the original file for direct-play items, the web
-  version for the rest (available once it has finished converting). Subtitles come with it.
+  version for the rest. If that isn't ready yet, **Prepare for download** asks the server to make
+  it, and Download becomes available once it's done. Subtitles come with it.
   Downloads wait for Wi-Fi unless you switch that off on the Downloads tab.
 - Progress made offline is uploaded when the app is next opened online.
 - **Picture-in-picture**: going Home while something plays shrinks it to a floating window

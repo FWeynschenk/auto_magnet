@@ -121,9 +121,10 @@ export const watch = {
   movies:      ()                 => req('GET',  '/watch/movies'),
   shows:       ()                 => req('GET',  '/watch/shows'),
   show:        (id)               => req('GET',  `/watch/shows/${id}`),
-  item:        (kind, id)         => req('GET',  item(kind, id)),
+  // play: this is a player opening it, so a conversion it needs starts now.
+  item:        (kind, id, { play = false } = {}) => req('GET', `${item(kind, id)}${play ? '?play=1' : ''}`),
   playback:    (kind, id)         => req('GET',  `${item(kind, id)}/playback`),
-  prepare:     (kind, id)         => req('POST', `${item(kind, id)}/prepare`),
+  prepare:     (kind, id, { soon = false } = {}) => req('POST', `${item(kind, id)}/prepare`, { soon }),
   reencode:    (kind, id)         => req('POST', `${item(kind, id)}/reencode`),
   deleteWeb:   (kind, id)         => req('DELETE', `${item(kind, id)}/web`),
   deleteAll:   (kind, id)         => req('DELETE', item(kind, id)),

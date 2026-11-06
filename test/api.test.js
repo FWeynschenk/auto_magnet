@@ -196,6 +196,11 @@ test('subtitles', { skip }, async (t) => {
     assert.equal(side.editable, true);
     assert.equal(side.file, undefined, 'server paths are not sent to clients');
   });
+  await t.test('an {\\an8} line is placed at the top, not printed', async () => {
+    const vtt = await (await call('GET', side.url, null, { tok: token, raw: true })).text();
+    assert.match(vtt, /00:00:09\.000 --> 00:00:10\.000 line:5%\nSign at the top\n/);
+    assert.doesNotMatch(vtt, /\\an8/);
+  });
   await t.test('a saved offset rewrites the file, and restore undoes it', async () => {
     assert.equal((await call('POST', `/api/watch/items/episode/1/subtitles/${side.id}/shift`, { offsetMs: 1500 }, { tok: token })).status, 200);
     assert.match(await (await call('GET', side.url, null, { tok: token, raw: true })).text(), /00:00:02\.500 --> 00:00:04\.500/);

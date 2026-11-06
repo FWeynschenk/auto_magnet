@@ -1084,6 +1084,10 @@ function listSubtitles(media) {
   return out;
 }
 
+// Bump when the conversion itself changes, so cached results made by the old
+// one are redone (2: ASS tags such as {\an8} translated instead of shown).
+const VTT_CONVERTER = 2;
+
 /** Path of a WebVTT version of one subtitle, converting (and caching) it. */
 async function vttFor(media, subId) {
   const sub = listSubtitles(media).find(s => s.id === subId);
@@ -1103,7 +1107,7 @@ async function vttFor(media, subId) {
   const version = sub.source === 'file'
     ? crypto.createHash('sha1').update(fs.readFileSync(sub.file)).digest('hex').slice(0, 16)
     : (() => { const st = fs.statSync(media.path); return `${st.size}-${Math.floor(st.mtimeMs)}`; })();
-  const out = path.join(dir, `${subId}.${version}.vtt`);
+  const out = path.join(dir, `${subId}.${version}.c${VTT_CONVERTER}.vtt`);
   if (fs.existsSync(out)) return out;
   for (const n of fs.readdirSync(dir)) {
     if (n.startsWith(`${subId}.`) && n.endsWith('.vtt')) fs.rmSync(path.join(dir, n), { force: true });

@@ -26,7 +26,8 @@ function ffmpeg(args) {
   execFileSync('ffmpeg', ['-v', 'error', '-y', ...args]);
 }
 
-const SRT = '1\n00:00:01,000 --> 00:00:03,000\nHello there\n\n2\n00:00:05,000 --> 00:00:08,000\nSecond line\n';
+const SRT = '1\n00:00:01,000 --> 00:00:03,000\nHello there\n\n2\n00:00:05,000 --> 00:00:08,000\nSecond line\n\n'
+  + '3\n00:00:09,000 --> 00:00:10,000\n{\\an8}Sign at the top\n';
 
 /**
  * A small library on disk, one file per plan:

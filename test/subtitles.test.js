@@ -29,6 +29,34 @@ test('SRT → VTT → parse round trip', () => {
   assert.deepEqual(st.parse(st.toSrt(cues)), cues);
 });
 
+test('ASS position tags become WebVTT placement instead of showing as text', () => {
+  assert.deepEqual(st.vttCue('{\\an8}Sign'), { text: 'Sign', settings: 'line:5%' });
+  assert.deepEqual(st.vttCue('{\\an7}Top left'), { text: 'Top left', settings: 'line:5% position:5% align:left' });
+  assert.deepEqual(st.vttCue('{\\an5}Middle'), { text: 'Middle', settings: 'line:50%,center' });
+  assert.deepEqual(st.vttCue('{\\an2}Default'), { text: 'Default', settings: '' });
+  assert.deepEqual(st.vttCue('{\\a6}Legacy SSA top'), { text: 'Legacy SSA top', settings: 'line:5%' });
+  const vtt = st.toVtt(st.parse('1\n00:00:01,000 --> 00:00:02,000\n{\\an8}Top\n'));
+  assert.match(vtt, /00:00:01\.000 --> 00:00:02\.000 line:5%\nTop\n/);
+  assert.doesNotMatch(vtt, /\\an8/);
+});
+
+test('ASS styling becomes WebVTT tags; other override blocks and comments are dropped', () => {
+  assert.equal(st.vttCue('{\\i1}Italic{\\i0} {\\b1}bold{\\b0}').text, '<i>Italic</i> <b>bold</b>');
+  assert.equal(st.vttCue('{\\pos(10,20)\\fad(200,200)\\c&H00FFFF&}Moved').text, 'Moved');
+  assert.equal(st.vttCue('{Translator note}Hi').text, 'Hi');
+  assert.equal(st.vttCue('One\\NTwo\\nThree').text, 'One\nTwo\nThree');
+});
+
+test('HTML-ish SRT tags: i/b/u kept, font dropped, stray < & escaped', () => {
+  assert.equal(st.vttCue('<font color="#ff0">Yellow</font> <I>it</I>').text, 'Yellow <i>it</i>');
+  assert.equal(st.vttCue('a < b && c > d').text, 'a &lt; b &amp;&amp; c &gt; d');
+  assert.equal(st.vttCue('R&amp;D').text, 'R&amp;D', 'existing entities left alone');
+});
+
+test('a cue that is only a tag is left out rather than shown empty', () => {
+  assert.doesNotMatch(st.toVtt([{ start: 0, end: 1000, text: '{\\an8}' }]), /-->/);
+});
+
 test('transform shifts, stretches and drops cues pushed before zero', () => {
   const cues = [{ start: 500, end: 900, text: 'gone' }, { start: 2000, end: 3000, text: 'kept' }];
   assert.deepEqual(st.transform(cues, { offsetMs: -1000 }), [{ start: 1000, end: 2000, text: 'kept' }]);

@@ -157,6 +157,14 @@ async function getSeedInfo(id, target = null) {
   };
 }
 
+/**
+ * Stop wanting some of a torrent's files (by index in its file list), so
+ * Transmission neither downloads nor checks them again. The rest keep seeding.
+ */
+async function setFilesUnwanted(id, indexes, target = null) {
+  await rpc('torrent-set', { ids: [id], 'files-unwanted': indexes }, target);
+}
+
 async function startTorrent(id, target = null) { await rpc('torrent-start',  { ids: [id] }, target); }
 async function stopTorrent(id, target = null)  { await rpc('torrent-stop',   { ids: [id] }, target); }
 async function purgeTorrent(id, target = null) { await rpc('torrent-remove', { ids: [id], 'delete-local-data': true }, target); }
@@ -510,7 +518,7 @@ function removeTorrent(id, targetName = null) {
 
 module.exports = {
   addTorrent, getTorrentProgress, testConnection, removeTorrent,
-  getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent,
+  getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent, setFilesUnwanted,
   listTorrents, setTorrentLocation,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
   listTargets, resolveTarget, progressKey,

@@ -27,7 +27,7 @@
         @click="$emit('preview', movie)"
       >Browse</button>
       <button
-        v-if="movie.status === 'done' || movie.status === 'downloading' || movie.status === 'failed' || (movie.mode === 'auto' && movie.status === 'pending')"
+        v-if="['done', 'downloading', 'failed', 'deleted'].includes(movie.status) || (movie.mode === 'auto' && movie.status === 'pending')"
         class="btn-ghost btn-sm"
         @click="$emit('redo', movie)"
       >Redo</button>
@@ -48,6 +48,7 @@ const statusClass = computed(() => ({
   downloading: 'status-downloading',
   done:        'status-done',
   failed:      'status-failed',
+  deleted:     'status-deleted',
 }[props.movie.status] || 'status-pending'));
 </script>
 
@@ -71,6 +72,7 @@ const statusClass = computed(() => ({
 .status-dot.status-downloading { background: var(--yellow); }
 .status-dot.status-done        { background: var(--green); }
 .status-dot.status-failed      { background: var(--red); }
+.status-dot.status-deleted     { background: #4b5563; }
 
 .title-col { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; }
 .clickable { cursor: pointer; }
@@ -86,6 +88,7 @@ const statusClass = computed(() => ({
 .status-downloading { background: #92400e; color: #fef3c7; }
 .status-done        { background: #14532d; color: #bbf7d0; }
 .status-failed      { background: #7f1d1d; color: #fecaca; }
+.status-deleted     { background: #1f2937; color: #6b7280; text-decoration: line-through; }
 .quality { background: #1e1b4b; color: var(--accent-h); }
 
 .err-flag { width: 14px; flex-shrink: 0; color: var(--red); font-size: 12px; text-align: center; }

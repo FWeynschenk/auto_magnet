@@ -44,7 +44,7 @@
         @click="$emit('preview', movie)"
       >Browse</button>
       <button
-        v-if="movie.status === 'done' || movie.status === 'downloading' || movie.status === 'failed' || (movie.mode === 'auto' && movie.status === 'pending')"
+        v-if="['done', 'downloading', 'failed', 'deleted'].includes(movie.status) || (movie.mode === 'auto' && movie.status === 'pending')"
         class="btn-ghost btn-sm"
         @click="$emit('redo', movie)"
       >Redo</button>
@@ -68,6 +68,7 @@ const statusClass = computed(() => ({
   downloading: 'status-downloading',
   done:        'status-done',
   failed:      'status-failed',
+  deleted:     'status-deleted',
 }[props.movie.status] || 'status-pending'));
 
 const hasReleased = computed(() => {
@@ -125,6 +126,7 @@ function toggleMode() {
 .status-downloading { background: #92400e; color: #fef3c7; }
 .status-done        { background: #14532d; color: #bbf7d0; }
 .status-failed      { background: #7f1d1d; color: #fecaca; }
+.status-deleted     { background: #1f2937; color: #6b7280; text-decoration: line-through; }
 .quality { background: #1e1b4b; color: var(--accent-h); }
 .mode    { background: #0c4a6e; color: #7dd3fc; }
 

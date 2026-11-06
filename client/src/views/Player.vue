@@ -7,28 +7,53 @@
         <div v-if="item.kind === 'episode'" class="s">{{ epCode(item) }} · {{ item.title }}</div>
         <div v-else-if="item.year" class="s">{{ item.year }}</div>
       </div>
+      <div v-if="item && isAdmin" class="del">
+        <button class="btn-ghost btn-sm" :disabled="deleting" aria-haspopup="menu" :aria-expanded="delMenu" @click="delMenu = !delMenu">
+          {{ deleting ? 'Deleting…' : 'Delete…' }}</button>
+        <div v-if="delMenu" class="del-menu" role="menu">
+          <button v-if="pb && pb.plan && pb.plan !== 'direct' && pb.original !== false" role="menuitem" @click="deleteWeb">
+            Delete web version<span>The original stays and keeps seeding; it's made again when next played</span>
+          </button>
+          <button role="menuitem" class="danger" @click="deleteAll">
+            Delete from disk<span>The original, its subtitles and the web version. It won't be downloaded again</span>
+          </button>
+        </div>
+      </div>
     </header>
 
     <div class="stage">
       <div v-if="loading" class="msg">Loading…</div>
       <div v-else-if="fatal" class="msg err">{{ fatal }}</div>
 
-      <div v-else-if="pb?.mode === 'preparing'" class="msg">
+      <div v-else-if="pb?.mode === 'preparing' && !playing" class="msg">
         <template v-if="pb.state === 'failed'">
           <div class="err">Couldn't prepare this for the browser.</div>
           <div class="small">{{ pb.error }}</div>
           <button v-if="isAdmin" class="btn-primary" @click="retry">Try again</button>
+          <div v-else class="small">An admin can try again from this page.</div>
+        </template>
+        <template v-else-if="pb.waiting?.reason === 'space'">
+          <div class="err">The disk is nearly full, so this can't be prepared right now.</div>
+          <div class="small">{{ gbText(pb.waiting.free) }} free — converting needs at least {{ gbText(pb.waiting.need) }} free.</div>
+          <div v-if="isAdmin" class="small">
+            Delete web versions or watched items in <RouterLink to="/settings">Settings → Watch library</RouterLink>,
+            or lower <em>Keep free</em>. It starts by itself once there is room.
+          </div>
+          <div v-else class="small">Ask an admin to free some space. It starts by itself once there is room.</div>
         </template>
         <template v-else>
           <div>Preparing for your browser…</div>
           <div class="small">{{ pb.plan === 'remux' ? 'Repackaging' : 'Converting' }} — {{ pb.reason }}</div>
           <div class="prog"><div :style="{ width: Math.round((pb.progress || 0) * 100) + '%' }" /></div>
-          <div class="small">{{ pb.state === 'queued' ? 'Waiting in the queue' : `${Math.round((pb.progress || 0) * 100)}%` }} · playback starts as soon as the first part is ready</div>
+          <div class="small">{{ statusLine }}</div>
         </template>
+        <div v-if="pollTrouble" class="small warn">Can't reach the server — still trying…</div>
       </div>
 
+      <div v-if="notice" class="notice" role="status">{{ notice }}</div>
+
       <video
-        v-show="pb && (pb.mode === 'file' || pb.mode === 'hls')"
+        v-show="pb && (playing || pb.mode === 'file' || pb.mode === 'hls')"
         ref="video"
         class="video"
         controls
@@ -56,7 +81,7 @@
       </div>
     </div>
 
-    <footer v-if="item && pb && (pb.mode === 'file' || pb.mode === 'hls')" class="tools">
+    <footer v-if="item && pb && (playing || pb.mode === 'file' || pb.mode === 'hls')" class="tools">
       <label v-if="audioTracks.length > 1" class="sub-pick">Audio
         <select v-model.number="audioIdx" @change="selectAudio">
           <option v-for="t in audioTracks" :key="t.idx" :value="t.idx">{{ t.name }}</option>
@@ -122,6 +147,12 @@ const offset = ref(0);
 const subBusy = ref('');
 const audioTracks = ref([]);   // [{ idx, name }]
 const audioIdx = ref(0);
+// Something is attached to the video element. A conversion that stops partway
+// must not swap the video for the "preparing" screen while it plays.
+const playing = ref(false);
+const pollTrouble = ref(false);
+const delMenu = ref(false);
+const deleting = ref(false);
 
 let hls = null;
 let pollTimer = null;
@@ -132,6 +163,31 @@ let attachedUrl = null;
 let subVersion = Date.now();
 
 const currentSub = computed(() => item.value?.subtitles.find(s => s.id === subId.value) || null);
+
+const gbText = (b) => (b == null ? '?' : `${(b / 1e9).toFixed(1)} GB`);
+const sizeText = (b) => (b >= 1e9 ? gbText(b) : `${Math.max(1, Math.round((b || 0) / 1e6))} MB`);
+
+/** What the waiting screen says under the progress bar. */
+const statusLine = computed(() => {
+  const p = pb.value;
+  if (!p) return '';
+  if (p.state === 'queued') {
+    const n = p.waiting?.running || 0;
+    return n ? `Waiting for ${n} other conversion${n === 1 ? '' : 's'} someone asked for` : 'Starting…';
+  }
+  return `${Math.round((p.progress || 0) * 100)}% · playback starts as soon as the first part is ready`;
+});
+
+/** Shown over the video when the conversion behind it stops partway. */
+const notice = computed(() => {
+  const p = pb.value;
+  if (!playing.value || !p || p.mode !== 'preparing') return '';
+  if (p.state === 'failed') return `Converting stopped: ${p.error || 'unknown error'}. Playback ends where it got to.`;
+  if (p.waiting?.reason === 'space') {
+    return `Converting stopped: the disk is nearly full (${gbText(p.waiting.free)} free). Playback ends where it got to; it starts again once there is room.`;
+  }
+  return '';
+});
 
 const epCode = (i) => `S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}`;
 const fmt = (s) => {
@@ -168,15 +224,20 @@ async function load() {
 
 function startPolling() {
   clearInterval(pollTimer);
+  let misses = 0;
   pollTimer = setInterval(async () => {
     try {
       const p = await watch.playback(props.kind, props.id);
-      const wasPlayable = pb.value?.mode === 'hls' || pb.value?.mode === 'file';
+      misses = 0;
+      pollTrouble.value = false;
       pb.value = p;
-      if (!wasPlayable && (p.mode === 'hls' || p.mode === 'file')) attach();
+      if (!playing.value && (p.mode === 'hls' || p.mode === 'file')) attach();
       if (p.mode === 'hls' && p.complete) clearInterval(pollTimer);
       if (p.mode === 'preparing' && p.state === 'failed') clearInterval(pollTimer);
-    } catch (_) {}
+    } catch (_) {
+      // Three misses in a row (six seconds) is no longer a blip.
+      if (++misses >= 3) pollTrouble.value = true;
+    }
   }, 2000);
 }
 
@@ -189,6 +250,7 @@ function attach() {
   const v = video.value;
   if (!v || attachedUrl === pb.value.url) return;
   attachedUrl = pb.value.url;
+  playing.value = true;
   const start = resumePoint();
   resumedAt.value = start;
   if (start) setTimeout(() => { resumedAt.value = 0; }, 8000);
@@ -235,6 +297,9 @@ function teardown() {
   clearInterval(nextTimer);
   if (hls) { hls.destroy(); hls = null; }
   attachedUrl = null;
+  playing.value = false;
+  pollTrouble.value = false;
+  delMenu.value = false;
   audioTracks.value = [];
   const v = video.value;
   if (v) {
@@ -405,6 +470,32 @@ async function toggleWatched() {
   } catch (err) { notifyError(err.message); }
 }
 
+async function deleteWeb() {
+  delMenu.value = false;
+  if (!window.confirm('Delete the web version? The original stays and keeps seeding; the web version is made again the next time this is played.')) return;
+  deleting.value = true;
+  try {
+    const r = await watch.deleteWeb(props.kind, props.id);
+    notifySuccess(`Web version deleted — ${sizeText(r.freed)} freed`);
+    back();
+  } catch (err) { notifyError(err.message); }
+  finally { deleting.value = false; }
+}
+
+async function deleteAll() {
+  delMenu.value = false;
+  const name = item.value.kind === 'episode' ? `${item.value.show_title} ${epCode(item.value)}` : item.value.title;
+  if (!window.confirm(`Delete "${name}" from disk?\n\nThe original file, its subtitles and the web version are removed, and it won't be downloaded again. (Redo in Movies or Shows brings it back.)`)) return;
+  deleting.value = true;
+  try {
+    const r = await watch.deleteAll(props.kind, props.id);
+    notifySuccess(`Deleted — ${sizeText(r.freed)} freed`);
+    teardown();
+    back();
+  } catch (err) { notifyError(err.message); }
+  finally { deleting.value = false; }
+}
+
 async function retry() {
   try {
     pb.value = await watch.reencode(props.kind, props.id);
@@ -420,6 +511,7 @@ function back() {
 // ─── Keys ────────────────────────────────────────────────────────────────────
 
 function onKey(e) {
+  if (e.key === 'Escape' && delMenu.value) { delMenu.value = false; return; }
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
   const v = video.value;
   if (!v) return;
@@ -441,13 +533,17 @@ function onKey(e) {
 }
 
 const onHide = () => report(true, { beacon: true });
+// The delete menu closes on a click anywhere else.
+const onDocClick = (e) => { if (delMenu.value && !e.target.closest?.('.del')) delMenu.value = false; };
 
 onMounted(() => {
   window.addEventListener('pagehide', onHide);
+  document.addEventListener('click', onDocClick);
   load();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onHide);
+  document.removeEventListener('click', onDocClick);
   teardown();
 });
 watchRef(() => [props.kind, props.id], load);
@@ -467,6 +563,24 @@ watchRef(() => [props.kind, props.id], load);
 .warn { color: var(--yellow); }
 .prog { width: 280px; max-width: 80vw; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .prog div { height: 100%; background: var(--accent); transition: width .5s; }
+.notice {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 2; max-width: min(640px, calc(100% - 32px));
+  background: rgba(127, 29, 29, .92); border: 1px solid var(--red); color: #fff;
+  border-radius: var(--radius); padding: 8px 12px; font-size: 13px; text-align: center;
+}
+.del { margin-left: auto; position: relative; }
+.del-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 10; width: 300px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  display: flex; flex-direction: column; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+}
+.del-menu button {
+  background: transparent; color: var(--text); text-align: left; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 2px; border-radius: 6px;
+}
+.del-menu button:hover { background: var(--border); opacity: 1; }
+.del-menu button span { font-size: 11px; color: var(--muted); font-weight: 400; }
+.del-menu button.danger { color: var(--red); }
 .toast-resume {
   position: absolute; top: 14px; left: 14px; background: rgba(17, 24, 39, .9); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 6px 10px; font-size: 13px; display: flex; gap: 10px; align-items: center;

@@ -105,7 +105,7 @@ router.get('/shows/:id', wrap((req) => {
   const prog = progFor(req);
   const seasons = new Map();
   for (const e of episodes.forShow(show.id)) {
-    if (!['done', 'downloading', 'upcoming', 'pending'].includes(e.status)) continue;
+    if (!['done', 'downloading', 'upcoming', 'pending', 'deleted'].includes(e.status)) continue;
     const item = media.itemFor('episode', e.id);
     if (!item) continue;
     if (!seasons.has(e.season)) seasons.set(e.season, []);
@@ -132,8 +132,17 @@ function playback(kind, id, m) {
   // An MP4 that only needs a web version for its other audio tracks plays as
   // it is meanwhile — all of it, at once, rather than as far as the remux got.
   if (media.playsAsIs(m)) return { mode: 'file', url: file.url, download: { type: 'file', ...file }, ...info };
+  // Stopped partway (disk filling up, or a failure) after playback began: the
+  // part already made still plays, and the player says why it ends early.
   if (m.web_state === 'encoding' && media.hlsPlayable(kind, id)) return { mode: 'hls', url: hls, complete: false, ...info };
-  return { mode: 'preparing', ...info, error: m.web_error || null };
+  // Someone is looking at a waiting item: if there is room by now (space
+  // freed, a setting lowered), start it rather than wait for the next check.
+  if (m.web_state === 'queued') {
+    media.pump();
+    m = media.rows.get(kind, id) || m;
+    if (m.web_state === 'encoding') return { mode: 'preparing', ...info, state: 'encoding', progress: 0, error: null, waiting: null };
+  }
+  return { mode: 'preparing', ...info, error: m.web_error || null, waiting: media.waitingFor(m) };
 }
 
 router.get('/items/:kind/:id', wrap(async (req) => {
@@ -147,7 +156,11 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     m = await media.locate(kind, id);
     // Opening an item is the strongest hint someone wants to watch it: put it
     // at the front of the queue if it still needs work.
-    if (m.web_state === 'none' && ['remux', 'transcode'].includes(m.plan)) m = media.enqueue(kind, id, { priority: 10 });
+    // Queued or already running in the background counts too: it starts now,
+    // or keeps going with the room kept back for on-demand work.
+    if (['none', 'queued', 'encoding'].includes(m.web_state) && ['remux', 'transcode'].includes(m.plan)) {
+      m = media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY });
+    }
   } catch (err) {
     error = err.message;
   }
@@ -183,7 +196,7 @@ router.get('/items/:kind/:id/playback', wrap((req) => {
 router.post('/items/:kind/:id/prepare', wrap(async (req) => {
   const { kind, id } = params(req);
   await media.locate(kind, id);
-  const m = media.enqueue(kind, id, { priority: 10 });
+  const m = media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY });
   return playback(kind, id, m);
 }));
 
@@ -344,6 +357,13 @@ router.post('/progress/sync', wrap((req) => {
 
 // ─── Library management (admin) ──────────────────────────────────────────────
 
+/** "Show S01E02" or "Film", for the admin lists. */
+function titleOf(kind, id) {
+  const i = media.itemFor(kind, id);
+  if (!i) return '?';
+  return i.kind === 'episode' ? `${i.show_title} S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}` : i.title;
+}
+
 router.get('/admin/status', requireAdmin, wrap(async () => {
   const counts = db.prepare('SELECT plan, web_state, COUNT(*) AS n FROM media_files GROUP BY plan, web_state').all();
   const unindexed = db.prepare(`
@@ -353,12 +373,11 @@ router.get('/admin/status', requireAdmin, wrap(async () => {
   return {
     webRoot: media.WEB_ROOT, cacheBytes: media.cacheSize(), counts, unindexed,
     encoder: await media.pickEncoder(),
-    queue: media.queue().map(q => {
-      const i = media.itemFor(q.kind, q.item_id);
-      return { ...q, title: i ? (i.kind === 'episode' ? `${i.show_title} S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}` : i.title) : '?' };
-    }),
-    failed: db.prepare("SELECT kind, item_id, web_error FROM media_files WHERE web_state = 'failed' LIMIT 50").all(),
+    queue: media.queue().map(q => ({ ...q, title: titleOf(q.kind, q.item_id) })),
+    failed: db.prepare("SELECT kind, item_id, web_error FROM media_files WHERE web_state = 'failed' LIMIT 50").all()
+      .map(f => ({ ...f, title: titleOf(f.kind, f.item_id) })),
     space: media.spaceStatus(),
+    largest: media.largestWebVersions().map(w => ({ ...w, title: titleOf(w.kind, w.id) })),
     originalsRemoved: db.prepare('SELECT COUNT(*) AS n FROM media_files WHERE original_removed_at IS NOT NULL').get().n,
   };
 }));
@@ -384,13 +403,25 @@ router.post('/admin/clear', requireAdmin, wrap(() => {
   return { ok: true };
 }));
 
+// Free space by hand: the web version only (made again when next opened), or
+// everything — original, subtitles and web version — marking the item deleted.
+router.delete('/items/:kind/:id/web', requireAdmin, wrap((req) => {
+  const { kind, id } = params(req);
+  return require('../deletion').deleteWebVersion(kind, id, { by: req.user.username });
+}));
+
+router.delete('/items/:kind/:id', requireAdmin, wrap(async (req) => {
+  const { kind, id } = params(req);
+  return require('../deletion').deleteEverything(kind, id, { by: req.user.username });
+}));
+
 router.post('/items/:kind/:id/reencode', requireAdmin, wrap(async (req) => {
   const { kind, id } = params(req);
   const m = await media.locate(kind, id);
   if (m.original_removed_at) throw bad('The original was removed after seeding, so there is nothing to re-encode from', 409);
   media.removeWebVersion(kind, id);
   media.rows.update(kind, id, { web_state: 'none', web_progress: 0, web_error: null });
-  return playback(kind, id, media.enqueue(kind, id, { priority: 5 }));
+  return playback(kind, id, media.enqueue(kind, id, { priority: media.DEMAND_PRIORITY }));
 }));
 
 module.exports = router;

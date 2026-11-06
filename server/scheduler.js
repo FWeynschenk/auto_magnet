@@ -79,7 +79,7 @@ function estimatedAirDate(epNumber, eps, seasonAirDate) {
 // number, which is what used to cause searches for seasons that don't exist.
 
 /** Statuses sync must never overwrite — they represent work already done. */
-const SYNC_PROTECTED = new Set(['downloading', 'done', 'failed', 'skipped']);
+const SYNC_PROTECTED = new Set(['downloading', 'done', 'failed', 'skipped', 'deleted']);
 
 /**
  * Upsert every episode TMDB knows about, from the show's configured start point

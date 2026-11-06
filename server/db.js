@@ -300,6 +300,9 @@ const defaultSettings = {
   // (GB), so they can never fill it — a full disk takes the database down too.
   // 0 turns the check off.
   web_min_free_gb:           '20',
+  // On top of that, room background work leaves for what someone presses play
+  // on: preparing ahead stops here, so a conversion asked for now has space.
+  web_reserve_gb:            '50',
   // Fetched subtitles not matched by file hash are aligned to the audio.
   subtitle_autosync:         '1',
   // Removing originals once they have seeded, keeping only the web version.

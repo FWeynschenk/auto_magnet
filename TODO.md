@@ -141,6 +141,13 @@ enforces the documented limits — so they can be rebuilt rather than rediscover
 
 ## Playback — next steps
 
+- **Deleting from the Android app.** Delete web version / delete from disk, and the
+  disk-full and failure messages, are in the web player and Settings only. The app's admin screens
+  could call the same `DELETE /api/watch/items/:kind/:id[/web]`.
+- **Seeking past what's converted.** Opening an item starts its conversion at once, but from the
+  beginning: jumping to minute 40 of a film that's 10 minutes in still waits. Starting a second
+  encode at the seek point (as Jellyfin does) would fix that, at the cost of a lot more complexity.
+
 - **Subtitle timing in the Android app.** The web player can nudge/save/auto-sync; the app can
   only pick a track. Saved fixes reach the app on the next play.
 - **Adaptive bitrate for away-from-home.** One rendition per file today. A 720p/2 Mbps variant

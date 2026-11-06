@@ -19,7 +19,7 @@
       <div class="season-tabs">
         <button v-for="s in data.seasons" :key="s.season" class="btn-ghost btn-sm" :class="{ on: s.season === season }"
           @click="season = s.season">Season {{ s.season }}</button>
-        <button v-if="current" class="btn-ghost btn-sm mark" @click="markSeason">
+        <button v-if="current && current.episodes.some(e => e.status === 'done')" class="btn-ghost btn-sm mark" @click="markSeason">
           Mark season {{ seasonWatched ? 'unwatched' : 'watched' }}
         </button>
       </div>
@@ -44,6 +44,9 @@
             :aria-label="e.progress?.watched ? 'Mark unwatched' : 'Mark watched'"
             :title="e.progress?.watched ? 'Watched — click to unmark' : 'Mark watched'"
             @click="toggle(e)">✓</button>
+          <button v-if="isAdmin && e.status === 'done'" class="trash" :disabled="deletingId === e.id"
+            :aria-label="`Delete episode ${e.episode} from disk`" title="Delete from disk"
+            @click="removeEp(e)">🗑</button>
         </li>
       </ol>
     </template>
@@ -53,7 +56,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { watch } from '../api.js';
-import { notifyError } from '../toast.js';
+import { notifyError, notifySuccess } from '../toast.js';
+import { isAdmin } from '../session.js';
 
 const props = defineProps({ id: { type: String, required: true } });
 const data = ref(null);
@@ -63,7 +67,7 @@ const season = ref(null);
 
 const ep = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`;
 const pct = (e) => (e.progress && (e.progress.duration || e.duration) ? (e.progress.position / (e.progress.duration || e.duration)) * 100 : 0);
-const statusText = (e) => ({ downloading: 'Downloading…', upcoming: e.air_date ? `Airs ${e.air_date}` : 'Upcoming', pending: 'Waiting for a release' }[e.status] || e.status);
+const statusText = (e) => ({ downloading: 'Downloading…', upcoming: e.air_date ? `Airs ${e.air_date}` : 'Upcoming', pending: 'Waiting for a release', deleted: 'Deleted from disk' }[e.status] || e.status);
 
 const current = computed(() => data.value?.seasons.find(s => s.season === season.value));
 const done = computed(() => (data.value?.seasons || []).flatMap(s => s.episodes).filter(e => e.status === 'done'));
@@ -85,6 +89,20 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+const deletingId = ref(null);
+
+async function removeEp(e) {
+  const code = `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`;
+  if (!window.confirm(`Delete ${code} "${e.title}" from disk?\n\nThe file, its subtitles and its web version are removed, and it won't be downloaded again. (Redo in Shows brings it back.)`)) return;
+  deletingId.value = e.id;
+  try {
+    const r = await watch.deleteAll('episode', e.id);
+    notifySuccess(`${code} deleted — ${r.freed >= 1e9 ? `${(r.freed / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(r.freed / 1e6))} MB`} freed`);
+    await load();
+  } catch (err) { notifyError(err.message); }
+  finally { deletingId.value = null; }
 }
 
 async function toggle(e) {
@@ -128,6 +146,8 @@ a.ep:hover { background: var(--surface); }
 .overview { font-size: 12px; color: var(--muted); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tick { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 999px; width: 30px; height: 30px; padding: 0; flex-shrink: 0; }
 .tick.on { background: var(--green); border-color: var(--green); color: #fff; }
+.trash { background: transparent; border: 1px solid var(--border); border-radius: 999px; width: 30px; height: 30px; padding: 0; flex-shrink: 0; font-size: 13px; opacity: .6; }
+.trash:hover { opacity: 1; border-color: var(--red); }
 .state-msg { color: var(--muted); padding: 40px 0; text-align: center; }
 .state-msg.err { color: var(--red); }
 @media (max-width: 640px) {

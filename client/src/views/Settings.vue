@@ -305,8 +305,12 @@
             </select>
           </label>
           <label>Keep free (GB)
-            <span class="hint">web versions pause below this; 0 = off</span>
+            <span class="hint">web versions stop below this; 0 = off</span>
             <input v-model.number="form.web_min_free_gb" type="number" min="0" step="5" />
+          </label>
+          <label>Room for on-demand (GB)
+            <span class="hint">preparing ahead stops this much earlier, so pressing play still has space</span>
+            <input v-model.number="form.web_reserve_gb" type="number" min="0" step="5" />
           </label>
           <label class="check-label span2">
             <input v-model="autosyncBool" type="checkbox" class="checkbox" />

@@ -74,6 +74,10 @@ const rows = {
                 WHERE kind = ? AND item_id = ?`).run(...cols.map(c => data[c]), kind, id);
   },
   remove: (kind, id) => db.prepare('DELETE FROM media_files WHERE kind = ? AND item_id = ?').run(kind, id),
+  /** Queued jobs someone is waiting for (they pressed play), most urgent first. */
+  queuedDemand: () => db.prepare(
+    "SELECT * FROM media_files WHERE web_state = 'queued' AND web_priority >= ? ORDER BY web_priority DESC, updated_at"
+  ).all(DEMAND_PRIORITY),
   /** The next job for a lane: 'remux' or 'transcode'. */
   nextQueued: (plan) => db.prepare(
     "SELECT * FROM media_files WHERE web_state = 'queued' AND plan = ? ORDER BY web_priority DESC, updated_at LIMIT 1"
@@ -84,6 +88,14 @@ const rows = {
 };
 
 const KINDS = new Set(['movie', 'episode']);
+
+/**
+ * Priority at and above which a job is "on demand": someone opened the item or
+ * pressed play. Those start at once instead of waiting their turn.
+ */
+const DEMAND_PRIORITY = 10;
+/** At most this many on-demand jobs at once (several people, several files). */
+const MAX_DEMAND = 3;
 
 /** The library item behind a (kind, id), with what the Watch pages show. */
 function itemFor(kind, id) {
@@ -464,17 +476,32 @@ const webDir  = (kind, id) => path.join(WEB_ROOT, `${kind}-${id}`);
 const subsDir = (kind, id) => path.join(WEB_ROOT, 'subs', `${kind}-${id}`);
 
 function removeWebVersion(kind, id) {
-  for (const job of running.values()) if (job.kind === kind && job.id === id) job.proc.kill('SIGKILL');
+  const job = running.get(jobKey(kind, id));
+  if (job) { job.cancelled = true; job.proc?.kill('SIGKILL'); }
   fs.rmSync(webDir(kind, id), { recursive: true, force: true });
   fs.rmSync(subsDir(kind, id), { recursive: true, force: true });
 }
 
+/**
+ * Ask for a web version. With priority >= DEMAND_PRIORITY it starts right
+ * away (see pump), and one already running in the background is promoted, so
+ * it may use the disk space kept back for on-demand work.
+ */
 function enqueue(kind, id, { priority = 0 } = {}) {
   const r = rows.get(kind, id);
   if (!r || !['remux', 'transcode'].includes(r.plan)) return r;
-  if (r.web_state === 'ready' || r.web_state === 'encoding') return r;
-  rows.update(kind, id, { web_state: 'queued', web_priority: Math.max(priority, r.web_priority || 0), web_error: null });
-  setImmediate(pump);
+  if (r.web_state === 'ready') return r;
+  const p = Math.max(priority, r.web_priority || 0);
+  if (r.web_state === 'encoding') {
+    const job = running.get(jobKey(kind, id));
+    if (job && p >= DEMAND_PRIORITY && !job.demand) {
+      job.demand = true;
+      rows.update(kind, id, { web_priority: p });
+    }
+    return rows.get(kind, id);
+  }
+  rows.update(kind, id, { web_state: 'queued', web_priority: p, web_error: null });
+  pump();
   return rows.get(kind, id);
 }
 
@@ -627,7 +654,7 @@ function webBandwidth({ plan, info, size, duration, maxHeight = 1080 }) {
 // ─── Free space ──────────────────────────────────────────────────────────────
 
 const GB = 1e9;   // as the dashboard shows sizes
-const SPACE_RECHECK_MS = 5 * 60_000;
+const SPACE_RECHECK_MS = 60_000;
 /** While an encode runs, free space is checked this often. */
 const SPACE_WATCH_MS = 30_000;
 
@@ -650,74 +677,154 @@ function minFreeBytes() {
   return (Number.isFinite(n) && n >= 0 ? n : 20) * GB;
 }
 
+/**
+ * Space kept back, on top of "Keep free", for what someone asks to watch.
+ * Background work (preparing everything as it downloads) stops at the edge of
+ * it, so pressing play on something that still needs converting finds room.
+ */
+function reserveBytes() {
+  const n = Number(settings.get('web_reserve_gb'));
+  return (Number.isFinite(n) && n >= 0 ? n : 50) * GB;
+}
+
+/** Free space a job needs to start: on-demand may use the reserve, background may not. */
+const startFloor = (demand) => minFreeBytes() + (demand ? 0 : reserveBytes());
+/**
+ * A running job stops below this. Lower than the start floor, so a job that
+ * started doesn't stop at once over a few megabytes: halfway into the margin.
+ */
+const stopFloor = (demand) => (demand ? minFreeBytes() / 2 : minFreeBytes() + reserveBytes() / 2);
+
 const gb = (b) => `${(b / GB).toFixed(1)} GB`;
 
-let lowSpace = null;   // { free, min, since } while web versions are paused
+// Paused for space, per kind of work: { free, need, since } or null.
+const lowSpace = { background: null, demand: null };
 
 /**
- * Whether there is room to start another web version. Below the minimum the
- * queue pauses — logged once — and resumes by itself once there is room again.
+ * Whether there is room to start a job of this kind. A pause is logged once,
+ * and work carries on by itself once there is room again.
  */
-function spaceOk(free = freeBytes()) {
-  const min = minFreeBytes();
-  if (free === null || min === 0 || free >= min) {
-    if (lowSpace) {
-      log.info(`${free === null ? 'free space unknown' : `${gb(free)} free`} on ${WEB_ROOT} again; web versions continue`);
-      lowSpace = null;
+function spaceOk(mode = 'background', free = freeBytes()) {
+  const need = startFloor(mode === 'demand');
+  if (free === null || need === 0 || free >= need) {
+    if (lowSpace[mode]) {
+      log.info(`${free === null ? 'free space unknown' : `${gb(free)} free`} on ${WEB_ROOT} again; ${mode === 'demand' ? 'requested' : 'background'} web versions continue`);
+      lowSpace[mode] = null;
       setImmediate(pump);
     }
     return true;
   }
-  if (!lowSpace) {
-    lowSpace = { free, min, since: new Date().toISOString() };
-    log.warn(`only ${gb(free)} free on ${WEB_ROOT} (keeping ${gb(min)} free): web versions are paused until there is room`);
+  if (!lowSpace[mode]) {
+    lowSpace[mode] = { free, need, since: new Date().toISOString() };
+    log.warn(mode === 'demand'
+      ? `only ${gb(free)} free on ${WEB_ROOT} (keeping ${gb(minFreeBytes())} free): even requested web versions are paused`
+      : `${gb(free)} free on ${WEB_ROOT}: background web versions pause to keep ${gb(need)} free (${gb(reserveBytes())} of it for what someone asks to watch)`);
   }
-  lowSpace.free = free;
+  lowSpace[mode].free = free;
   return false;
 }
 
 /** For the Watch library panel. */
 function spaceStatus() {
   const free = freeBytes();
-  spaceOk(free);   // as things stand now, not as when a job last started
-  return { path: WEB_ROOT, free, min: minFreeBytes(), paused: !!lowSpace, since: lowSpace?.since || null };
+  // As things stand now, not as when a job last started.
+  spaceOk('background', free);
+  spaceOk('demand', free);
+  return {
+    path: WEB_ROOT, free, min: minFreeBytes(), reserve: reserveBytes(),
+    paused: !!lowSpace.demand, backgroundPaused: !!lowSpace.background,
+    since: (lowSpace.demand || lowSpace.background)?.since || null,
+  };
 }
 
 /**
- * Two lanes, each one job at a time: repackaging (a copy, mostly disk) and
- * converting (the GPU or CPU, for an hour or more a film). Separate, so a
- * long conversion queue never holds up files that need only a minute.
+ * Why a queued web version hasn't started, for the player: not enough space,
+ * or every slot taken. null when it isn't waiting.
+ */
+function waitingFor(row) {
+  if (!row || row.web_state !== 'queued') return null;
+  const demand = (row.web_priority || 0) >= DEMAND_PRIORITY;
+  const free = freeBytes();
+  const need = startFloor(demand);
+  if (free !== null && need > 0 && free < need) {
+    return { reason: 'space', free, need, min: minFreeBytes() };
+  }
+  const busy = [...running.values()].filter(j => (demand ? j.demand : j.lane === row.plan));
+  return { reason: 'busy', running: busy.length };
+}
+
+/**
+ * Scheduling.
+ *
+ * Background work runs in two lanes, one job each: repackaging (a copy,
+ * mostly disk) and converting (GPU or CPU, an hour or more a film). Separate,
+ * so a long conversion queue never holds up files that need only a minute.
+ *
+ * On-demand work — someone opened the item — doesn't queue behind either: it
+ * starts at once (up to MAX_DEMAND together), and a background job in its lane
+ * is stopped and put back in the queue to start again afterwards, so the
+ * machine works on what someone is waiting for.
  */
 const LANES = ['remux', 'transcode'];
-const running = new Map();   // lane → { kind, id, proc }
-const pumping = new Set();
+const running = new Map();   // "kind:id" → { kind, id, lane, demand, proc, cancelled }
+const jobKey = (kind, id) => `${kind}:${id}`;
 
 /** After this many GPU decode failures in a row, decode on the CPU until restart. */
 const GPU_DECODE_GIVE_UP = 3;
 let gpuDecodeFailures = 0;
 
-function pump() {
-  for (const lane of LANES) runLane(lane);
+function startJob(job, demand) {
+  const lane = job.plan;
+  const key = jobKey(job.kind, job.item_id);
+  // Marked before anything asynchronous, so the next pump can't start it twice.
+  running.set(key, { kind: job.kind, id: job.item_id, lane, demand, proc: null, cancelled: false });
+  rows.update(job.kind, job.item_id, { web_state: 'encoding', web_progress: 0, web_error: null });
+  if (demand) {
+    for (const [k, other] of running) {
+      if (k === key || other.demand || other.lane !== lane) continue;
+      log.info(`paused to prepare something someone is waiting for; it starts again afterwards`, { type: other.kind, id: other.id });
+      other.cancelled = true;
+      rows.update(other.kind, other.id, { web_state: 'queued', web_progress: 0 });
+      other.proc?.kill('SIGKILL');
+    }
+  }
+  encode(job, { lane, demand })
+    .catch(err => {
+      log.error(`web version crashed: ${err.message}`, { type: job.kind, id: job.item_id });
+      try { rows.update(job.kind, job.item_id, { web_state: 'failed', web_error: err.message.slice(0, 500) }); } catch (_) {}
+    })
+    .finally(() => {
+      if (running.get(key)?.lane === lane) running.delete(key);
+      setImmediate(pump);
+    });
 }
 
-async function runLane(lane) {
-  if (pumping.has(lane)) return;
-  pumping.add(lane);
-  try {
-    for (;;) {
-      if (!spaceOk()) break;
-      const job = rows.nextQueued(lane);
-      if (!job) break;
-      await encode(job, { lane });
-    }
-  } finally {
-    pumping.delete(lane);
+function pump() {
+  // What someone is waiting for first, however busy the lanes are.
+  for (const job of rows.queuedDemand()) {
+    if ([...running.values()].filter(j => j.demand).length >= MAX_DEMAND) break;
+    if (!spaceOk('demand')) break;
+    startJob(job, true);
+  }
+  // Then background work, one job per lane, never alongside on-demand work in
+  // the same lane.
+  for (const lane of LANES) {
+    if ([...running.values()].some(j => j.lane === lane)) continue;
+    const job = rows.nextQueued(lane);
+    if (!job) continue;
+    const demand = (job.web_priority || 0) >= DEMAND_PRIORITY;
+    if (!spaceOk(demand ? 'demand' : 'background')) continue;
+    startJob(job, demand);
   }
 }
 
 async function encode(job, opts = {}) {
   const lane = opts.lane || job.plan;
   const { kind, item_id: id } = job;
+  // Set by startJob; it carries whether someone is waiting (which can change
+  // while it runs) and whether it was stopped to make way for such a job.
+  const entry = running.get(jobKey(kind, id)) || { demand: !!opts.demand };
+  const stillWanted = () => !entry.cancelled && rows.get(kind, id)?.web_state === 'encoding';
   const outDir = webDir(kind, id);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
@@ -729,6 +836,7 @@ async function encode(job, opts = {}) {
     return;
   }
   const encoder = job.plan === 'transcode' ? (opts.encoder || await pickEncoder()) : 'copy';
+  if (!stillWanted()) return;
   const maxHeight = Number(settings.get('web_max_height')) || 1080;
   const wanted = wantedLanguages();
   const hwDecode = encoder === 'vaapi' && (opts.hwDecode ?? gpuDecodeFailures < GPU_DECODE_GIVE_UP)
@@ -746,7 +854,8 @@ async function encode(job, opts = {}) {
 
   const result = await new Promise((resolve) => {
     const proc = spawn(FFMPEG, args, { cwd: outDir, stdio: ['ignore', 'pipe', 'pipe'] });
-    running.set(lane, { kind, id, proc });
+    entry.proc = proc;
+    if (entry.cancelled) proc.kill('SIGKILL');
     let stderr = '';
     let lastWrite = 0;
     proc.stdout.on('data', (chunk) => {
@@ -760,12 +869,13 @@ async function encode(job, opts = {}) {
     });
     proc.stderr.on('data', (c) => { stderr = (stderr + c).slice(-4000); });
     // Started with room to spare, but a 4K film writes gigabytes, and
-    // downloads share the disk: stop before it fills, half way into the reserve.
+    // downloads share the disk. Background work stops before it eats into the
+    // room kept for on-demand work; on-demand work halfway into "Keep free".
     let outOfSpace = false;
     const watch = setInterval(() => {
       const free = freeBytes();
-      const min = minFreeBytes();
-      if (free !== null && min > 0 && free < min / 2) { outOfSpace = true; proc.kill('SIGKILL'); }
+      const floor = stopFloor(entry.demand);
+      if (free !== null && floor > 0 && free < floor) { outOfSpace = true; proc.kill('SIGKILL'); }
     }, SPACE_WATCH_MS);
     watch.unref?.();
     const done = (r) => {
@@ -776,9 +886,9 @@ async function encode(job, opts = {}) {
     proc.on('close', (code, signal) => done(code === 0 ? { ok: true }
       : { ok: false, error: signal ? `stopped (${signal})` : (stderr.trim().split('\n').pop() || `ffmpeg exited ${code}`) }));
   });
-  running.delete(lane);
 
-  // Removed, re-recorded or cleared while it ran: whatever is there now wins.
+  // Removed, re-recorded, cleared, or stopped to make way while it ran:
+  // whatever is there now wins.
   const now = rows.get(kind, id);
   if (!now || now.path !== job.path || now.web_state !== 'encoding') {
     if (!now || now.web_state === 'none') fs.rmSync(outDir, { recursive: true, force: true });
@@ -789,8 +899,12 @@ async function encode(job, opts = {}) {
   if (!result.ok && (result.outOfSpace || /No space left|ENOSPC/i.test(result.error))) {
     fs.rmSync(outDir, { recursive: true, force: true });
     rows.update(kind, id, { web_state: 'queued', web_progress: 0 });
-    log.warn(`web version stopped: the disk holding ${WEB_ROOT} is nearly full; it starts over once there is room`, { type: kind, id });
-    spaceOk(Math.min(freeBytes() ?? 0, minFreeBytes() - 1));
+    const mode = entry.demand ? 'demand' : 'background';
+    log.warn(entry.demand
+      ? `web version stopped: the disk holding ${WEB_ROOT} is nearly full; it starts over once there is room`
+      : `background web version stopped to keep room for what someone asks to watch; it starts over once there is space`,
+    { type: kind, id });
+    spaceOk(mode, Math.min(freeBytes() ?? 0, startFloor(entry.demand) - 1));
     return;
   }
   if (result.ok) {
@@ -811,13 +925,15 @@ async function encode(job, opts = {}) {
       }
       log.warn(`GPU decode failed (${result.error}); retrying with the CPU decoding`, { type: kind, id });
       rows.update(kind, id, { web_state: 'queued' });
-      await encode(rows.get(kind, id), { lane, encoder: 'vaapi', hwDecode: false });
+      rows.update(kind, id, { web_state: 'encoding' });
+      await encode(rows.get(kind, id), { ...opts, lane, encoder: 'vaapi', hwDecode: false });
       return;
     }
     if (encoder === 'vaapi') {
       log.warn(`GPU encode failed (${result.error}); retrying on the CPU`, { type: kind, id });
       rows.update(kind, id, { web_state: 'queued' });
-      await encode(rows.get(kind, id), { lane, encoder: 'x264' });
+      rows.update(kind, id, { web_state: 'encoding' });
+      await encode(rows.get(kind, id), { ...opts, lane, encoder: 'x264' });
       return;
     }
     rows.update(kind, id, { web_state: 'failed', web_error: result.error.slice(0, 500) });
@@ -835,7 +951,7 @@ function startWorker() {
   } catch (err) { console.error('[media] re-plan failed:', err.message); }
   setImmediate(pump);
   // Paused for space: look again now and then, and carry on once there is room.
-  setInterval(() => { if (lowSpace) spaceOk(); }, SPACE_RECHECK_MS).unref();
+  setInterval(pump, SPACE_RECHECK_MS).unref();
   // Index what finished before playback existed, a batch at a time, so the
   // back catalogue becomes watchable without anyone pressing a button.
   const tick = () => indexPass().catch(err => console.error('[media] index pass failed:', err.message));
@@ -897,6 +1013,38 @@ function repairInitSegments(kind, id) {
     fixed++;
   }
   return fixed;
+}
+
+/** Bytes under a folder (0 if it doesn't exist). */
+function dirBytes(dir) {
+  let total = 0;
+  const go = (d) => {
+    let ents;
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      const f = path.join(d, e.name);
+      if (e.isDirectory()) go(f);
+      else try { total += fs.statSync(f).size; } catch (_) {}
+    }
+  };
+  go(dir);
+  return total;
+}
+
+/** The biggest web versions, for freeing space by hand. */
+function largestWebVersions(limit = 15) {
+  let names = [];
+  try { names = fs.readdirSync(WEB_ROOT); } catch (_) {}
+  return names
+    .map(n => /^(movie|episode)-(\d+)$/.exec(n))
+    .filter(Boolean)
+    .map(([n, kind, id]) => ({ kind, id: Number(id), bytes: dirBytes(path.join(WEB_ROOT, n)) }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, limit)
+    .map(w => {
+      const row = rows.get(w.kind, w.id);
+      return { ...w, state: row?.web_state || null, onlyCopy: !!row?.original_removed_at };
+    });
 }
 
 /** Total bytes in the web-version folder. */
@@ -1149,7 +1297,8 @@ async function prewarmSubtitles(media) {
 
 module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
-  record, locate, indexPass, enqueue, startWorker, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
+  record, locate, indexPass, enqueue, startWorker, waitingFor, DEMAND_PRIORITY, MAX_DEMAND, reserveBytes, pump,
+  dirBytes, largestWebVersions, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),

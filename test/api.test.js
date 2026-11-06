@@ -56,6 +56,7 @@ test.before(async () => {
     settings.set('shows_path', ${JSON.stringify(lib.series)});
     settings.set('web_encoder', 'x264');
     settings.set('web_min_free_gb', '0'); // a CI runner has ~15 GB free
+    settings.set('web_reserve_gb', '0');
     db.prepare("INSERT INTO movies (id, title, year, status) VALUES (1, 'Direct Film', 2020, 'done'), (2, 'Remux Film', 2021, 'done'), (3, 'Missing Film', 2019, 'done'), (4, 'Dual Audio Film', 2022, 'done')").run();
     db.prepare("INSERT INTO shows (id, tmdb_id, title) VALUES (1, 999, 'Hevc Show')").run();
     db.prepare("INSERT INTO episodes (id, show_id, season, episode, status) VALUES (1, 1, 1, 2, 'done')").run();
@@ -228,6 +229,55 @@ test('progress', { skip }, async (t) => {
   await t.test('signing out ends the session', async () => {
     await call('POST', '/api/auth/logout', null, { tok: token });
     assert.equal((await call('GET', '/api/watch/home', null, { tok: token })).status, 401);
+  });
+});
+
+test('disk space and deleting', { skip }, async (t) => {
+  // Signed out at the end of the progress tests.
+  token = (await call('POST', '/api/auth/login', { username: 'kid', password: 'viewer pass', client: 'test' }, { jar: false })).body.token;
+
+  await t.test('viewers can\'t delete anything', async () => {
+    assert.equal((await call('DELETE', '/api/watch/items/movie/2/web', null, { tok: token })).status, 403);
+    assert.equal((await call('DELETE', '/api/watch/items/movie/1', null, { tok: token })).status, 403);
+  });
+
+  await t.test('deleting a web version keeps the original and frees its space', async () => {
+    const r = await call('DELETE', '/api/watch/items/movie/2/web');
+    assert.equal(r.status, 200);
+    assert.ok(r.body.freed > 0);
+    assert.ok(!fs.existsSync(path.join(dir, 'web', 'movie-2')));
+    assert.ok(fs.existsSync(path.join(dir, 'media', 'Movies', 'Remux.Film.2021', 'Remux.Film.2021.mkv')));
+  });
+
+  await t.test('with the disk full, the player is told so — with the numbers', async () => {
+    assert.equal((await call('PUT', '/api/settings', { web_min_free_gb: '1000000000' })).status, 200);
+    const pb = (await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body.playback;
+    assert.equal(pb.mode, 'preparing');
+    assert.equal(pb.state, 'queued');
+    assert.equal(pb.waiting.reason, 'space');
+    assert.ok(pb.waiting.need > pb.waiting.free);
+  });
+
+  await t.test('once there is room it starts by itself, and plays again', async () => {
+    assert.equal((await call('PUT', '/api/settings', { web_min_free_gb: '0' })).status, 200);
+    await call('POST', '/api/watch/admin/scan').catch(() => {});   // any request; the queue rechecks on its own too
+    const pb = await until(async () => {
+      const b = (await call('GET', '/api/watch/items/movie/2/playback', null, { tok: token })).body;
+      if (b.state === 'failed') throw new Error(b.error);
+      return b.mode === 'hls' && b.complete ? b : null;
+    }, 60_000);
+    assert.equal(pb.state, 'ready');
+  });
+
+  await t.test('deleting everything removes the file and the item from the library', async () => {
+    const file = path.join(dir, 'media', 'Movies', 'Direct.Film.2020', 'Direct.Film.2020.1080p.mp4');
+    assert.ok(fs.existsSync(file));
+    const r = await call('DELETE', '/api/watch/items/movie/1');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.original, 'file removed');
+    assert.ok(!fs.existsSync(file));
+    assert.ok(!(await call('GET', '/api/watch/movies', null, { tok: token })).body.some(m => m.id === 1), 'gone from Watch');
+    assert.equal((await call('GET', '/api/movies')).body.find(m => m.id === 1).status, 'deleted', 'kept as deleted, not re-grabbed');
   });
 });
 

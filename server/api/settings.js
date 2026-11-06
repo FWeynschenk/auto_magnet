@@ -19,7 +19,7 @@ const ALLOWED_KEYS = [
   'transmission_extra',
   'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'subtitle_retry_hours', 'media_path_map',
   'opensubtitles_api_key', 'opensubtitles_username', 'opensubtitles_password',
-  'web_prepare', 'web_encoder', 'web_max_height', 'web_min_free_gb', 'subtitle_autosync',
+  'web_prepare', 'web_encoder', 'web_max_height', 'web_min_free_gb', 'web_reserve_gb', 'subtitle_autosync',
   'seed_cleanup', 'seed_cleanup_ratio', 'seed_cleanup_days',
 ];
 
@@ -82,6 +82,8 @@ router.put('/', (req, res) => {
   }
 
   settings.setMany(data);
+  // Space limits may have moved: let waiting web versions start now.
+  if (Object.keys(data).some(k => k.startsWith('web_'))) setImmediate(() => require('../media').pump());
   res.json({ success: true });
 });
 

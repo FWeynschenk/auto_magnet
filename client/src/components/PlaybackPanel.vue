@@ -16,20 +16,27 @@
         <div v-if="st.originalsRemoved"><span class="k">Originals removed after seeding</span> {{ st.originalsRemoved }}</div>
         <div v-if="st.space && st.space.free != null">
           <span class="k">Free space</span> {{ size(st.space.free) }}
-          <span v-if="st.space.min" class="muted">· keeping {{ size(st.space.min) }} free</span>
+          <span v-if="st.space.min || st.space.reserve" class="muted">
+            · keeping {{ size(st.space.min) }} free<template v-if="st.space.reserve">, plus {{ size(st.space.reserve) }} for what someone presses play on</template>
+          </span>
         </div>
       </div>
 
       <p v-if="st.space?.paused" class="paused">
-        <strong>Web versions are paused:</strong> only {{ size(st.space.free) }} is free where they are kept,
-        under the {{ size(st.space.min) }} set in Settings. They carry on by themselves once there is room —
-        free some space, lower <em>Keep free</em>, or turn on <em>Remove originals after seeding</em>.
+        <strong>Web versions are paused, even for what someone presses play on:</strong> only {{ size(st.space.free) }}
+        is free where they are kept, under the {{ size(st.space.min) }} set in Settings. They carry on by themselves
+        once there is room — delete something below, lower <em>Keep free</em>, or turn on <em>Remove originals after seeding</em>.
+      </p>
+      <p v-else-if="st.space?.backgroundPaused" class="paused">
+        <strong>Preparing ahead is paused</strong> to keep {{ size(st.space.min + st.space.reserve) }} free
+        ({{ size(st.space.free) }} free now). Anything someone presses play on is still prepared, using the room kept for it.
       </p>
 
       <div v-if="st.queue.length" class="queue">
         <div class="k">Queue</div>
         <div v-for="q in st.queue" :key="q.kind + q.item_id" class="q">
           <span class="qt">{{ q.title }}</span>
+          <span v-if="q.web_priority >= 10" class="tag">requested</span>
           <span class="muted">{{ q.plan }}</span>
           <span v-if="q.web_state === 'encoding'" class="pct">{{ Math.round(q.web_progress * 100) }}%</span>
           <span v-else class="muted">queued</span>
@@ -39,9 +46,20 @@
       <div v-if="st.failed.length" class="queue">
         <div class="k err">Failed</div>
         <div v-for="f in st.failed" :key="f.kind + f.item_id" class="q">
-          <span class="qt">{{ f.kind }} #{{ f.item_id }}</span>
+          <span class="qt">{{ f.title }}</span>
           <span class="muted small">{{ f.web_error }}</span>
           <button class="btn-ghost btn-sm" @click="retry(f)">Retry</button>
+        </div>
+      </div>
+
+      <div v-if="st.largest?.length" class="queue">
+        <div class="k">Largest web versions</div>
+        <div v-for="w in st.largest" :key="w.kind + w.id" class="q">
+          <span class="qt">{{ w.title }}</span>
+          <span class="muted">{{ size(w.bytes) }}</span>
+          <button class="btn-ghost btn-sm danger" :disabled="!!busy"
+            :title="w.onlyCopy ? 'The original was removed after seeding; this deletes the item from disk' : 'The original stays; the web version is made again when next played'"
+            @click="remove(w)">{{ w.onlyCopy ? 'Delete item' : 'Delete' }}</button>
         </div>
       </div>
 
@@ -92,6 +110,20 @@ async function clear() {
   finally { busy.value = ''; }
 }
 
+async function remove(w) {
+  const msg = w.onlyCopy
+    ? `"${w.title}" has no original any more — deleting its web version deletes it from disk, and it won't be downloaded again. Delete it?`
+    : `Delete the web version of "${w.title}"? The original stays; it's made again the next time it's played.`;
+  if (!window.confirm(msg)) return;
+  busy.value = 'delete';
+  try {
+    const r = w.onlyCopy ? await watch.deleteAll(w.kind, w.id) : await watch.deleteWeb(w.kind, w.id);
+    notifySuccess(`${size(r.freed)} freed`);
+    await refresh();
+  } catch (err) { notifyError(err.message); }
+  finally { busy.value = ''; }
+}
+
 async function retry(f) {
   try { await watch.reencode(f.kind, f.item_id); await refresh(); } catch (err) { notifyError(err.message); }
 }
@@ -115,6 +147,7 @@ h2 { font-size: 15px; font-weight: 600; }
 .pct { color: var(--accent); font-variant-numeric: tabular-nums; }
 .actions { display: flex; gap: 8px; margin: 14px 0 8px; }
 .danger { color: var(--red); }
+.tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 5px; }
 .paused { margin-top: 12px; padding: 8px 10px; font-size: 13px; line-height: 1.45;
   border-left: 3px solid var(--yellow); background: color-mix(in srgb, var(--yellow) 10%, transparent); border-radius: 4px; }
 @media (max-width: 640px) { .stats { grid-template-columns: 1fr; } }

@@ -98,6 +98,7 @@ test('removes the original and keeps playback and subtitles working', { skip: !h
   settings.set('shows_path', lib.series);
   settings.set('web_encoder', 'x264');
   settings.set('web_min_free_gb', '0');
+  settings.set('web_reserve_gb', '0');
   db.prepare("INSERT INTO movies (id, title, year, status, torrent_id, torrent_origin) VALUES (2, 'Remux Film', 2021, 'done', 41, 'added')").run();
   db.prepare("INSERT INTO shows (id, tmdb_id, title) VALUES (1, 999, 'Hevc Show')").run();
   db.prepare("INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, torrent_origin) VALUES (1, 1, 1, 2, 'done', 42, 'added')").run();

@@ -212,6 +212,7 @@ Advanced settings (UI only, not in `.env`):
 | Encoder | automatic | GPU (VAAPI) when available, else libx264 |
 | Converted video height | `1080p` | Converted video is scaled down to this; repackaged video is never touched |
 | Keep free | `20` GB | Web versions pause while the disk holding them has less free than this, and carry on once there is room. `0` turns it off |
+| Room for on-demand | `50` GB | Extra space on top of *Keep free* that preparing ahead leaves alone, so what someone presses play on can still be converted |
 | Align fetched subtitles | on | Sync subtitles not matched by file hash to the audio |
 | Remove originals after seeding | never | Or *repackaged only*, or *repackaged and converted* — see [Removing originals after seeding](#removing-originals-after-seeding) |
 | … once the ratio reaches | `2` | Upload ratio a torrent must reach first |
@@ -578,13 +579,59 @@ shows how each web version was made and how fast, e.g. *web version ready (trans
 Repackaging and converting run side by side, one of each at a time, so a long conversion queue
 never holds up files that need only a minute.
 
+**What someone opens starts at once.** Opening a movie or episode that still needs a web version
+doesn't put it in the queue: it starts straight away. A background job in the same lane
+(preparing something ahead of time) is stopped and starts over later, so the machine works on
+what someone is waiting for. Up to three requested items run at the same time. Anything already
+converting in the background when someone opens it just carries on, now as a request.
+
+### What the player says while it waits
+
+The player says why it's waiting rather than only "Preparing…":
+
+- **Converting or repackaging:** the progress, until the first part is ready.
+- **The disk is nearly full:** how much is free and how much converting needs, and (for admins)
+  where to free space. It starts by itself once there is room.
+- **Waiting for other requests:** only when three are already running.
+- **Failed:** the error from ffmpeg, with **Try again** for admins.
+- **Server unreachable:** said after a few seconds of no answer.
+
+If converting stops partway while you're already watching what's ready (a failure, or the disk
+filling up), a banner over the video says so and playback ends where it got to.
+
+### Deleting
+
+Admins can delete from the player (**Delete…** in the top bar), from a show's episode list (🗑),
+and from **Settings → Watch library → Largest web versions**:
+
+- **Delete web version:** frees the browser copy only. The original stays and keeps seeding, and
+  the web version is made again the next time someone opens it.
+- **Delete from disk:** the original file, its subtitles, and the web version. The item is
+  marked *deleted*, so it is never downloaded again (**Redo** in Movies or Shows brings it back).
+  Where Transmission still has the torrent, it goes through Transmission:
+  - a torrent holding only this item is removed along with its files;
+  - for a season pack, or a torrent that was already in Transmission before auto_magnet asked
+    for it, only this file is dropped and deleted, and the rest keeps seeding.
+
+  Nothing outside the movie and show folders is ever deleted. If Transmission can't be reached,
+  nothing is deleted and it says why.
+
 ### Disk space
 
-Web versions never fill the disk. Below **Keep free** (20 GB by default) no new one starts.
-**Settings → Watch library** then says they are paused, the Activity log records it once, and they
-carry on by themselves once there is room again (checked every five minutes). One already running
-is stopped if free space falls to half the reserve (downloads share the disk). It is queued again
-to start over.
+Web versions never fill the disk, and preparing ahead never takes the space a request needs.
+Two settings in **Settings → Playback**:
+
+| Setting | Default | Below it… |
+|---|---|---|
+| **Keep free** | 20 GB | nothing starts, not even what someone opens |
+| **Room for on-demand** | 50 GB, on top of *Keep free* | preparing ahead stops; what someone opens still starts, using this room |
+
+So with the defaults, background work stops at 70 GB free and requests can go down to 20 GB. A
+running job is stopped halfway into its margin (background at 45 GB, requests at 10 GB), since
+downloads share the disk, and is queued to start over. **Settings → Watch library** shows which
+kind of work is paused, and the Activity log records it once. Work carries on by itself once there
+is room, checked every minute, and straight away when a setting changes or someone is waiting on
+the player.
 
 If the disk fills anyway (downloads, Docker's build cache), the server no longer crashes on every
 start. It logs `THE DISK IS FULL` once a minute and keeps serving, and it carries on without a

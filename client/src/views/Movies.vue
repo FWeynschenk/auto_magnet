@@ -28,6 +28,7 @@
           <option value="downloading">Downloading</option>
           <option value="done">Done</option>
           <option value="failed">Failed</option>
+          <option value="deleted">Deleted</option>
         </select>
         <button
           class="btn-ghost btn-sm icon-btn"

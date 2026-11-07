@@ -13,6 +13,7 @@ import { setUnauthorizedHandler } from './api.js';
 const Watch     = () => import('./views/Watch.vue');
 const ShowWatch = () => import('./views/ShowWatch.vue');
 const Player    = () => import('./views/Player.vue');
+const Account   = () => import('./views/Account.vue');
 
 const router = createRouter({
   history: createWebHistory(),
@@ -29,6 +30,7 @@ const router = createRouter({
     { path: '/movies',   component: Movies,   meta: { admin: true } },
     { path: '/shows',    component: Shows,    meta: { admin: true } },
     { path: '/settings', component: Settings, meta: { admin: true } },
+    { path: '/account',  component: Account },
     { path: '/activity', component: Activity, meta: { admin: true } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

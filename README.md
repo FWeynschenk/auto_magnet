@@ -729,6 +729,32 @@ the subtitles menu to it, and closed captions carried inside the video stream ar
 second English track. A line an ASS file draws twice at once (one layer for the outline, one for
 the text) is shown once.
 
+### Your languages, and what you picked last time
+
+Click your name in the top bar to set **your own** audio and subtitle languages, in order
+(empty: the server's *Subtitle languages*). What you pick in the player (an audio track, a
+subtitle language, or subtitles off) is remembered for that show, or that film, and wins next
+time. The next episode starts the way you left the last one. It's remembered by language, since
+track numbers differ from file to file, and per account.
+
+### Subtitle look
+
+**Aa** next to the subtitles menu: size (S–XL) and background (none with an outline, shaded,
+solid). It's kept per browser, since a phone and a TV want different sizes.
+
+### Seek previews and Skip intro
+
+The bar under the video shows a thumbnail of where you'd land, and seeks on click or drag. The
+thumbnails are made after a web version is ready, or the first time something that plays as it
+is gets opened: one every 10 s, from keyframes only, so even 4K takes seconds. They are kept in
+`WEB_ROOT/thumbs/`, about 4 MB for a two-hour film.
+
+Once two episodes of a season are downloaded, their first minutes (the first third, at most 10
+minutes) are fingerprinted (Chromaprint, through ffmpeg), and the longest stretch they share is
+the intro, wherever it sits in each. The player then shows **Skip intro** (`S`) while it plays,
+and the intro is marked on the bar. Episodes are checked in batches every 20 minutes. A season
+where nothing was found is tried again when another episode arrives.
+
 ### Progress
 
 Each account has its own resume points. Past 92% of the running time (or within the last two
@@ -737,7 +763,7 @@ was made, so progress uploaded late from a phone never overwrites newer progress
 
 ### Keyboard (player)
 
-`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `N` next episode
+`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `S` skip intro · `N` next episode
 
 ### Android app
 

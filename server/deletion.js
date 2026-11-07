@@ -160,6 +160,8 @@ async function deleteEverything(kind, id, { tx = require('./transmission'), by =
 
   const freedWeb = webBytes(kind, id);
   media.removeWebVersion(kind, id);
+  require('./thumbs').remove(kind, id);
+  require('./intro').forget(kind, id);
   if (row) media.rows.remove(kind, id);
   (kind === 'movie' ? movies : episodes).update(id, { status: 'deleted' });
 

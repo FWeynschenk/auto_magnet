@@ -128,6 +128,8 @@ export const auth = {
   changePassword: (current, password) => req('PUT', '/auth/me/password', { current, password }),
   sessions:       ()               => req('GET',    '/auth/me/sessions'),
   revokeSession:  (id)             => req('DELETE', `/auth/me/sessions/${id}`),
+  languages:      ()               => req('GET',    '/auth/me/languages'),
+  setLanguages:   (body)           => req('PUT',    '/auth/me/languages', body),
   users:          ()               => req('GET',    '/auth/users'),
   createUser:     (body)           => req('POST',   '/auth/users', body),
   updateUser:     (id, body)       => req('PUT',    `/auth/users/${id}`, body),
@@ -147,6 +149,8 @@ export const watch = {
   prepare:     (kind, id, { soon = false } = {}) => req('POST', `${item(kind, id)}/prepare`, { soon }),
   reencode:    (kind, id)         => req('POST', `${item(kind, id)}/reencode`),
   deleteWeb:   (kind, id)         => req('DELETE', `${item(kind, id)}/web`),
+  // What was picked in the player, remembered for the show (or film).
+  choice:      (kind, id, body)   => req('POST', `${item(kind, id)}/choice`, body, { timeoutMs: 15_000 }),
   deleteAll:   (kind, id)         => req('DELETE', item(kind, id)),
   progress:    (kind, id, body)   => req('PUT',  `/watch/progress/${kind}/${id}`, body),
   setWatched:  (kind, id, watched) => req('POST', `/watch/progress/${kind}/${id}/watched`, { watched }),

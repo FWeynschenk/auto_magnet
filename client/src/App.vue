@@ -15,7 +15,7 @@
         ● {{ txStatus.connected ? 'Transmission' : 'No Transmission' }}
       </span>
       <span class="who" :class="{ 'push-right': !isAdmin }">
-        {{ user.username }}
+        <router-link to="/account" class="who-link" title="Your languages">{{ user.username }}</router-link>
         <button class="btn-ghost btn-sm" @click="logout">Sign out</button>
       </span>
     </nav>
@@ -131,6 +131,8 @@ button:disabled { opacity: .4; cursor: default; }
 .tx-status { margin-left: auto; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .who { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .who.push-right { margin-left: auto; }
+.who-link { color: var(--muted); text-decoration: none; }
+.who-link:hover, .who-link.router-link-active { color: var(--text); text-decoration: underline; }
 .tx-status.ok  { color: var(--green); }
 .tx-status.err { color: var(--red); }
 

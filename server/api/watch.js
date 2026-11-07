@@ -11,6 +11,8 @@ const router  = express.Router();
 
 const { db, shows, episodes, movies } = require('../db');
 const media    = require('../media');
+const prefs = require('../prefs');
+const thumbs = require('../thumbs');
 const progress = require('../progress');
 const subsync  = require('../subsync');
 const { requireAdmin } = require('../auth');
@@ -183,15 +185,36 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     if (ni) next = summary(ni, req.user.legacy ? null : progress.get(req.user.id, 'episode', ni.id));
   }
 
+  // Defaults for this person: what they picked for this show last time, then
+  // their own language lists.
+  const tracks = prefs.forPlayer(req.user, item, m ? media.listSubtitles(m).map(({ file, stream, ...s }) => ({
+    ...s, url: s.available ? `${base(kind, id)}/subtitles/${s.id}.vtt` : null,
+  })) : []);
   return {
     ...summary(item, prog),
     overview: item.overview || null,
     playback: m ? playback(kind, id, m) : { mode: 'unavailable', error },
-    subtitles: m ? media.listSubtitles(m).map(({ file, stream, ...s }) => ({
-      ...s, url: s.available ? `${base(kind, id)}/subtitles/${s.id}.vtt` : null,
-    })) : [],
+    subtitles: tracks.subtitles,
+    audio_langs: tracks.audio,
+    remembered: tracks.remembered,
+    intro: require('../intro').introOf(kind, id),
     next,
   };
+}));
+
+/**
+ * What someone picked in a player, remembered for the whole show (or film):
+ * { audio_lang?, sub_lang?, sub_off? }. Only the fields sent change.
+ */
+router.post('/items/:kind/:id/choice', wrap((req) => {
+  if (req.user.legacy) return { ok: false };
+  const { kind, id } = params(req);
+  const item = media.itemFor(kind, id);
+  if (!item) throw bad('Not found', 404);
+  const b = req.body || {};
+  const pick = {};
+  for (const k of ['audio_lang', 'sub_lang', 'sub_off']) if (k in b) pick[k] = b[k];
+  return { ok: true, ...prefs.remember(req.user.id, prefs.scopeFor(item), pick) };
 }));
 
 /** Lightweight poll for the "preparing" screen. */
@@ -258,6 +281,31 @@ const sendHls = wrap(async (req, res) => {
 });
 router.get('/items/:kind/:id/hls/:name', sendHls);
 router.get('/items/:kind/:id/hls/:dir/:name', sendHls);
+
+// ─── Seek thumbnails ─────────────────────────────────────────────────────────
+
+/**
+ * The thumbnail index, or { pending: true } while it is being made — asking
+ * starts it, so the back catalogue gets them as it is watched.
+ */
+router.get('/items/:kind/:id/thumbs.json', wrap(async (req) => {
+  const { kind, id } = params(req);
+  const ix = thumbs.index(kind, id);
+  if (ix) return { ...ix, url: `${base(kind, id)}/thumbs/` };
+  if (media.rows.get(kind, id)) thumbs.ensure(kind, id);
+  return { pending: true };
+}));
+
+router.get('/items/:kind/:id/thumbs/:n.jpg', wrap(async (req, res) => {
+  const { kind, id } = params(req);
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n) || n < 1 || n > 999) throw bad('Not found', 404);
+  const file = thumbs.sheetFile(kind, id, n);
+  if (!fs.existsSync(file)) throw bad('Not found', 404);
+  res.type('image/jpeg');
+  res.set('Cache-Control', 'private, max-age=86400');
+  await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));
+}));
 
 // ─── Subtitles ────────────────────────────────────────────────────────────────
 

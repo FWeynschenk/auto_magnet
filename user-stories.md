@@ -717,3 +717,33 @@ cwd), and that fails on Windows. The folder now goes once ffmpeg has exited.
 **Settings.** A dot on each tab with unsaved changes (the tab showing when a field changed), a
 note by Save, and a warning when leaving. **Find a setting** searches every label, hint and
 section heading, read from the form itself, then jumps to the tab, scrolls and focuses the field.
+
+## Implementation notes (2026-11-07): watching features
+
+**Languages and remembered picks** (`prefs.js`). `users.audio_langs`/`sub_langs` (empty = the
+server's `subtitle_languages`), set at `/account` (`PUT /api/auth/me/languages`), which every
+account can reach from its name in the nav. `track_choices(user_id, scope)` holds the scope
+`show:<id>` or `movie:<id>`, and `audio_lang`, `sub_lang`, `sub_off`. The item endpoint now sets
+`subtitles[].default` per person (remembered language, then the account's list) and returns
+`audio_langs`. Since a web version's default audio rendition is baked in at encode time with
+the server's language, the web player switches once the tracks are known (`preferAudio()`,
+once per file). A pick from the menus, the `A` key or the browser's CC menu posts
+`/items/:kind/:id/choice`. The Android app comes in batch 3.
+
+**Subtitle look.** A `::cue` rule in a `<style>` element, from a per-browser `localStorage` choice.
+
+**Seek thumbnails** (`thumbs.js`). Two ffmpeg passes: `-skip_frame nokey` with `fps=1/10,scale=160:h`
+to single JPEGs, then `tile=10x10` from those. The first try was one pass, and it promised cells
+the keyframes-only read never produced (after the last keyframe). Two passes give the exact
+count. Made after a web version is ready, or on the first `thumbs.json` request; from the
+original or, once it's removed, the web version's playlist. The web player's own `ScrubBar` sits
+under the video (native controls can't preview); the stage became a column for it.
+
+**Intros** (`intro.js`). Chromaprint raw prints of the first third (≤10 min), cached in
+`audio_prints`. Identical values vote for shifts; the top shifts (±1 point) are walked for the
+longest run with ≤6 differing bits, bridging gaps of ≤4 points. It needs 12–150 s, and 2 s comes
+off the end because each print value spans a little audio. Tested with a synthetic theme
+between per-episode tones: start within 0.4 s, end within 1 s. (Plain noise before and after
+fingerprinted alike in both files and pulled the start 4.6 s early; real episodes have
+dialogue there.) Results are in `intros`; none found is stored with the season's episode
+count, and retried when that grows.

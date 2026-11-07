@@ -140,6 +140,8 @@ app.listen(PORT, HOST, () => {
   // Encoding web versions is local work and never touches Transmission, so it
   // runs even with the scheduler switched off.
   step('web version worker', () => require('./media').startWorker());
+  // Local work too: comparing episodes' audio to find their intros.
+  step('intro detection', () => require('./intro').start());
   if (SCHEDULER_DISABLED) {
     console.warn('auto_magnet: AMAGNET_NO_SCHEDULER=1 — scheduler is OFF, nothing will be grabbed');
     return;

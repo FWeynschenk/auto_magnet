@@ -97,6 +97,21 @@ router.put('/me/password', signedIn, wrap((req) => {
   return { ok: true };
 }));
 
+// The account's own audio and subtitle languages, in order; empty = the server's.
+router.get('/me/languages', signedIn, wrap((req) => {
+  if (req.user.legacy) return { audio: [], sub: [], server: require('../prefs').langsFor(null).sub };
+  const p = require('../prefs');
+  const l = p.langsFor(req.user);
+  return { audio: l.own.audio, sub: l.own.sub, server: p.langsFor(null).sub };
+}));
+
+router.put('/me/languages', signedIn, wrap((req) => {
+  if (req.user.legacy) throw Object.assign(new Error('The API token has no account'), { status: 400 });
+  const p = require('../prefs');
+  const l = p.setLangs(req.user.id, { audio: req.body?.audio, sub: req.body?.sub });
+  return { audio: l.own.audio, sub: l.own.sub, server: p.langsFor(null).sub };
+}));
+
 router.get('/me/sessions', signedIn, wrap((req) =>
   sessions.forUser(req.user.id).map(s => ({
     id: s.token_hash.slice(0, 12), label: s.label, created_at: s.created_at,

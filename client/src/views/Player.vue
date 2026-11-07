@@ -65,6 +65,8 @@
         @ended="onEnded"
         @loadedmetadata="onMeta"
       />
+      <button v-if="showSkip" class="skip-intro" @click="skipIntro">Skip intro ▸</button>
+      <ScrubBar v-if="playing" :video="video" :thumbs-url="`/api/watch/items/${props.kind}/${props.id}/thumbs.json`" :marks="introMarks" />
 
       <div v-if="resumedAt" class="toast-resume">
         Resumed at {{ fmt(resumedAt) }}
@@ -83,19 +85,34 @@
 
     <footer v-if="item && pb && (playing || pb.mode === 'file' || pb.mode === 'hls')" class="tools">
       <label v-if="audioTracks.length > 1" class="sub-pick">Audio
-        <select v-model.number="audioIdx" @change="selectAudio">
+        <select v-model.number="audioIdx" @change="onAudioPick">
           <option v-for="t in audioTracks" :key="t.idx" :value="t.idx">{{ t.name }}</option>
         </select>
       </label>
 
       <label class="sub-pick">Subtitles
-        <select v-model="subId" @change="selectSub">
+        <select v-model="subId" @change="onSubMenu">
           <option value="">Off</option>
           <option v-for="s in item.subtitles" :key="s.id" :value="s.id" :disabled="!s.available">
             {{ s.label }}{{ s.available ? '' : ' — not supported' }}
           </option>
         </select>
       </label>
+
+      <!-- Subtitle look, per device: a phone, a laptop and a TV want different sizes. -->
+      <div v-if="subId" class="cue-style">
+        <button class="btn-ghost btn-sm" :aria-expanded="styleOpen" title="Subtitle size and background" @click="styleOpen = !styleOpen">Aa</button>
+        <div v-if="styleOpen" class="cue-menu" role="dialog" aria-label="Subtitle look">
+          <div class="cue-row">
+            <span class="small">Size</span>
+            <button v-for="(v, k) in CUE_SIZES" :key="k" class="btn-ghost btn-sm" :class="{ on: cue.size === k }" @click="cue.size = k">{{ v.label }}</button>
+          </div>
+          <div class="cue-row">
+            <span class="small">Background</span>
+            <button v-for="(v, k) in CUE_BGS" :key="k" class="btn-ghost btn-sm" :class="{ on: cue.bg === k }" @click="cue.bg = k">{{ v.label }}</button>
+          </div>
+        </div>
+      </div>
 
       <div v-if="subId" class="offset">
         <span class="small">Timing</span>
@@ -128,6 +145,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch as watchRef, nextTick } from 'vue';
+import ScrubBar from '../components/ScrubBar.vue';
 import { useRouter } from 'vue-router';
 import Hls from 'hls.js';
 import { watch } from '../api.js';
@@ -149,6 +167,34 @@ const countdown = ref(0);
 const subId = ref('');
 const offset = ref(0);
 const subBusy = ref('');
+
+// ─── Subtitle look ───────────────────────────────────────────────────────────
+// Kept per browser (it's about this screen, not the account), and applied as a
+// ::cue rule — the one way to style the browser's own subtitle rendering.
+const CUE_SIZES = { s: { label: 'S', pct: 80 }, m: { label: 'M', pct: 100 }, l: { label: 'L', pct: 130 }, xl: { label: 'XL', pct: 165 } };
+const CUE_BGS = {
+  none:   { label: 'None',   css: 'background: transparent; text-shadow: 0 0 3px #000, 0 0 3px #000, 1px 1px 2px #000;' },
+  shaded: { label: 'Shaded', css: 'background: rgba(0, 0, 0, .55);' },
+  solid:  { label: 'Solid',  css: 'background: rgba(0, 0, 0, .9);' },
+};
+const CUE_KEY = 'amagnet_cue_style';
+const cue = ref((() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(CUE_KEY) || '{}');
+    return { size: CUE_SIZES[v.size] ? v.size : 'm', bg: CUE_BGS[v.bg] ? v.bg : 'shaded' };
+  } catch (_) { return { size: 'm', bg: 'shaded' }; }
+})());
+const styleOpen = ref(false);
+let cueStyleEl = null;
+function applyCueStyle() {
+  if (!cueStyleEl) {
+    cueStyleEl = document.createElement('style');
+    document.head.appendChild(cueStyleEl);
+  }
+  cueStyleEl.textContent = `.player-page video::cue { font-size: ${CUE_SIZES[cue.value.size].pct}%; ${CUE_BGS[cue.value.bg].css} }`;
+  try { localStorage.setItem(CUE_KEY, JSON.stringify(cue.value)); } catch (_) {}
+}
+watchRef(cue, applyCueStyle, { deep: true, immediate: true });
 // Seconds the running subtitle action has taken, shown while Auto-sync works.
 const busyFor = ref(0);
 let busyTimer = null;
@@ -282,7 +328,8 @@ function attach() {
       });
       // Every audio track of the file is an alternative rendition.
       const syncAudio = () => {
-        audioTracks.value = hls.audioTracks.map((t, idx) => ({ idx, name: t.name || t.lang || `Track ${idx + 1}` }));
+        audioTracks.value = hls.audioTracks.map((t, idx) => ({ idx, lang: t.lang, name: t.name || t.lang || `Track ${idx + 1}` }));
+        if (preferAudio()) return;
         audioIdx.value = hls.audioTrack;
       };
       hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncAudio);
@@ -316,6 +363,7 @@ function teardown() {
   pollTrouble.value = false;
   delMenu.value = false;
   audioTracks.value = [];
+  audioPreferred = false;
   const v = video.value;
   if (v) {
     v.removeAttribute('src');
@@ -330,14 +378,38 @@ function teardown() {
 function syncNativeAudio() {
   const list = video.value?.audioTracks;
   if (!list || list.length < 2) return;
-  audioTracks.value = [...list].map((t, idx) => ({ idx, name: t.label || t.language || `Track ${idx + 1}` }));
+  audioTracks.value = [...list].map((t, idx) => ({ idx, lang: t.language, name: t.label || t.language || `Track ${idx + 1}` }));
   audioIdx.value = Math.max(0, [...list].findIndex(t => t.enabled));
+  preferAudio();
 }
 
 function selectAudio() {
   if (hls) { hls.audioTrack = audioIdx.value; return; }
   const list = video.value?.audioTracks;
   if (list) [...list].forEach((t, i) => { t.enabled = i === audioIdx.value; });
+}
+
+// The web version's default track is the server's language. This person may
+// want another — their own list, or what they picked for this show before —
+// so once the tracks are known, switch to the first of theirs it has. Once per
+// file: after that, what they pick stands.
+let audioPreferred = false;
+function preferAudio() {
+  if (audioPreferred || audioTracks.value.length < 2) return false;
+  audioPreferred = true;
+  const want = (item.value?.audio_langs || []).map(l => String(l).toLowerCase());
+  const at = want.map(l => audioTracks.value.findIndex(t => String(t.lang || '').toLowerCase() === l)).find(i => i >= 0);
+  if (at === undefined || at === audioIdx.value) return false;
+  audioIdx.value = at;
+  selectAudio();
+  return true;
+}
+
+/** The menu (or the A key): switch, and remember the language for this show. */
+function onAudioPick() {
+  selectAudio();
+  const lang = audioTracks.value[audioIdx.value]?.lang;
+  if (lang) watch.choice(props.kind, props.id, { audio_lang: String(lang).toLowerCase() }).catch(() => {});
 }
 
 // ─── Subtitles ───────────────────────────────────────────────────────────────
@@ -421,7 +493,20 @@ function onTextTracksChange() {
     subId.value = id;
     offset.value = 0;
     applyOffset();
+    rememberSub();   // picked in the browser's own CC menu: a choice like any other
   }
+}
+
+function onSubMenu() {
+  selectSub();
+  rememberSub();
+}
+
+/** Remember the subtitle language picked (or Off) for this show. */
+function rememberSub() {
+  const s = currentSub.value;
+  if (!subId.value) watch.choice(props.kind, props.id, { sub_off: true }).catch(() => {});
+  else if (s?.lang) watch.choice(props.kind, props.id, { sub_lang: s.lang }).catch(() => {});
 }
 
 /** Shift every cue of the showing track by the current offset, in place. */
@@ -490,7 +575,18 @@ async function restore() {
 
 function onMeta() { applyOffset(); }
 
+// ─── Skip intro ──────────────────────────────────────────────────────────────
+const now = ref(0);
+const intro = computed(() => item.value?.intro || null);
+const introMarks = computed(() => (intro.value ? [{ start: intro.value.start, end: intro.value.end, label: 'Intro' }] : []));
+// From its start until a couple of seconds before it ends.
+const showSkip = computed(() => !!intro.value && now.value >= intro.value.start && now.value < intro.value.end - 2);
+function skipIntro() {
+  if (video.value && intro.value) video.value.currentTime = intro.value.end;
+}
+
 function onTime() {
+  now.value = video.value?.currentTime || 0;
   if (Date.now() - lastReportAt > 10_000) report(false);
   prepareNext();
 }
@@ -611,9 +707,10 @@ function onKey(e) {
   else if (k === 'z') nudge(-250);
   else if (k === 'x') nudge(250);
   else if (k === 'n') playNext();
+  else if (k === 's' && showSkip.value) skipIntro();
   else if (k === 'a' && audioTracks.value.length > 1) {
     audioIdx.value = (audioIdx.value + 1) % audioTracks.value.length;
-    selectAudio();
+    onAudioPick();
     notifySuccess(`Audio: ${audioTracks.value[audioIdx.value].name}`);
   }
   else return;
@@ -622,7 +719,10 @@ function onKey(e) {
 
 const onHide = () => report(true, { beacon: true });
 // The delete menu closes on a click anywhere else.
-const onDocClick = (e) => { if (delMenu.value && !e.target.closest?.('.del')) delMenu.value = false; };
+const onDocClick = (e) => {
+  if (delMenu.value && !e.target.closest?.('.del')) delMenu.value = false;
+  if (styleOpen.value && !e.target.closest?.('.cue-style')) styleOpen.value = false;
+};
 
 onMounted(() => {
   window.addEventListener('pagehide', onHide);
@@ -635,6 +735,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick);
   video.value?.textTracks.removeEventListener('change', onTextTracksChange);
   clearInterval(busyTimer);
+  cueStyleEl?.remove();
   teardown();
 });
 watchRef(() => [props.kind, props.id], load);
@@ -646,8 +747,14 @@ watchRef(() => [props.kind, props.id], load);
 .heading { min-width: 0; }
 .heading .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .heading .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
-.video { width: 100%; max-height: calc(100vh - 120px); background: #000; }
+.stage { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
+.video { width: 100%; max-height: calc(100vh - 150px); background: #000; }
+.skip-intro {
+  position: absolute; right: 24px; bottom: 120px; z-index: 3;
+  background: rgba(20, 20, 20, .85); color: #fff; border: 1px solid rgba(255, 255, 255, .5);
+  padding: 10px 18px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer;
+}
+.skip-intro:hover { background: #fff; color: #000; }
 .msg { color: var(--text); text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 16px; }
 .msg .small, .small { font-size: 12px; color: var(--muted); }
 .err { color: var(--red); }
@@ -692,6 +799,15 @@ watchRef(() => [props.kind, props.id], load);
   padding: 5px 8px; font-size: 13px; max-width: 260px;
 }
 .offset { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cue-style { position: relative; }
+.cue-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; display: flex; flex-direction: column; gap: 8px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4); white-space: nowrap;
+}
+.cue-row { display: flex; align-items: center; gap: 6px; }
+.cue-row .small { width: 76px; color: var(--muted); }
+.cue-row .on { color: var(--text); border-color: var(--accent); }
 .off-val { font-variant-numeric: tabular-nums; min-width: 52px; text-align: center; font-size: 13px; }
 .off-val.changed { color: var(--yellow); }
 .right { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

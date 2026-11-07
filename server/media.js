@@ -1026,6 +1026,7 @@ async function encode(job, opts = {}) {
     try { repairInitSegments(kind, id); } catch (err) { log.warn(`init segment check failed: ${err.message}`, { type: kind, id }); }
     rows.update(kind, id, { web_state: 'ready', web_progress: 1 });
     prewarmSubtitles(rows.get(kind, id)).catch(() => {});
+    require('./thumbs').ensure(kind, id);
     if (hwDecode) gpuDecodeFailures = 0;
     const secs = (Date.now() - started) / 1000;
     const how = encoder === 'vaapi' ? `GPU${hwDecode ? '' : ', decoded on the CPU'}` : encoder;

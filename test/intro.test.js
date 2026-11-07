@@ -14,8 +14,10 @@ const intro = require('../server/intro');
 
 // "Music": a melody that changes every half second, the same in every episode.
 const THEME = "aevalsrc='0.4*sin(2*PI*(220+55*mod(floor(t*2)*7,13))*t)+0.2*sin(2*PI*(440+30*mod(floor(t*4)*5,11))*t)':s=44100:d=40";
-// Each episode's own sound: a wobbling tone of its own (plain noise prints alike in every episode).
-const other = (seed, secs) => `aevalsrc='0.3*sin(2*PI*(${150 + seed * 37}+${80 + seed * 13}*sin(t*${(0.7 + seed * 0.31).toFixed(2)}))*t)+0.05*(random(${seed})-0.5)':s=44100:d=${secs}`;
+// Each episode's own sound: a melody of its own that changes several times a
+// second. (Plain noise, or a steady tone, fingerprints alike in every episode
+// and blurs the edges of the match in a way real dialogue doesn't.)
+const other = (seed, secs) => `aevalsrc='0.35*sin(2*PI*(170+37*mod(floor(t*3)*${seed * 7 + 3}+${seed * 11},19))*t)+0.15*sin(2*PI*(600+53*mod(floor(t*5)*${seed * 5 + 2},13))*t)':s=44100:d=${secs}`;
 
 /** An episode: `before` s of its own sound, the 40 s theme, then 60 s more of its own. */
 function episode(dir, name, seed, before) {
@@ -35,7 +37,7 @@ test('the shared stretch of two made-up prints is found, with each one\'s positi
   assert.ok(r, 'found');
   assert.ok(Math.abs(r.a[0] - 100 * intro.SECS_PER_POINT) < 0.5, `A starts at ${r.a[0]}`);
   assert.ok(Math.abs(r.b[0] - 400 * intro.SECS_PER_POINT) < 0.5, `B starts at ${r.b[0]}`);
-  assert.ok(r.a[1] - r.a[0] > 33, 'a bad point now and then is bridged (and 2 s trimmed off the end)');
+  assert.ok(r.a[1] - r.a[0] > 35, 'a bad point now and then is bridged');
   assert.equal(intro.sharedStretch(rnd(500, 7), rnd(500, 8)), null, 'nothing shared, nothing found');
 });
 
@@ -53,8 +55,9 @@ test('two episodes with the theme at different points: each one\'s intro is foun
   const r = await intro.pass();
   assert.equal(r.found, 1, 'one comparison finds both');
   const i1 = intro.introOf('episode', 1), i2 = intro.introOf('episode', 2);
-  assert.ok(Math.abs(i1.start - 25) < 1.5 && Math.abs(i1.end - 65) < 1.5, `episode 1: ${JSON.stringify(i1)}`);
-  assert.ok(Math.abs(i2.start - 70) < 1.5 && Math.abs(i2.end - 110) < 1.5, `episode 2: ${JSON.stringify(i2)}`);
+  // The edges blur by a second or so; the end errs early (intro left, nothing skipped).
+  assert.ok(Math.abs(i1.start - 25) < 1.5 && i1.end > 62.5 && i1.end <= 65.5, `episode 1: ${JSON.stringify(i1)}`);
+  assert.ok(Math.abs(i2.start - 70) < 1.5 && i2.end > 107.5 && i2.end <= 110.5, `episode 2: ${JSON.stringify(i2)}`);
   assert.deepEqual(await intro.pass(), { checked: 0, found: 0 }, 'not looked at again');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM audio_prints').get().n, 2, 'prints kept');
 });

@@ -34,10 +34,12 @@ const MAX_SECS = 150;
 const MAX_BIT_ERRORS = 6;       // of 32: the same audio, re-encoded
 const MAX_GAP = 4;              // bad points bridged inside a run (~0.5 s)
 const TOP_SHIFTS = 8;
-// Each print value is made from a little audio either side of it, so a match
-// runs on about two seconds past the real end. Better a moment of the intro
-// left than a moment of the episode skipped.
-const END_TRIM = 2;
+// Each print value is made from a little audio either side of it, so the edges
+// of a match blur by a second or so — in practice the run stops a little
+// before the intro does, which is the safe side: a moment of intro left, never
+// a moment of the episode skipped. (A test whose 'episode' audio was steady
+// tones seemed to show the opposite; tones that similar fingerprint alike.)
+const END_TRIM = 0;
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS audio_prints (

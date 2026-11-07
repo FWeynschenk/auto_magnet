@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.Interceptor
@@ -49,6 +50,19 @@ object Prefs {
     var wifiOnly: Boolean
         get() = sp.getBoolean("wifi_only", true)
         set(v) = sp.edit().putBoolean("wifi_only", v).apply()
+
+    /** Play the original file when this phone decodes everything in it, rather than the web version. */
+    var directPlay: Boolean
+        get() = sp.getBoolean("direct_play", true)
+        set(v) = sp.edit().putBoolean("direct_play", v).apply()
+
+    /** Subtitle look on this device: size "s" "m" "l" "xl", background "system" "none" "shaded" "solid". */
+    var cueSize: String
+        get() = sp.getString("cue_size", "m") ?: "m"
+        set(v) = sp.edit().putString("cue_size", v).apply()
+    var cueBg: String
+        get() = sp.getString("cue_bg", "system") ?: "system"
+        set(v) = sp.edit().putString("cue_bg", v).apply()
 
     fun string(key: String): String? = sp.getString(key, null)
     fun putString(key: String, v: String?) = sp.edit().putString(key, v).apply()
@@ -126,6 +140,25 @@ object Api {
     /** soon = true: for a download or the next episode — ahead of background work, without stopping anything. */
     suspend fun prepare(kind: String, id: Int, soon: Boolean = false): Playback =
         json.decodeFromString(call("POST", "/api/watch/items/$kind/$id/prepare", "{\"soon\":$soon}"))
+
+    /** What was picked in the player, remembered for the whole show (or film). */
+    suspend fun choice(kind: String, id: Int, audioLang: String? = null, subLang: String? = null, subOff: Boolean? = null) {
+        call("POST", "/api/watch/items/$kind/$id/choice", obj("audio_lang" to audioLang, "sub_lang" to subLang, "sub_off" to subOff))
+    }
+
+    suspend fun shiftSub(kind: String, id: Int, sub: String, offsetMs: Int) {
+        call("POST", "/api/watch/items/$kind/$id/subtitles/$sub/shift", obj("offsetMs" to offsetMs))
+    }
+    /** Reads the whole soundtrack on the server: can take a minute or two. */
+    suspend fun syncSub(kind: String, id: Int, sub: String): SyncResult =
+        json.decodeFromString(call("POST", "/api/watch/items/$kind/$id/subtitles/$sub/sync"))
+    suspend fun restoreSub(kind: String, id: Int, sub: String): Boolean =
+        json.parseToJsonElement(call("POST", "/api/watch/items/$kind/$id/subtitles/$sub/restore"))
+            .let { (it as? JsonObject)?.get("restored")?.toString() == "true" }
+
+    /** Admin: the web version only (the original stays and keeps seeding), or everything. */
+    suspend fun deleteWebVersion(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id/web") }
+    suspend fun deleteFromDisk(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id") }
 
     suspend fun setWatched(kind: String, id: Int, watched: Boolean): Progress =
         json.decodeFromString(call("POST", "/api/watch/progress/$kind/$id/watched", """{"watched":$watched}"""))

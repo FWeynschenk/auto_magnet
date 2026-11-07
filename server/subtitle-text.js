@@ -42,7 +42,8 @@ function parse(text) {
       const start = parseTime(m[1]), end = parseTime(m[2]);
       if (Number.isFinite(start) && Number.isFinite(end)) {
         if (cur) cues.push(cur);
-        cur = { start, end, text: [] };
+        // VTT cue settings (line:5% and the like) are kept for writing VTT again.
+        cur = { start, end, text: [], settings: (m[3] || '').trim() };
         // A preceding bare number was this cue's index, not text of the last one.
         const prev = cues[cues.length - 1];
         if (prev && prev.text.length && /^\d+$/.test(prev.text[prev.text.length - 1].trim())) prev.text.pop();
@@ -54,7 +55,10 @@ function parse(text) {
   }
   if (cur) cues.push(cur);
   return cues
-    .map(c => ({ start: c.start, end: c.end, text: c.text.join('\n').replace(/\n+$/, '').replace(/^\n+/, '') }))
+    .map(c => ({
+      start: c.start, end: c.end, text: c.text.join('\n').replace(/\n+$/, '').replace(/^\n+/, ''),
+      ...(c.settings ? { settings: c.settings } : {}),
+    }))
     .filter(c => c.text.trim() && c.end > c.start)
     .sort((a, b) => a.start - b.start);
 }
@@ -136,7 +140,7 @@ function vttCue(raw) {
 
 function toVtt(cues) {
   return 'WEBVTT\n\n' + cues.map(c => ({ c, v: vttCue(c.text) })).filter(({ v }) => v.text).map(({ c, v }) =>
-    `${formatTime(c.start, '.')} --> ${formatTime(c.end, '.')}${v.settings ? ` ${v.settings}` : ''}\n${v.text}\n`).join('\n');
+    `${formatTime(c.start, '.')} --> ${formatTime(c.end, '.')}${(v.settings || c.settings) ? ` ${v.settings || c.settings}` : ''}\n${v.text}\n`).join('\n');
 }
 
 /**

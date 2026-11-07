@@ -198,6 +198,7 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     audio_langs: tracks.audio,
     remembered: tracks.remembered,
     intro: require('../intro').introOf(kind, id),
+    original: m ? originalInfo(kind, id, m) : null,
     next,
   };
 }));
@@ -216,6 +217,32 @@ router.post('/items/:kind/:id/choice', wrap((req) => {
   for (const k of ['audio_lang', 'sub_lang', 'sub_off']) if (k in b) pick[k] = b[k];
   return { ok: true, ...prefs.remember(req.user.id, prefs.scopeFor(item), pick) };
 }));
+
+/**
+ * What the original file holds, for a player that may be able to play it
+ * itself (the Android app, on a phone that decodes HEVC and AC-3): then it
+ * needn't wait for — or cause — a conversion at all. Null once removed.
+ */
+function originalInfo(kind, id, m) {
+  if (m.original_removed_at || !m.probe) return null;
+  let info;
+  try { info = JSON.parse(m.probe); } catch (_) { return null; }
+  const v = media.mainVideo(info.streams || []);
+  if (!v) return null;
+  const audio = media.audioRenditions(info.streams || [], media.wantedLanguages());
+  const byIndex = new Map((info.streams || []).map(s => [s.index, s]));
+  return {
+    url: `${base(kind, id)}/file`,
+    container: String(info.format?.format_name || '').split(',')[0] || null,
+    size: m.size || null,
+    video: {
+      codec: v.codec_name, profile: v.profile || null, pix_fmt: v.pix_fmt || null,
+      width: v.width || null, height: v.height || null,
+      hdr: ['smpte2084', 'arib-std-b67'].includes(v.color_transfer) ? v.color_transfer : null,
+    },
+    audio: audio.map(a => ({ codec: byIndex.get(a.stream)?.codec_name || a.codec, channels: a.channels, lang: a.lang, name: a.name, extra: !a.autoselect })),
+  };
+}
 
 /** Lightweight poll for the "preparing" screen. */
 // Polled by a player that is waiting. Being polled is what keeps a request
@@ -323,6 +350,13 @@ router.get('/items/:kind/:id/subtitles/:sub.vtt', wrap(async (req, res) => {
   const file = await media.vttFor(m, req.params.sub);
   res.type('text/vtt; charset=utf-8');
   res.set('Cache-Control', 'no-cache');
+  // ?offset=ms: shifted on the way out. A player that can't move cues itself
+  // (the Android app) reloads the track with this to nudge the timing live.
+  const offset = Number(req.query.offset);
+  if (Number.isFinite(offset) && offset !== 0 && Math.abs(offset) <= 3600_000) {
+    const st = require('../subtitle-text');
+    return res.send(st.toVtt(st.transform(st.parse(fs.readFileSync(file, 'utf8')), { offsetMs: Math.round(offset) })));
+  }
   await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));
 }));
 

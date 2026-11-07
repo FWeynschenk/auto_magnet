@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -388,6 +390,34 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf<String?>(null) }   // "web" | "all"
+
+    // Admin: free space from here, as in the web player. Asks first.
+    confirm?.let { what ->
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text(if (what == "web") "Delete the web version?" else "Delete from disk?") },
+            text = {
+                Text(if (what == "web") "The original stays and keeps seeding. The web version is made again when someone opens it."
+                     else "The original, its subtitles and the web version are deleted, and it won't be downloaded again. This can't be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = null
+                    scope.launch {
+                        runCatching { if (what == "web") Api.deleteWebVersion(kind, id) else Api.deleteFromDisk(kind, id) }
+                            .onSuccess {
+                                Toast.makeText(ctx, if (what == "web") "Web version deleted" else "Deleted from disk", Toast.LENGTH_SHORT).show()
+                                if (what == "all") back() else refresh++
+                            }
+                            .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+        )
+    }
 
     // Coming back from the player: show the new resume point.
     LaunchedEffect(Unit) {
@@ -397,6 +427,20 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
     Scaffold(topBar = {
         TopAppBar(title = { Text(item?.heading ?: "", maxLines = 1, overflow = TextOverflow.Ellipsis) },
             navigationIcon = { IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            actions = {
+                if (Prefs.isAdmin && detail != null) {
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "More") }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            val pb = detail.playback
+                            if (pb.plan != null && pb.plan != "direct" && detail.original != null) {
+                                DropdownMenuItem(text = { Text("Delete web version") }, onClick = { menuOpen = false; confirm = "web" })
+                            }
+                            DropdownMenuItem(text = { Text("Delete from disk", color = Red) }, onClick = { menuOpen = false; confirm = "all" })
+                        }
+                    }
+                }
+            },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg))
     }) { pad ->
         Box(Modifier.padding(pad)) {

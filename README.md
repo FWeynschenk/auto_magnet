@@ -787,6 +787,22 @@ Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an accou
 - **Picture-in-picture**: going Home while something plays shrinks it to a floating window
   (automatically on Android 12+), with back 10 s, play/pause and forward 10 s. Closing the window
   saves the position. Opening another item while one plays there switches to it.
+- **The original file, when the phone can play it.** Most phones decode HEVC, 10-bit HEVC and
+  MKV, and many AC-3, so the app checks the file (container, video codec and profile, HDR only on
+  an HDR screen, and the audio track that would play) against the phone's decoders. When
+  everything is supported it plays the original: at once, at full quality, and without starting a
+  conversion on the server. Otherwise it streams the web version as before. Turn this off under
+  **⋯ → Play originals when this phone can**.
+- **Your languages and picks**, as in the browser: your account's audio languages choose the
+  track, and an audio track, subtitle language or *subtitles off* picked here is remembered for
+  the show.
+- **Skip intro** shows while a detected intro plays.
+- **⋯** (top right, with the controls): subtitle size and background (or the phone's own caption
+  settings), and **Subtitle timing**. Earlier and later in ¼ s steps apply live, since the
+  subtitle is fetched again shifted. For a `.srt` beside the video, **Save to file**,
+  **Auto-sync** and **Restore** work as in the web player.
+- **Admins: ⋮ on a movie or episode** deletes the web version (the original stays and keeps
+  seeding) or everything from disk, after asking.
 
 **Admins also get a Manage tab** — the downloader side, through the same endpoints as the web
 dashboard:

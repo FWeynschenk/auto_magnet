@@ -747,3 +747,30 @@ between per-episode tones: start within 0.4 s, end within 1 s. (Plain noise befo
 fingerprinted alike in both files and pulled the start 4.6 s early; real episodes have
 dialogue there.) Results are in `intros`; none found is stored with the season's episode
 count, and retried when that grows.
+
+## Implementation notes (2026-11-07): Android
+
+**Original files** (`DirectPlay.kt`). The item endpoint now has `original`: the file URL,
+container, video codec, profile, pix_fmt, size and HDR transfer, and the audio tracks with
+codec, channels and language. The app checks them against `MediaCodecList.findDecoderForFormat`
+(HEVC with `KEY_PROFILE` Main/Main10; 10-bit H.264 and 4:2:2/4:4:4 never), and HDR only where
+`Display.HdrCapabilities` lists HDR10/HLG. The audio checked is the track the account's
+languages would pick. The item is first fetched without `?play=1`, so a direct play starts no
+conversion. When playing the original, only sidecar subtitles are side-loaded; the player reads
+embedded ones itself, image tracks included.
+
+**Tracks.** `setPreferredAudioLanguages(audio_langs)`; with no default subtitle, text is disabled
+(a default-flagged track in an MKV would otherwise switch on). The first `onTracksChanged` is
+the baseline; later changes post `/choice`.
+
+**Subtitle timing.** Media3 can't move side-loaded cues, so `GET …/subtitles/:id.vtt?offset=ms`
+serves them shifted, and the app re-sets the MediaItem at the same position and selects the same
+subtitle again (`TrackSelectionOverride`). Parsing now keeps VTT cue settings, so a positioned
+line keeps its place when shifted.
+
+**Tested on an API 33 emulator** against a local server with the test library. The Dual Audio
+MP4 still played with its web version moved away, so the original was playing. Picking Dutch
+audio stored `audio_lang: nl`. Skip intro appeared during a seeded intro and skipped. Timing
+nudges reloaded without error, and Save to file and Auto-sync reached the server. Deleting a web
+version asked first and then deleted. Found and fixed: the timing dialog's left button kept
+saying Restore after a nudge.

@@ -142,7 +142,7 @@ enforces the documented limits — so they can be rebuilt rather than rediscover
 
 ## Playback — next steps
 
-- **Deleting from the Android app.** Delete web version / delete from disk are in the web player
+- ~~**Deleting from the Android app.**~~ Done 2026-11-07 (⋮ on the details screen). Delete web version / delete from disk are in the web player
   and Settings only (the app's player now shows the disk-full and failure reasons). The app's
   admin screens could call the same `DELETE /api/watch/items/:kind/:id[/web]`.
 - **Torrents left empty before this fix.** Packs whose every episode was deleted one by one before

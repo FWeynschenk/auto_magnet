@@ -19,7 +19,7 @@ test('parses SRT with BOM, CRLF, missing indexes and blank lines in text', () =>
 
 test('parses VTT with header, cue settings and short timestamps', () => {
   const cues = st.parse('WEBVTT\n\nNOTE hi\n\n00:01.000 --> 00:02.000 align:start\nHi\n');
-  assert.deepEqual(cues, [{ start: 1000, end: 2000, text: 'Hi' }]);
+  assert.deepEqual(cues, [{ start: 1000, end: 2000, text: 'Hi', settings: 'align:start' }], 'cue settings kept for writing VTT again');
 });
 
 test('SRT → VTT → parse round trip', () => {

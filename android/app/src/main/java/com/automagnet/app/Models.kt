@@ -99,6 +99,55 @@ data class Subtitle(
     val available: Boolean = true,
     val default: Boolean = false,
     val forced: Boolean = false,
+    /** A .srt beside the video: its timing can be saved, auto-synced and restored. */
+    val editable: Boolean = false,
+    /** "file" (beside the video) or "embedded" (in it: a phone playing the original reads those itself). */
+    val source: String? = null,
+)
+
+/** Where a show's intro sits in this episode, in seconds. */
+@Serializable
+data class Intro(val start: Double, val end: Double)
+
+/** What the original file holds, so the app can tell whether this phone plays it itself. */
+@Serializable
+data class Original(
+    val url: String,
+    val container: String? = null,
+    val size: Long? = null,
+    val video: OriginalVideo,
+    val audio: List<OriginalAudio> = emptyList(),
+)
+
+@Serializable
+data class OriginalVideo(
+    val codec: String? = null,
+    val profile: String? = null,
+    @SerialName("pix_fmt") val pixFmt: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val hdr: String? = null,
+)
+
+@Serializable
+data class OriginalAudio(
+    val codec: String? = null,
+    val channels: Int? = null,
+    val lang: String? = null,
+    val name: String? = null,
+    /** Commentary or audio description: never the one that has to play. */
+    val extra: Boolean = false,
+)
+
+/** POST …/subtitles/:id/sync */
+@Serializable
+data class SyncResult(
+    val applied: Boolean = false,
+    val reason: String? = null,
+    val offsetMs: Double? = null,
+    val ratio: Double? = null,
+    val refined: Boolean = false,
+    val maxCorrectionMs: Double? = null,
 )
 
 /** Everything about one item, as GET /api/watch/items/:kind/:id returns it. */
@@ -120,6 +169,10 @@ data class ItemDetail(
     val playback: Playback,
     val subtitles: List<Subtitle> = emptyList(),
     val next: Item? = null,
+    /** This account's audio languages to try, in order: a remembered pick first. */
+    @SerialName("audio_langs") val audioLangs: List<String> = emptyList(),
+    val intro: Intro? = null,
+    val original: Original? = null,
 ) {
     fun asItem() = Item(
         kind = kind, id = id, title = title, posterUrl = posterUrl, duration = duration, progress = progress,

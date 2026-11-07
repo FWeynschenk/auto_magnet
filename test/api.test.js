@@ -180,6 +180,15 @@ test('playback', { skip }, async (t) => {
   });
 });
 
+test('what the original holds, for a player that can play it itself', { skip }, async () => {
+  const it = (await call('GET', '/api/watch/items/movie/2', null, { tok: token })).body;
+  assert.equal(it.original.url, '/api/watch/items/movie/2/file');
+  assert.equal(it.original.container, 'matroska');
+  assert.equal(it.original.video.codec, 'h264');
+  assert.ok(it.original.audio.length >= 1 && it.original.audio[0].codec);
+  assert.deepEqual(it.audio_langs, ['en']);
+});
+
 test('subtitles', { skip }, async (t) => {
   let side;
   await t.test('embedded text track converts to WebVTT', async () => {
@@ -201,6 +210,11 @@ test('subtitles', { skip }, async (t) => {
     const vtt = await (await call('GET', side.url, null, { tok: token, raw: true })).text();
     assert.match(vtt, /00:00:09\.000 --> 00:00:10\.000 line:5%\nSign at the top\n/);
     assert.doesNotMatch(vtt, /\\an8/);
+  });
+  await t.test('?offset shifts the WebVTT on the way out, positions kept (the Android app nudges with it)', async () => {
+    const vtt = await (await call('GET', `${side.url}?offset=2000`, null, { tok: token, raw: true })).text();
+    assert.match(vtt, /00:00:11\.000 --> 00:00:12\.000 line:5%\nSign at the top\n/);
+    assert.match(vtt, /00:00:03\.000 --> 00:00:05\.000/);
   });
   await t.test('a saved offset rewrites the file, and restore undoes it', async () => {
     assert.equal((await call('POST', `/api/watch/items/episode/1/subtitles/${side.id}/shift`, { offsetMs: 1500 }, { tok: token })).status, 200);

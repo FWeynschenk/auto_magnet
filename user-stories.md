@@ -675,3 +675,13 @@ asynchronously, once for both numbers, and caches finished web versions (they do
 until they are removed or rebuilt. The subtitle cache is recounted every 10 minutes. The page
 is in five tabs (Transmission, Library, Searching, Playback, Accounts) kept in `?tab=`. The
 Watch library and Accounts panels only load on their tab, and Save sticks to the bottom.
+
+**Stuck subtitle buttons; the browser's own track pick (2026-11-07, later).** Save to file,
+Auto-sync and Restore were disabled while any of them waited, with no label but *Syncing…* and
+no timeout, so a request that never got an answer left them disabled for good. Each now says what
+it's doing (*Saving…*, *Syncing… 12s*, *Restoring…*). `req()` takes a `timeoutMs`: 30 s for
+save and restore, 10 minutes for Auto-sync. The error says the server may still finish.
+Checking this turned up a bug in the one-track rule: when tracks are (re)built, at page load or
+after a save, Chrome turns one on by its own language preferences, and "newest choice wins"
+followed it. The menu jumped to English after saving the Dutch file, and at load the default
+could flip. For 3 s after building, and 1 s after each track loads, the menu's choice now stands.

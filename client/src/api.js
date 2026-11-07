@@ -11,17 +11,32 @@ export const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
 let onUnauthorized = null;
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
-async function req(method, path, body) {
+/**
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs]  give up waiting after this long. The server
+ *   may still finish the work; the error says so. Without it, a request that
+ *   never gets an answer leaves whatever waits on it stuck for good.
+ */
+async function req(method, path, body, { timeoutMs } = {}) {
   const headers = {};
   if (body) headers['Content-Type'] = 'application/json';
   const token = getToken();
   if (token) headers['X-Auth-Token'] = token;
 
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
+    });
+  } catch (err) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      throw new Error(`No answer from the server after ${Math.round(timeoutMs / 1000)}s — it may still finish; reload to see`);
+    }
+    throw err;
+  }
 
   if (res.status === 204) return null;
   if (res.status === 401 && !path.startsWith('/auth/')) {
@@ -131,9 +146,11 @@ export const watch = {
   progress:    (kind, id, body)   => req('PUT',  `/watch/progress/${kind}/${id}`, body),
   setWatched:  (kind, id, watched) => req('POST', `/watch/progress/${kind}/${id}/watched`, { watched }),
   showWatched: (showId, season, watched) => req('POST', `/watch/shows/${showId}/watched`, { season, watched }),
-  syncSub:     (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/sync`),
-  shiftSub:    (kind, id, sub, offsetMs) => req('POST', `${item(kind, id)}/subtitles/${sub}/shift`, { offsetMs }),
-  restoreSub:  (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/restore`),
+  // Auto-sync reads the whole soundtrack (a film off a spinning disk: a few
+  // minutes); saving and restoring rewrite one small file.
+  syncSub:     (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/sync`, null, { timeoutMs: 10 * 60_000 }),
+  shiftSub:    (kind, id, sub, offsetMs) => req('POST', `${item(kind, id)}/subtitles/${sub}/shift`, { offsetMs }, { timeoutMs: 30_000 }),
+  restoreSub:  (kind, id, sub)    => req('POST', `${item(kind, id)}/subtitles/${sub}/restore`, null, { timeoutMs: 30_000 }),
   adminStatus: ()                 => req('GET',  '/watch/admin/status'),
   scan:        ()                 => req('POST', '/watch/admin/scan'),
   clear:       ()                 => req('POST', '/watch/admin/clear'),

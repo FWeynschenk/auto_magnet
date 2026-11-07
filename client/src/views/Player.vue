@@ -103,10 +103,14 @@
         <span class="off-val" :class="{ changed: offset !== 0 }">{{ offset > 0 ? '+' : '' }}{{ (offset / 1000).toFixed(2) }}s</span>
         <button class="btn-ghost btn-sm" title="Subtitles later (X)" @click="nudge(250)">+¼s</button>
         <template v-if="currentSub?.editable">
-          <button v-if="offset !== 0" class="btn-ghost btn-sm" :disabled="subBusy" @click="saveOffset">Save to file</button>
-          <button class="btn-ghost btn-sm" :disabled="subBusy" title="Align to the audio — takes a little while" @click="autoSync">
-            {{ subBusy === 'sync' ? 'Syncing…' : 'Auto-sync' }}</button>
-          <button class="btn-ghost btn-sm" :disabled="subBusy" title="Undo every saved change to this file" @click="restore">Restore</button>
+          <!-- All three wait on one another: each rewrites the same file. The
+               one running says so, so it's clear what the others wait for. -->
+          <button v-if="offset !== 0 || subBusy === 'save'" class="btn-ghost btn-sm" :disabled="!!subBusy" @click="saveOffset">
+            {{ subBusy === 'save' ? 'Saving…' : 'Save to file' }}</button>
+          <button class="btn-ghost btn-sm" :disabled="!!subBusy" :title="subBusy && subBusy !== 'sync' ? 'Waiting for the other change to this file' : 'Align to the audio — takes a little while'" @click="autoSync">
+            {{ subBusy === 'sync' ? `Syncing… ${busyFor}s` : 'Auto-sync' }}</button>
+          <button class="btn-ghost btn-sm" :disabled="!!subBusy" title="Undo every saved change to this file" @click="restore">
+            {{ subBusy === 'restore' ? 'Restoring…' : 'Restore' }}</button>
         </template>
       </div>
 
@@ -145,6 +149,14 @@ const countdown = ref(0);
 const subId = ref('');
 const offset = ref(0);
 const subBusy = ref('');
+// Seconds the running subtitle action has taken, shown while Auto-sync works.
+const busyFor = ref(0);
+let busyTimer = null;
+watchRef(subBusy, (b) => {
+  clearInterval(busyTimer);
+  busyFor.value = 0;
+  if (b) busyTimer = setInterval(() => { busyFor.value++; }, 1000);
+});
 const audioTracks = ref([]);   // [{ idx, name }]
 const audioIdx = ref(0);
 // Something is attached to the video element. A conversion that stops partway
@@ -334,6 +346,7 @@ const originals = new WeakMap();
 
 function buildTracks() {
   const v = video.value;
+  ownChoiceUntil = Date.now() + 3000;
   for (const t of [...v.querySelectorAll('track')]) t.remove();
   for (const s of item.value.subtitles.filter(x => x.available)) {
     const el = document.createElement('track');
@@ -342,7 +355,11 @@ function buildTracks() {
     if (s.lang) el.srclang = s.lang;
     el.src = `${s.url}?v=${subVersion}`;
     el.dataset.id = s.id;
-    el.addEventListener('load', () => applyOffset());
+    el.addEventListener('load', () => {
+      // Loading a track is another moment the browser picks one by itself.
+      ownChoiceUntil = Math.max(ownChoiceUntil, Date.now() + 1000);
+      applyOffset();
+    });
     v.appendChild(el);
   }
   selectSub();
@@ -351,16 +368,27 @@ function buildTracks() {
 function selectSub() {
   const v = video.value;
   if (!v) return;
-  const mine = [...v.querySelectorAll('track')].find(el => el.dataset.id === subId.value)?.track || null;
-  // Every text track, not just ours: captions carried in the video stream, or
-  // one picked in the browser's own CC menu, would otherwise show as well.
-  for (const t of [...v.textTracks]) t.mode = t === mine ? 'showing' : 'disabled';
-  shownTrack = mine;
+  showOnly(trackFor(subId.value));
   offset.value = 0;
   applyOffset();
 }
 
 let shownTrack = null;
+// Until then, a track turning on is the browser's doing, not the viewer's.
+let ownChoiceUntil = 0;
+
+function trackFor(id) {
+  return [...(video.value?.querySelectorAll('track') || [])].find(el => el.dataset.id === id)?.track || null;
+}
+
+/** Every text track off but this one: captions in the video stream and the browser's CC menu included. */
+function showOnly(track) {
+  for (const t of [...(video.value?.textTracks || [])]) {
+    const mode = t === track ? 'showing' : 'disabled';
+    if (t.mode !== mode) t.mode = mode;
+  }
+  shownTrack = track;
+}
 
 /**
  * At most one subtitle track shows. A second can be turned on behind the
@@ -372,6 +400,13 @@ function onTextTracksChange() {
   const v = video.value;
   if (!v) return;
   const showing = [...v.textTracks].filter(t => t.mode === 'showing');
+  // Tracks just (re)built: the browser picks one by its own language
+  // preferences as they arrive. That isn't a choice — the menu's stands.
+  if (Date.now() < ownChoiceUntil) {
+    const mine = trackFor(subId.value);
+    if (showing.length !== (mine ? 1 : 0) || (mine && showing[0] !== mine)) showOnly(mine);
+    return;
+  }
   if (showing.length === 0) {
     shownTrack = null;
     if (subId.value) subId.value = '';
@@ -599,6 +634,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onHide);
   document.removeEventListener('click', onDocClick);
   video.value?.textTracks.removeEventListener('change', onTextTracksChange);
+  clearInterval(busyTimer);
   teardown();
 });
 watchRef(() => [props.kind, props.id], load);

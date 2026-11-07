@@ -70,6 +70,16 @@ app.use('/api/timeline', admin, require('./api/timeline'));
 app.use('/api/log',      admin, require('./api/log'));
 app.use('/api/library',  admin, require('./api/library'));
 
+// Every disk and service at a glance (Settings → Status).
+app.get('/api/health', admin, async (_req, res, next) => {
+  try { res.json(await require('./health').report()); } catch (err) { next(err); }
+});
+
+// Take a database backup now, from the status view.
+app.post('/api/health/backup', admin, (_req, res, next) => {
+  try { res.json(require('./backup').backupNow()); } catch (err) { next(err); }
+});
+
 app.get('/api/status', admin, async (_req, res) => {
   const { testConnection } = require('./transmission');
   res.json(await testConnection());
@@ -126,6 +136,7 @@ app.listen(PORT, HOST, () => {
     }
   };
   step('session cleanup', () => auth.sessions.prune());
+  step('database backups', () => require('./backup').start());
   // Encoding web versions is local work and never touches Transmission, so it
   // runs even with the scheduler switched off.
   step('web version worker', () => require('./media').startWorker());
@@ -134,4 +145,7 @@ app.listen(PORT, HOST, () => {
     return;
   }
   step('scheduler', () => require('./scheduler').start());
+  // After the scheduler kill switch above: pausing and resuming torrents is
+  // reaching Transmission too.
+  step('download disk guard', () => require('./diskguard').start());
 });

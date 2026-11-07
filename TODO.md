@@ -11,6 +11,12 @@ Last reviewed: 2026-11-05
 
 These shipped but can only be confirmed on the real box.
 
+- **Keep free for downloads.** Settings → Status should show the download disk's free space
+  as Transmission reports it (`free-space` RPC) within two minutes of starting. Is 30 GB right
+  for `/HDD0`? Below it, running downloads pause; check they resume on their own.
+- **Backups.** `backups/` next to the database should get its first copy a minute after start.
+  Put it on another disk with `BACKUP_PATH` if the database's disk is the one that fills.
+
 - **Create the admin account first.** The API is now locked until an account exists, so the
   first page load after the deploy is the setup screen. Then add viewer accounts in Settings.
 - **GPU encoding.** Uncomment the `devices`/`group_add` lines in `docker-compose.yml`, set
@@ -108,15 +114,10 @@ completions, and screening and file checks record their verdicts through
 `*.awaiting_approval`, `*.blocked`, `*.replaced`, `*.failed`. Works with the dashboard closed
 and needs no HTTPS — point it at ntfy, Gotify, Discord or Home Assistant.
 
-### 2. Quieter activity log
-**Why:** the log fills 1,000 rows in about twelve hours, almost all of it the same
-`no usable result for "Show" S02E07` repeated on every hourly run for episodes that have
-aired but have no release yet. That makes 30-day retention meaningless in practice — when
-investigating the Dark Matter `.exe`, its grab four days earlier had already scrolled out of
-reach behind the cap.
-
-**Shape:** log "no usable result" once when an episode first comes up empty and again only
-if that changes, or roll repeats into one line per run: `12 episodes still have no release`.
+### 2. ~~Quieter activity log~~ — done 2026-11-07
+The first empty search is logged; repeats are summed up in one line per run (`scheduler.js`,
+`nothingFound()`/`summariseEmpty()`). The memory of what is still empty is in-process, so a
+restart logs each one once more.
 
 ### 3. Tests
 **Why:** `selector.js`, `screen.js`, `pipeline.js`, `quarantine.js` and `postprocess.js` are

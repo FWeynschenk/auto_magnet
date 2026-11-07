@@ -177,6 +177,25 @@ async function setFilesUnwanted(id, indexes, target = null) {
   await rpc('torrent-set', { ids: [id], 'files-unwanted': indexes }, target);
 }
 
+/**
+ * Bytes free where Transmission would write to `dir`, as Transmission sees it
+ * — so it works for an instance on another machine too. null if it can't say.
+ */
+async function freeSpace(dir, target = null) {
+  const args = await rpc('free-space', { path: dir }, target);
+  const n = Number(args?.['size-bytes']);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Ids of torrents downloading or waiting to (Transmission status 3 and 4). */
+async function activeDownloads(target = null) {
+  const list = await listTorrents(['status', 'percentDone'], target);
+  return list.filter(t => (t.status === 3 || t.status === 4) && (t.percentDone ?? 0) < 1).map(t => t.id);
+}
+
+async function stopTorrents(ids, target = null)  { if (ids.length) await rpc('torrent-stop',  { ids }, target); }
+async function startTorrents(ids, target = null) { if (ids.length) await rpc('torrent-start', { ids }, target); }
+
 async function startTorrent(id, target = null) { await rpc('torrent-start',  { ids: [id] }, target); }
 async function stopTorrent(id, target = null)  { await rpc('torrent-stop',   { ids: [id] }, target); }
 async function purgeTorrent(id, target = null) { await rpc('torrent-remove', { ids: [id], 'delete-local-data': true }, target); }
@@ -531,7 +550,7 @@ function removeTorrent(id, targetName = null) {
 module.exports = {
   addTorrent, getTorrentProgress, testConnection, removeTorrent,
   getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent, setFilesUnwanted,
-  listTorrents, setTorrentLocation,
+  listTorrents, setTorrentLocation, freeSpace, activeDownloads, stopTorrents, startTorrents,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
   listTargets, resolveTarget, progressKey,
 };

@@ -685,3 +685,35 @@ Checking this turned up a bug in the one-track rule: when tracks are (re)built, 
 after a save, Chrome turns one on by its own language preferences, and "newest choice wins"
 followed it. The menu jumped to English after saving the Dutch file, and at load the default
 could flip. For 3 s after building, and 1 s after each track loads, the menu's choice now stands.
+
+## Implementation notes (2026-11-07): keeping the box healthy
+
+**Download disk guard** (`diskguard.js`). Every 2 minutes, per Transmission instance: the
+`free-space` RPC for each download folder (movies, shows), and the fullest counts. Below
+`download_min_free_gb` (30): grabbing for that instance stops (`runMovies` skips the item,
+`processShow` returns after syncing episodes, and the manual grab answers 409), and the running
+downloads (status 3/4, not complete) get `torrent-stop`. Their ids are kept in the
+`diskguard_paused` setting, so a restart resumes exactly those. It resumes at the reserve plus
+5 GB. It only runs when the scheduler does, since pausing is reaching Transmission too.
+
+**Status** (`health.js`, `GET /api/health`, Settings → Status). Disks (diskguard, `spaceStatus()`,
+`statfs` of the DB folder), services (Transmission `session-stats`, Prowlarr `/api/v1/health`,
+TMDB `/configuration`, the OpenSubtitles quota, the encoder), scheduler times (`runInfo()`), the
+queue and the backups. Every probe times out at 5 s, and they run in parallel.
+
+**Backups** (`backup.js`). `VACUUM INTO backups/auto_magnet-YYYY-MM-DD.db` when the newest is a day
+old (checked hourly, first a minute after start). It keeps 7, takes `BACKUP_PATH`, and
+`POST /api/health/backup` takes one now.
+
+**Quieter log.** The first empty search warns; then `searching()` stays silent for that item,
+and `summariseEmpty()` writes one line at the end of the run.
+
+**Windows test failures.** Git Bash's `mkfifo` makes an MSYS imitation that native ffmpeg reads
+as an empty file, so the "hanging" jobs ended at once. On Windows the tests now use a real named
+pipe (`\\.\pipe\…`, a `net` server that never writes). That surfaced one real Windows-only bug:
+`removeWebVersion` deleted the output folder while the just-killed ffmpeg still ran in it (its
+cwd), and that fails on Windows. The folder now goes once ffmpeg has exited.
+
+**Settings.** A dot on each tab with unsaved changes (the tab showing when a field changed), a
+note by Save, and a warning when leaving. **Find a setting** searches every label, hint and
+section heading, read from the form itself, then jumps to the tab, scrolls and focuses the field.

@@ -92,6 +92,11 @@ export const settings = {
   targets: ()     => req('GET',  '/settings/targets'),
 };
 
+export const health = {
+  report: ()  => req('GET',  '/health', null, { timeoutMs: 30_000 }),
+  backup: ()  => req('POST', '/health/backup', null, { timeoutMs: 120_000 }),
+};
+
 export const scheduler = {
   run: () => req('POST', '/scheduler/run'),
 };

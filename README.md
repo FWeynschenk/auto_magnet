@@ -490,6 +490,40 @@ The **Activity** page records every search, grab, rejection, screen verdict and 
 level and item-type filters. It is written to the database as well as stdout, so it survives a
 restart. Entries older than 30 days are pruned at the end of each scheduler run.
 
+A search that keeps coming up empty (an episode that aired but has no release yet) is logged
+once, the first time. After that it searches quietly, and each run ends with one line naming
+everything that still has nothing: *still no usable release for 3 item(s): "Silo" S03E04, …*.
+Finding something is logged as usual.
+
+## Status
+
+**Settings → Status** (the first tab) shows whether the box is well, refreshed every minute:
+
+- **Disks:** where Transmission downloads to (asked of Transmission itself, so an instance on
+  another machine works too), the web versions, and the database. Each shows free space, how
+  much is kept free, and whether anything is paused because of it.
+- **Services:** each Transmission instance, Prowlarr (with its own health warnings), TMDB,
+  OpenSubtitles (and whether today's downloads are used up), and the encoder.
+- **Work:** when the scheduler last ran and runs next, web versions being made and waiting, and
+  the last database backup, with **Back up now**.
+
+### Downloads never fill the disk
+
+**Settings → Library → Keep free for downloads** (30 GB by default). Every two minutes each
+Transmission instance is asked how much room is left where it downloads. Below the reserve,
+nothing new is grabbed for it (no searches either), and its running downloads are paused.
+Exactly those are remembered, across restarts, so torrents you paused yourself stay paused.
+Once there is 5 GB more than the reserve, they are started again and grabbing carries on. A
+hand-picked grab is refused meanwhile, with the reason. Items waiting for room are not marked
+failed. `0` turns it off.
+
+### Database backups
+
+Once a day the database is copied with `VACUUM INTO`: a consistent snapshot taken while the
+server runs, never a half-written file. The last 7 are kept in `backups/` next to the
+database, or in `BACKUP_PATH`. To restore one, stop the container and copy it over the database
+file.
+
 ---
 
 ## Watching

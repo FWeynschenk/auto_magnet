@@ -113,3 +113,6 @@ dist
 # Claude Code session files
 .claude/
 scratch/
+
+# Daily database copies (server/backup.js), beside a bare-metal database
+backups/

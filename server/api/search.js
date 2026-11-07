@@ -235,6 +235,9 @@ router.post('/grab', async (req, res) => {
       ? torrent.files
       : (knownFiles(target, torrent) || recallFiles(torrent));
 
+    if (require('../diskguard').isLow(txTarget)) {
+      return res.status(409).json({ error: 'The download disk is nearly full — downloads are paused until there is room (Settings → Library → Keep free for downloads)' });
+    }
     const result = await addTorrent(torrentUrl, downloadDir, {
       // A hand-picked row may well be a pack the user chose on purpose, so the
       // single-episode file-count rule must not second-guess them here.

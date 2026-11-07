@@ -64,11 +64,24 @@ const { tmpdir } = require('./helpers');
 
 const probe = JSON.stringify({ streams: [{ index: 0, codec_type: 'video', codec_name: 'hevc', height: 1080 }], format: {} });
 
-/** A media row whose "source" is a FIFO: ffmpeg opens it and waits, so the job runs until killed. */
+const pipes = [];
+test.after(() => { for (const p of pipes) p.close(); });
+
+/**
+ * A media row whose "source" is a FIFO: ffmpeg opens it and waits, so the job
+ * runs until killed. On Windows a real named pipe — Git Bash's `mkfifo` makes
+ * an imitation that a native ffmpeg reads as an empty file and gives up on.
+ */
 function hangingJob(id, plan = 'transcode') {
-  const dir = tmpdir();
-  const fifo = path.join(dir, `src-${id}.mkv`);
-  execFileSync('mkfifo', [fifo]);
+  let fifo;
+  if (process.platform === 'win32') {
+    const B = '\\';
+    fifo = `${B}${B}.${B}pipe${B}amagnet-test-${process.pid}-${id}`;
+    pipes.push(require('net').createServer(() => {}).listen(fifo));
+  } else {
+    fifo = path.join(tmpdir(), `src-${id}.mkv`);
+    execFileSync('mkfifo', [fifo]);
+  }
   media.rows.upsert('movie', id, { path: fifo, size: 1e9, duration: 3600, plan, plan_reason: 'HEVC video', probe });
   return fifo;
 }

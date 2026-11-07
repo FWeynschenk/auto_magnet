@@ -509,8 +509,16 @@ function removeWebVersion(kind, id) {
   forgetSize(kind, id);
   const job = running.get(jobKey(kind, id));
   if (job) { job.cancelled = true; job.proc?.kill('SIGKILL'); }
-  fs.rmSync(webDir(kind, id), { recursive: true, force: true });
-  fs.rmSync(subsDir(kind, id), { recursive: true, force: true });
+  for (const dir of [webDir(kind, id), subsDir(kind, id)]) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      // Windows: a folder can't go while a process still runs in it, and the
+      // ffmpeg just killed runs in its output folder until it has exited.
+      if (!job?.proc || job.proc.exitCode !== null) throw err;
+      job.proc.once('close', () => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }, () => {}));
+    }
+  }
 }
 
 /**

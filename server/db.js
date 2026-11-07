@@ -303,6 +303,9 @@ const defaultSettings = {
   // (GB), so they can never fill it — a full disk takes the database down too.
   // 0 turns the check off.
   web_min_free_gb:           '20',
+  // Below this much free where Transmission downloads to (GB), nothing new is
+  // grabbed and running downloads pause until there is room. 0 turns it off.
+  download_min_free_gb:      '30',
   // On top of that, room background work leaves for what someone presses play
   // on: preparing ahead stops here, so a conversion asked for now has space.
   web_reserve_gb:            '50',

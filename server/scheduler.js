@@ -9,6 +9,41 @@ const { postProcessCompleted } = require('./postprocess');
 const { sweepSeeded } = require('./cleanup');
 const { showDir } = require('./paths');
 const log = require('./log');
+const diskguard = require('./diskguard');
+
+// ─── Searches that keep coming up empty ──────────────────────────────────────
+//
+// An episode that has aired but has no release yet is searched for every run,
+// and used to log two lines each time: "searching for…", "no usable result…".
+// That filled the log's 1,000 rows in half a day and pushed everything worth
+// reading out of reach. Now the first empty search is logged as before; after
+// that the item searches quietly, and each run ends with one line naming what
+// still has nothing. Finding something logs as usual.
+
+const stillEmpty = new Map();   // 'movie:12' → { label, since, runs }
+let emptyThisRun = [];
+
+/** Log the search, unless this item is one that keeps coming up empty. */
+function searching(key, message, entity) {
+  if (!stillEmpty.has(key)) log.info(message, entity);
+}
+
+function nothingFound(key, label, entity) {
+  emptyThisRun.push(label);
+  const known = stillEmpty.get(key);
+  if (known) { known.runs++; return; }
+  stillEmpty.set(key, { label, since: new Date().toISOString(), runs: 1 });
+  log.warn(`no usable result for ${label} — searching again each run; repeats are summed up at the end of a run`, entity);
+}
+
+function found(key) { stillEmpty.delete(key); }
+
+function summariseEmpty() {
+  if (!emptyThisRun.length) return;
+  const names = [...new Set(emptyThisRun)];
+  const shown = names.slice(0, 6).join(', ');
+  log.info(`still no usable release for ${names.length} item(s): ${shown}${names.length > 6 ? `, and ${names.length - 6} more` : ''}`);
+}
 
 // --- Constants ---
 
@@ -250,8 +285,12 @@ async function syncDownloading() {
 // --- Movies ---
 
 async function runMovies(deadline) {
+  let held = 0;
   for (const movie of movies.pending()) {
     if (Date.now() > deadline) { log.warn('run deadline reached — deferring the remaining movies'); return; }
+    // Download disk nearly full: not even a search, which would only find
+    // something it can't add. (Not a failure — it carries on with room.)
+    if (diskguard.isLow(movie.transmission_target)) { held++; continue; }
     try {
       await processMovie(movie);
     } catch (err) {
@@ -259,6 +298,7 @@ async function runMovies(deadline) {
       movies.update(movie.id, { status: 'failed', last_error: err.message });
     }
   }
+  if (held) log.info(`${held} movie(s) wait for room on the download disk`);
 }
 
 function parseList(json) {
@@ -293,13 +333,15 @@ async function processMovie(movie) {
     return;
   }
 
-  log.info(`searching for "${movie.title}" (${movie.year || '?'})`, { type: 'movie', id: movie.id });
+  const key = `movie:${movie.id}`;
+  searching(key, `searching for "${movie.title}" (${movie.year || '?'})`, { type: 'movie', id: movie.id });
   const { accepted } = await findCandidates({ ...search, limit: 1 });
   const winner = accepted[0];
   if (!winner) {
-    log.warn(`no usable result for "${movie.title}"`, { type: 'movie', id: movie.id });
+    nothingFound(key, `"${movie.title}"`, { type: 'movie', id: movie.id });
     return;
   }
+  found(key);
 
   const torrentUrl = winner.magnet;
   let result;
@@ -391,6 +433,9 @@ async function processShow(show, deadline = Infinity) {
     await cacheManualPreview(current);
     return;
   }
+
+  // Episodes stay in sync above; grabbing waits for room on the download disk.
+  if (diskguard.isLow(current.transmission_target)) return;
 
   let grabbed = 0;
 
@@ -649,13 +694,15 @@ async function grabSeasonPacks(show, deadline = Infinity) {
 async function grabEpisode(show, ep) {
   const label = epLabel(ep.season, ep.episode);
 
-  log.info(`searching for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
+  const key = `episode:${ep.id}`;
+  searching(key, `searching for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
   const { accepted } = await findCandidates({ ...episodeSearch(show, ep), limit: 1 });
   const winner = accepted[0];
   if (!winner) {
-    log.warn(`no usable result for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
+    nothingFound(key, `"${show.title}" ${label}`, { type: 'episode', id: ep.id });
     return false;
   }
+  found(key);
 
   const torrentUrl  = winner.magnet;
   const downloadDir = showDir(show);
@@ -697,10 +744,19 @@ async function grabEpisode(show, ep) {
 
 let _running = false;
 
+// When it last ran and runs next, for the status view.
+const _info = { lastStartedAt: null, lastFinishedAt: null, lastSecs: null, nextAt: null };
+
+function runInfo() {
+  return { ...(_info), running: _running, disabled: process.env.AMAGNET_NO_SCHEDULER === '1' };
+}
+
 async function run() {
   if (_running) { console.log('[scheduler] already running, skipping'); return; }
   _running = true;
   const startedAt = Date.now();
+  _info.lastStartedAt = new Date(startedAt).toISOString();
+  emptyThisRun = [];
   const deadline  = startedAt + RUN_DEADLINE_MINUTES * 60 * 1000;
   log.info('run started');
   try {
@@ -719,7 +775,10 @@ async function run() {
   } finally {
     _running = false;
   }
-  log.info(`run complete in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+  summariseEmpty();
+  _info.lastFinishedAt = new Date().toISOString();
+  _info.lastSecs = Math.round((Date.now() - startedAt) / 1000);
+  log.info(`run complete in ${_info.lastSecs}s`);
   log.prune();
 }
 
@@ -727,6 +786,7 @@ let _scheduleTimer = null;
 
 function scheduleNext() {
   const mins = Math.max(5, parseInt(settings.get('scheduler_interval_mins') || '60'));
+  _info.nextAt = new Date(Date.now() + mins * 60 * 1000).toISOString();
   _scheduleTimer = setTimeout(async () => {
     await run().catch(err => console.error('[scheduler] run error:', err.message));
     scheduleNext();
@@ -739,6 +799,6 @@ function start() {
 }
 
 module.exports = {
-  start, run, hasAired, effectivelyAired,
+  start, run, runInfo, hasAired, effectivelyAired,
   syncEpisodes, syncShowMeta, makeSeasonFetcher,
 };

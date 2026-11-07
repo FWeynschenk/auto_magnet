@@ -8,16 +8,32 @@
       </span>
     </div>
 
-    <nav class="tabs" role="tablist" aria-label="Settings sections">
-      <button v-for="t in TABS" :key="t.id" type="button" role="tab" class="tab"
-        :class="{ active: tab === t.id }" :aria-selected="tab === t.id" @click="setTab(t.id)">{{ t.label }}</button>
-    </nav>
+    <div class="tabbar">
+      <nav class="tabs" role="tablist" aria-label="Settings sections">
+        <button v-for="t in TABS" :key="t.id" type="button" role="tab" class="tab"
+          :class="{ active: tab === t.id }" :aria-selected="tab === t.id" @click="setTab(t.id)">
+          {{ t.label }}<span v-if="dirty.has(t.id)" class="dirty-dot" title="Unsaved changes" />
+        </button>
+      </nav>
+      <div class="find">
+        <input v-model="query" type="search" placeholder="Find a setting…" aria-label="Find a setting"
+          @keydown.enter.prevent="hits[0] && go(hits[0])" @keydown.esc="query = ''" />
+        <div v-if="query.trim()" class="hits" role="listbox">
+          <button v-for="h in hits" :key="h.key" type="button" class="hit" @click="go(h)">
+            {{ h.text }}<span class="muted"> — {{ tabLabel(h.tab) }}{{ h.section && h.section !== h.text ? ` · ${h.section}` : '' }}</span>
+          </button>
+          <div v-if="!hits.length" class="hit none">Nothing matches “{{ query.trim() }}”</div>
+        </div>
+      </div>
+    </div>
 
-    <div v-if="loading" class="state-msg">Loading…</div>
+    <StatusPanel v-if="tab === 'status'" />
 
-    <form v-else @submit.prevent="save" class="settings-form">
+    <div v-if="loading && tab !== 'status'" class="state-msg">Loading…</div>
 
-      <section v-show="tab === 'transmission'">
+    <form v-else v-show="tab !== 'status'" ref="formEl" @submit.prevent="save" @input="touch" @change="touch" class="settings-form">
+
+      <section v-show="tab === 'transmission'" data-tab="transmission">
         <h2>Transmission</h2>
         <div class="fields">
           <label>Host
@@ -35,7 +51,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'transmission'">
+      <section v-show="tab === 'transmission'" data-tab="transmission">
         <h2>Extra Transmission instances</h2>
         <p class="section-note">
           Optional. Give each one a name, then pick it per movie or show with “Download to”.
@@ -60,7 +76,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'library'">
+      <section v-show="tab === 'library'" data-tab="library">
         <h2>Download Paths</h2>
         <div class="fields">
           <label>Movies directory
@@ -69,10 +85,14 @@
           <label>Shows directory
             <input v-model="form.shows_path" type="text" placeholder="/HDD0/Shared/Series" />
           </label>
+          <label>Keep free for downloads (GB)
+            <span class="hint">below this, downloads pause and nothing new is grabbed; 0 = off</span>
+            <input v-model.number="form.download_min_free_gb" type="number" min="0" step="5" />
+          </label>
         </div>
       </section>
 
-      <section v-show="tab === 'search'">
+      <section v-show="tab === 'search'" data-tab="search">
         <h2>Prowlarr</h2>
         <div class="fields">
           <label>Host
@@ -87,7 +107,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'search'">
+      <section v-show="tab === 'search'" data-tab="search">
         <h2>TMDB</h2>
         <div class="fields">
           <label>API Key
@@ -99,7 +119,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'transmission'">
+      <section v-show="tab === 'transmission'" data-tab="transmission">
         <h2>Scheduler</h2>
         <div class="fields">
           <label>Check interval (minutes) <span class="hint">min 5</span>
@@ -111,7 +131,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'search'">
+      <section v-show="tab === 'search'" data-tab="search">
         <h2>Search</h2>
         <div class="fields">
           <label>Minimum seeders
@@ -157,7 +177,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'library'">
+      <section v-show="tab === 'library'" data-tab="library">
         <h2>After a download finishes</h2>
         <p class="section-note">
           The finished file is opened and its streams checked: a file with no video, no audio,
@@ -204,7 +224,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'search'">
+      <section v-show="tab === 'search'" data-tab="search">
         <h2>Safety</h2>
         <p class="section-note">
           Releases are checked against their real file list before anything downloads.
@@ -226,7 +246,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'library'">
+      <section v-show="tab === 'library'" data-tab="library">
         <h2>Show folders</h2>
         <p class="section-note">
           Shows are saved in a folder named after the show, made safe for Windows — a colon
@@ -283,7 +303,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'playback'">
+      <section v-show="tab === 'playback'" data-tab="playback">
         <h2>Playback</h2>
         <p class="section-note">
           Files a browser can't play are repackaged (MKV, AC-3/DTS audio — fast, video untouched) or
@@ -347,7 +367,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'accounts'">
+      <section v-show="tab === 'accounts'" data-tab="accounts">
         <h2>API token</h2>
         <div class="fields">
           <label class="span2">Token <span class="hint">only for scripts — the server's AMAGNET_TOKEN. Signing in replaces it in the browser.</span>
@@ -356,7 +376,7 @@
         </div>
       </section>
 
-      <section v-show="tab === 'accounts'">
+      <section v-show="tab === 'accounts'" data-tab="accounts">
         <h2>Notifications</h2>
         <div class="notif-row">
           <div>
@@ -379,6 +399,7 @@
         <button type="submit" class="btn-primary" :disabled="saving">
           {{ saving ? 'Saving…' : 'Save Settings' }}
         </button>
+        <span v-if="dirty.size" class="unsaved">Unsaved changes in {{ [...dirty].map(tabLabel).join(', ') }}</span>
       </div>
     </form>
 
@@ -401,11 +422,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { settings as api, scheduler, library, getToken, setToken } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
 import PlaybackPanel from '../components/PlaybackPanel.vue';
+import StatusPanel from '../components/StatusPanel.vue';
 import UsersPanel from '../components/UsersPanel.vue';
 
 const apiToken = ref(getToken());
@@ -437,6 +459,7 @@ const status    = ref(null);   // null while Transmission is being asked
 // One section at a time: the page had grown to a long scroll. The tab is in
 // the address (?tab=…), so a reload or a shared link opens the same one.
 const TABS = [
+  { id: 'status',       label: 'Status' },
   { id: 'transmission', label: 'Transmission' },
   { id: 'library',      label: 'Library' },
   { id: 'search',       label: 'Searching' },
@@ -445,8 +468,62 @@ const TABS = [
 ];
 const route  = useRoute();
 const router = useRouter();
-const tab = computed(() => (TABS.some(t => t.id === route.query.tab) ? route.query.tab : 'transmission'));
-function setTab(id) { router.replace({ query: { ...route.query, tab: id } }); }
+const tab = computed(() => (TABS.some(t => t.id === route.query.tab) ? route.query.tab : 'status'));
+function setTab(id) { return router.replace({ query: { ...route.query, tab: id } }); }
+const tabLabel = (id) => TABS.find(t => t.id === id)?.label || id;
+
+// ─── Unsaved changes ─────────────────────────────────────────────────────────
+// One Save covers every tab, so a change made on one tab and forgotten there
+// would otherwise be lost silently — or saved by surprise from another tab.
+// The tab that was showing when a field changed is marked until saved.
+const dirty = ref(new Set());
+function touch(e) {
+  if (e?.target?.closest?.('.find')) return;
+  if (!dirty.value.has(tab.value)) dirty.value = new Set([...dirty.value, tab.value]);
+}
+const leaveMessage = 'There are unsaved settings. Leave without saving them?';
+function onBeforeUnload(e) { if (dirty.value.size) { e.preventDefault(); e.returnValue = leaveMessage; } }
+onBeforeRouteLeave(() => (dirty.value.size ? window.confirm(leaveMessage) : true));
+onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload));
+
+// ─── Finding a setting ───────────────────────────────────────────────────────
+// Read from the form itself — every label and section heading — so a new
+// setting is findable without being listed anywhere.
+const formEl = ref(null);
+const query = ref('');
+let index = [];
+function buildIndex() {
+  index = [];
+  for (const sec of formEl.value?.querySelectorAll('section[data-tab]') || []) {
+    const section = sec.querySelector('h2')?.textContent.trim() || '';
+    index.push({ key: `${sec.dataset.tab}:${section}`, text: section, section, tab: sec.dataset.tab, el: sec });
+    sec.querySelectorAll('label').forEach((label, i) => {
+      // The label's own words: not the hint under it, nor an option list.
+      const own = [...label.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').replace(/\s+/g, ' ').trim();
+      const hint = label.querySelector('.hint')?.textContent.trim() || '';
+      if (own) index.push({ key: `${sec.dataset.tab}:${section}:${i}`, text: own, hint, section, tab: sec.dataset.tab, el: label });
+    });
+  }
+  for (const t of TABS) index.push({ key: `tab:${t.id}`, text: t.label, section: '', tab: t.id, el: null });
+}
+const hits = computed(() => {
+  const words = query.value.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return index
+    .filter(h => words.every(w => `${h.text} ${h.hint || ''} ${h.section}`.toLowerCase().includes(w)))
+    .slice(0, 8);
+});
+async function go(h) {
+  query.value = '';
+  await setTab(h.tab);   // the tab shows once the route has changed, not before
+  await nextTick();
+  if (!h.el) return;
+  h.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  h.el.classList.add('flash');
+  setTimeout(() => h.el.classList.remove('flash'), 1600);
+  h.el.querySelector('input, select, textarea')?.focus({ preventScroll: true });
+}
+watch(formEl, (el) => { if (el) nextTick(buildIndex); });
 const running   = ref(false);
 const runMsg    = ref('');
 
@@ -519,6 +596,7 @@ onMounted(async () => {
     // without waiting for it.
     api.status().then((s) => { status.value = s; }, () => { status.value = { connected: false }; });
     form.value = await api.get();
+    window.addEventListener('beforeunload', onBeforeUnload);
     try {
       const parsed = JSON.parse(form.value.transmission_extra || '[]');
       instances.value = Array.isArray(parsed) ? parsed : [];
@@ -559,6 +637,7 @@ async function save() {
     };
     await api.save(payload);
     saved.value   = true;
+    dirty.value   = new Set();
     api.status().then((s) => { status.value = s; }, () => {});
     setTimeout(() => { saved.value = false; }, 3000);
   } catch (err) {
@@ -655,6 +734,37 @@ input:focus, select:focus { border-color: var(--accent); }
 .error-msg { color: var(--red);   font-size: 13px; }
 
 /* Always in reach, whichever tab and however far down. */
+.unsaved { margin-left: 12px; font-size: 12px; color: var(--yellow); }
+.dirty-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--yellow); margin-left: 6px; vertical-align: middle;
+}
+.tabbar { display: flex; align-items: flex-end; gap: 8px; max-width: 720px; margin: -8px 0 24px; border-bottom: 1px solid var(--border); }
+.tabbar .tabs { margin: 0; border-bottom: none; flex: 1; min-width: 0; }
+.find { position: relative; padding-bottom: 6px; flex: none; }
+.find input {
+  width: 150px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); padding: 5px 8px; font-size: 12px; outline: none;
+}
+.find input:focus { border-color: var(--accent); }
+.hits {
+  position: absolute; right: 0; top: calc(100% - 2px); z-index: 5; width: 320px; max-width: 80vw;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35); padding: 4px;
+}
+.hit {
+  display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text);
+  font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 4px; cursor: pointer;
+}
+.hit:hover { background: var(--border); }
+.hit .muted { color: var(--muted); font-size: 12px; }
+.hit.none { color: var(--muted); cursor: default; }
+:deep(.flash) { animation: flash 1.6s ease-out; border-radius: 4px; }
+@keyframes flash { 0%, 40% { background: color-mix(in srgb, var(--accent) 25%, transparent); } 100% { background: transparent; } }
+@media (max-width: 640px) {
+  .tabbar { flex-direction: column-reverse; align-items: stretch; }
+  .find input { width: 100%; }
+}
 .form-footer {
   position: sticky; bottom: 0; z-index: 2;
   padding: 10px 0; background: var(--bg);
@@ -670,7 +780,7 @@ input:focus, select:focus { border-color: var(--accent); }
 .tab {
   background: none; border: none; border-bottom: 2px solid transparent;
   color: var(--muted); font: inherit; font-size: 13px; font-weight: 500;
-  padding: 8px 12px; margin-bottom: -1px; cursor: pointer; white-space: nowrap;
+  padding: 8px 10px; margin-bottom: -1px; cursor: pointer; white-space: nowrap;
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }

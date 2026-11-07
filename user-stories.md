@@ -647,3 +647,31 @@ since `WEB_ROOT` is only created when the worker starts.
 errors (ENOSPC, SQLITE_FULL) are logged plainly at most once a minute and the server keeps going.
 Other uncaught exceptions still exit, and unhandled rejections from background work are logged.
 Startup steps run one by one, so one failing doesn't skip the rest.
+
+## Implementation notes (2026-11-07): subtitles twice, subtitles drifting, Settings
+
+**Lines twice.** Two causes, both fixed. In the web player, `selectSub()` only touched the `<track>`
+elements it made; a track turned on from the browser's CC menu, or one hls.js added for CEA-608
+captions in the video stream, showed as well. Now every text track is set, a `textTracks` `change`
+listener keeps at most one showing (the newest choice wins, and the menu follows), and hls.js
+runs with `enableCEA708Captions: false`. Separately, ASS subtitles draw many lines on two layers;
+`subtitle-text.dedupe()` merges overlapping cues with the same text. It's applied to SRT and to
+ffmpeg's ASS/embedded conversions, and the converter version is now 3, so cached VTTs are made
+again.
+
+**Drift.** `subsync.refine()` runs after the global shift-and-stretch. 90-second windows (six or
+more lines each) are each correlated against the speech within ±8 s; a window needs z ≥ 3, and
+a window disagreeing with both neighbours is replaced by the median. Each gap between windows is a
+ramp (a speed difference) or a step at the best split line (a cut), whichever covers more speech
+— prefix sums make every split cheap. The ends extend the neighbouring gap. It's kept only when
+total agreement improves by 2% or more. Tested on synthetic audio: a 2.5 s cut half way through
+puts 100% of lines within 200 ms, and a 0.34% speed drift (not a frame rate) 94%.
+
+**Settings.** The page waited on `/api/settings/status` (Transmission, up to 5 s per instance)
+before showing anything. The Watch library panel's status stat-walked every segment file under
+`WEB_ROOT`, twice, synchronously, blocking the whole server, and again every 5 s while the queue
+ran. Now the form shows at once and Transmission's status follows. `webUsage()` counts
+asynchronously, once for both numbers, and caches finished web versions (they don't change)
+until they are removed or rebuilt. The subtitle cache is recounted every 10 minutes. The page
+is in five tabs (Transmission, Library, Searching, Playback, Accounts) kept in `?tab=`. The
+Watch library and Accounts panels only load on their tab, and Save sticks to the bottom.

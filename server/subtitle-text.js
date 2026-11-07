@@ -139,6 +139,30 @@ function toVtt(cues) {
     `${formatTime(c.start, '.')} --> ${formatTime(c.end, '.')}${v.settings ? ` ${v.settings}` : ''}\n${v.text}\n`).join('\n');
 }
 
+/**
+ * One cue where a file has the same line twice at once. ASS subtitles often
+ * draw each line on two layers (one for the outline or shadow), and a release
+ * can stack the same dialogue in two styles; converted, both show, one above
+ * the other. Overlapping cues with the same text become one, spanning both.
+ */
+function dedupe(cues) {
+  const key = (t) => String(t).replace(/\{[^}]*\}|<[^>]*>/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const out = [];
+  const open = new Map();   // text → the last cue kept with it
+  for (const c of [...cues].sort((a, b) => a.start - b.start)) {
+    const k = key(c.text);
+    const prev = open.get(k);
+    if (prev && c.start < prev.end) {
+      prev.end = Math.max(prev.end, c.end);
+      continue;
+    }
+    const kept = { ...c };
+    out.push(kept);
+    open.set(k, kept);
+  }
+  return out;
+}
+
 /** t → t·ratio + offset, for every cue. Cues pushed before zero are dropped. */
 function transform(cues, { offsetMs = 0, ratio = 1 } = {}) {
   return cues
@@ -160,4 +184,4 @@ function decode(buf) {
   }
 }
 
-module.exports = { parse, toSrt, toVtt, vttCue, transform, parseTime, formatTime, decode };
+module.exports = { parse, toSrt, toVtt, vttCue, transform, dedupe, parseTime, formatTime, decode };

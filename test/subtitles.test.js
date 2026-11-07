@@ -127,3 +127,71 @@ test('sync refuses to guess when the subtitles match nothing in the audio', { sk
   const res = await sync.syncFile(path.join(dir, 'a.wav'), path.join(dir, 'a.srt'));
   assert.equal(res.applied, false);
 });
+
+// ─── Drift a single shift and stretch can't fix ──────────────────────────────
+
+/** Like fixture(), but longer, and the file on disk is wrong by `wrongAt(t)` ms at time t. */
+function driftFixture(dir, wrongAt, seconds = 900) {
+  const r = rng(29);
+  const cues = [];
+  for (let t = 5000; t < (seconds - 10) * 1000;) {
+    const len = 800 + r() * 3000;
+    cues.push({ start: t, end: t + len, text: `line ${cues.length}` });
+    t += len + 300 + r() * 4000;
+  }
+  const sr = 8000;
+  const on = new Uint8Array(seconds * sr);
+  for (const c of cues) on.fill(1, Math.floor(c.start / 1000 * sr), Math.min(on.length, Math.floor(c.end / 1000 * sr)));
+  writeWav(path.join(dir, 'a.wav'), seconds, sr, (i) => (r() - 0.5) * 0.05 + (on[i] ? 0.3 * Math.sin(i * 2 * Math.PI * 500 / sr) : 0));
+  fs.writeFileSync(path.join(dir, 'a.srt'), st.toSrt(cues.map(c => ({ ...c, start: c.start - wrongAt(c.start), end: c.end - wrongAt(c.start) }))));
+  return cues;
+}
+
+/** Share of lines within `ms` of the speech after syncing. */
+function within(dir, truth, ms) {
+  const fixed = st.parse(fs.readFileSync(path.join(dir, 'a.srt'), 'utf8'));
+  const byText = new Map(fixed.map(c => [c.text, c]));
+  return truth.filter(c => byText.has(c.text) && Math.abs(byText.get(c.text).start - c.start) <= ms).length / truth.length;
+}
+
+for (const [name, wrongAt] of [
+  // The subtitles' release had 2.5 s more before the second half (an ad break, a longer scene).
+  ['a cut that differs half way through', (t) => (t > 450_000 ? -2500 : 0) + 1200],
+  // A speed difference that isn't one of the usual frame rates: 3 s out by the end.
+  ['a drift that is no common frame rate', (t) => 800 + t * 0.0034],
+]) {
+  test(`sync fine-tunes ${name}`, { skip: !hasFfmpeg && 'ffmpeg not installed' }, async () => {
+    const dir = tmpdir();
+    const truth = driftFixture(dir, wrongAt);
+    const r = await sync.syncFile(path.join(dir, 'a.wav'), path.join(dir, 'a.srt'));
+    assert.equal(r.applied, true, r.reason);
+    assert.equal(r.refined, true, 'needed more than one shift and stretch');
+    const share = within(dir, truth, 200);
+    assert.ok(share >= 0.9, `${Math.round(share * 100)}% of lines within 200 ms`);
+    assert.match(sync.describe(r), /fine-tuned in \d+ stretches/);
+  });
+}
+
+test('fine-tuning leaves a plain shift as it was', { skip: !hasFfmpeg && 'ffmpeg not installed' }, async () => {
+  const dir = tmpdir();
+  const truth = driftFixture(dir, () => 3100, 600);
+  const r = await sync.syncFile(path.join(dir, 'a.wav'), path.join(dir, 'a.srt'));
+  assert.equal(r.applied, true);
+  assert.equal(r.refined, false, 'one shift was all it took');
+  assert.equal(within(dir, truth, 20), 1);
+});
+
+test('duplicate lines drawn at once become one', () => {
+  const cues = [
+    { start: 1000, end: 3000, text: '{\bord3}Where were you?' },
+    { start: 1000, end: 3000, text: 'Where were you?' },
+    { start: 2500, end: 4000, text: 'where  were you?' },
+    { start: 5000, end: 6000, text: 'Where were you?' },   // said again, later: kept
+    { start: 1500, end: 2000, text: 'Something else' },
+  ];
+  assert.deepEqual(st.dedupe(cues).map(c => [c.start, c.end, c.text]), [
+    [1000, 4000, '{\bord3}Where were you?'],
+    [1500, 2000, 'Something else'],
+    [5000, 6000, 'Where were you?'],
+  ]);
+});

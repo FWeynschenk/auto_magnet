@@ -506,6 +506,7 @@ const webDir  = (kind, id) => path.join(WEB_ROOT, `${kind}-${id}`);
 const subsDir = (kind, id) => path.join(WEB_ROOT, 'subs', `${kind}-${id}`);
 
 function removeWebVersion(kind, id) {
+  forgetSize(kind, id);
   const job = running.get(jobKey(kind, id));
   if (job) { job.cancelled = true; job.proc?.kill('SIGKILL'); }
   fs.rmSync(webDir(kind, id), { recursive: true, force: true });
@@ -928,6 +929,7 @@ async function encode(job, opts = {}) {
   const entry = running.get(jobKey(kind, id)) || { demand: !!opts.demand };
   const stillWanted = () => !entry.cancelled && rows.get(kind, id)?.web_state === 'encoding';
   const outDir = webDir(kind, id);
+  forgetSize(kind, id);
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -1136,36 +1138,76 @@ function dirBytes(dir) {
   return total;
 }
 
+// ─── How much the web versions take ──────────────────────────────────────────
+//
+// Counting means a stat for every 6-second segment: tens of thousands of files
+// on a spinning disk. Done synchronously on every Settings visit (and every
+// 5 s while the queue ran) it held up every other request. Now it is done
+// without blocking, and a finished web version — which no longer changes — is
+// counted once.
+
+const sizeCache = new Map();   // web version folder name → bytes, once finished
+let subsSize = { bytes: 0, at: 0 };
+const SUBS_SIZE_TTL_MS = 10 * 60_000;
+let usageInFlight = null;
+
+function forgetSize(kind, id) { sizeCache.delete(`${kind}-${id}`); }
+
+/** Bytes under a folder (0 if it doesn't exist), without holding up the server. */
+async function dirBytesAsync(dir) {
+  let total = 0;
+  let ents;
+  try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return 0; }
+  for (const e of ents) {
+    const f = path.join(dir, e.name);
+    if (e.isDirectory()) total += await dirBytesAsync(f);
+    else try { total += (await fs.promises.stat(f)).size; } catch (_) {}
+  }
+  return total;
+}
+
+/** `{ total, largest }`: all web versions' bytes, and the biggest ones for freeing space by hand. */
+function webUsage(limit = 15) {
+  usageInFlight ??= (async () => {
+    let names = [];
+    try { names = await fs.promises.readdir(WEB_ROOT); } catch (_) {}
+    const per = [];
+    let total = 0;
+    for (const n of names) {
+      const full = path.join(WEB_ROOT, n);
+      const m = /^(movie|episode)-(\d+)$/.exec(n);
+      if (!m) {
+        if (n === 'subs') {
+          if (Date.now() - subsSize.at > SUBS_SIZE_TTL_MS) subsSize = { bytes: await dirBytesAsync(full), at: Date.now() };
+          total += subsSize.bytes;
+        } else {
+          try { total += (await fs.promises.stat(full)).size; } catch (_) {}
+        }
+        continue;
+      }
+      const row = rows.get(m[1], Number(m[2]));
+      const settled = !row || !['queued', 'encoding'].includes(row.web_state);
+      let bytes = settled ? sizeCache.get(n) : undefined;
+      if (bytes === undefined) {
+        bytes = await dirBytesAsync(full);
+        if (settled) sizeCache.set(n, bytes);
+      }
+      total += bytes;
+      per.push({ kind: m[1], id: Number(m[2]), bytes, state: row?.web_state || null, onlyCopy: !!row?.original_removed_at });
+    }
+    return { total, all: per.sort((a, b) => b.bytes - a.bytes) };
+  })().finally(() => { usageInFlight = null; });
+  return usageInFlight.then(u => ({ total: u.total, largest: u.all.slice(0, limit) }));
+}
+
 /** The biggest web versions, for freeing space by hand. */
-function largestWebVersions(limit = 15) {
-  let names = [];
-  try { names = fs.readdirSync(WEB_ROOT); } catch (_) {}
-  return names
-    .map(n => /^(movie|episode)-(\d+)$/.exec(n))
-    .filter(Boolean)
-    .map(([n, kind, id]) => ({ kind, id: Number(id), bytes: dirBytes(path.join(WEB_ROOT, n)) }))
-    .sort((a, b) => b.bytes - a.bytes)
-    .slice(0, limit)
-    .map(w => {
-      const row = rows.get(w.kind, w.id);
-      return { ...w, state: row?.web_state || null, onlyCopy: !!row?.original_removed_at };
-    });
+async function largestWebVersions(limit = 15) {
+  return (await webUsage(limit)).largest;
 }
 
 /** Total bytes in the web-version folder. */
-function cacheSize() {
-  let total = 0;
-  const go = (d) => {
-    let ents;
-    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return; }
-    for (const e of ents) {
-      const f = path.join(d, e.name);
-      if (e.isDirectory()) go(f);
-      else try { total += fs.statSync(f).size; } catch (_) {}
-    }
-  };
-  go(WEB_ROOT);
-  return total;
+async function cacheSize() {
+  return (await webUsage()).total;
 }
 
 /**
@@ -1338,8 +1380,9 @@ function listSubtitles(media) {
 }
 
 // Bump when the conversion itself changes, so cached results made by the old
-// one are redone (2: ASS tags such as {\an8} translated instead of shown).
-const VTT_CONVERTER = 2;
+// one are redone (2: ASS tags such as {\an8} translated instead of shown;
+// 3: a line drawn twice at once — ASS layers — shown once).
+const VTT_CONVERTER = 3;
 
 /** Path of a WebVTT version of one subtitle, converting (and caching) it. */
 async function vttFor(media, subId) {
@@ -1369,7 +1412,7 @@ async function vttFor(media, subId) {
   const tmp = `${out}.${process.pid}.tmp`;
   if (sub.source === 'file' && ['srt', 'vtt'].includes(sub.format)) {
     const cues = subText.parse(subText.decode(fs.readFileSync(sub.file)));
-    fs.writeFileSync(tmp, subText.toVtt(cues));
+    fs.writeFileSync(tmp, subText.toVtt(subText.dedupe(cues)));
   } else {
     const input = sub.source === 'file' ? sub.file : media.path;
     const map = sub.source === 'file' ? '0:s:0' : `0:${sub.stream}`;
@@ -1380,6 +1423,10 @@ async function vttFor(media, subId) {
         ? reject(new Error(`subtitle conversion failed: ${String(stderr || err.message).trim().split('\n').pop()}`))
         : resolve()));
     });
+    // ASS (embedded or a file) draws many lines twice, on two layers; ffmpeg
+    // converts both. One of each, through the same cue writer as SRT.
+    const cues = subText.parse(fs.readFileSync(tmp, 'utf8'));
+    if (cues.length) fs.writeFileSync(tmp, subText.toVtt(subText.dedupe(cues)));
   }
   fs.renameSync(tmp, out);
   return out;
@@ -1404,7 +1451,7 @@ module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
   record, locate, indexPass, enqueue, startWorker, waitingFor, DEMAND_PRIORITY, MAX_DEMAND, reserveBytes, pump,
   SOON_PRIORITY, DEMAND_TTL_MS, SOON_TTL_MS, touch, estimateBytes, roomFor, learnEstimate, expireRequests,
-  dirBytes, largestWebVersions, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
+  dirBytes, largestWebVersions, webUsage, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),

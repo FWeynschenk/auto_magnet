@@ -182,9 +182,9 @@ test('something still downloading is not deleted from here', async () => {
   await assert.rejects(deleteEverything('movie', 8, { tx: fakeTx() }), (e) => e.status === 409 && /Still downloading/.test(e.message));
 });
 
-test('the largest web versions are listed for freeing space by hand', () => {
+test('the largest web versions are listed for freeing space by hand', async () => {
   webVersion('movie', 1, 9000);
-  const list = media.largestWebVersions();
+  const list = await media.largestWebVersions();
   assert.equal(list[0].kind, 'movie');
   assert.equal(list[0].id, 1);
   assert.ok(list[0].bytes >= 9000);

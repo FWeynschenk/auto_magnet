@@ -294,9 +294,7 @@ router.post('/items/:kind/:id/subtitles/:sub/sync', wrap(async (req) => {
   try { info = JSON.parse(m.probe); } catch (_) {}
   const audio = info && media.chooseAudio(info.streams);
   const r = await subsync.syncFile(m.path, sub.file, { streamIndex: audio?.index ?? null });
-  log.info(`subtitle sync by ${req.user.username}: ${r.applied
-    ? `shifted ${(r.offsetMs / 1000).toFixed(2)}s${r.ratio !== 1 ? `, stretched ×${r.ratio.toFixed(4)}` : ''}`
-    : r.reason} — ${path.basename(sub.file)}`, { type: kind, id });
+  log.info(`subtitle sync by ${req.user.username}: ${subsync.describe(r)} — ${path.basename(sub.file)}`, { type: kind, id });
   return r;
 }));
 
@@ -388,14 +386,15 @@ router.get('/admin/status', requireAdmin, wrap(async () => {
     SELECT (SELECT COUNT(*) FROM movies m WHERE status = 'done' AND NOT EXISTS (SELECT 1 FROM media_files WHERE kind='movie' AND item_id=m.id))
          + (SELECT COUNT(*) FROM episodes e WHERE status = 'done' AND NOT EXISTS (SELECT 1 FROM media_files WHERE kind='episode' AND item_id=e.id)) AS n
   `).get().n;
+  const usage = await media.webUsage();
   return {
-    webRoot: media.WEB_ROOT, cacheBytes: media.cacheSize(), counts, unindexed,
+    webRoot: media.WEB_ROOT, cacheBytes: usage.total, counts, unindexed,
     encoder: await media.pickEncoder(),
     queue: media.queue().map(q => ({ ...q, title: titleOf(q.kind, q.item_id) })),
     failed: db.prepare("SELECT kind, item_id, web_error FROM media_files WHERE web_state = 'failed' LIMIT 50").all()
       .map(f => ({ ...f, title: titleOf(f.kind, f.item_id) })),
     space: media.spaceStatus(),
-    largest: media.largestWebVersions().map(w => ({ ...w, title: titleOf(w.kind, w.id) })),
+    largest: usage.largest.map(w => ({ ...w, title: titleOf(w.kind, w.id) })),
     originalsRemoved: db.prepare('SELECT COUNT(*) AS n FROM media_files WHERE original_removed_at IS NOT NULL').get().n,
   };
 }));

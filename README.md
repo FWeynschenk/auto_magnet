@@ -466,7 +466,7 @@ Havens* used to look like. A colon now becomes a dash, the way Sonarr does it:
 
 Older folders don't follow that, and some shows were also split across two
 folders whose names differ only in case (`House of the Dragon` and
-`house of the dragon`). **Settings → Show folders → Check show folders** lists
+`house of the dragon`). **Settings → Library → Check show folders** lists
 every such folder and what moving it involves. Nothing moves until you press
 **Move** on a row, and then:
 
@@ -528,7 +528,7 @@ Playback → Prepare web versions** to *Only when someone presses play* to save 
 first play then waits for the first segment. Budget roughly the size of the converted originals.
 
 Files downloaded before this existed are indexed in the background, 40 every half hour, or all
-at once with **Settings → Watch library → Scan library now**.
+at once with **Settings → Playback → Watch library → Scan library now**.
 
 ### Removing originals after seeding
 
@@ -563,7 +563,7 @@ log records each removal and the space freed.
 
 With an AMD or Intel GPU, encoding runs through VAAPI. In Docker, uncomment the `devices` and
 `group_add` lines in `docker-compose.yml` and set `RENDER_GID` in `.env` to
-`getent group render | cut -d: -f3`. **Settings → Watch library** shows which encoder is in use.
+`getent group render | cut -d: -f3`. **Settings → Playback → Watch library** shows which encoder is in use.
 
 The GPU decodes and scales too, not just encodes: HEVC, AV1, VP9 and MPEG-2 (8 or 10-bit) stay on
 the GPU from decoder to encoder. 10-bit H.264 has no hardware decoder, so it is decoded on the CPU.
@@ -617,7 +617,7 @@ filling up), a banner over the video says so and playback ends where it got to.
 ### Deleting
 
 Admins can delete from the player (**Delete…** in the top bar), from a show's episode list (🗑),
-and from **Settings → Watch library → Largest web versions**:
+and from **Settings → Playback → Watch library → Largest web versions**:
 
 - **Delete web version:** frees the browser copy only. The original stays and keeps seeding, and
   the web version is made again the next time someone opens it.
@@ -656,7 +656,7 @@ what the running jobs still have to write, stays above its stop limit. Otherwise
 - **Background work:** smaller jobs behind it go first.
 
 If a job runs out of room anyway, how much it wrote compared with how far it got becomes its new
-estimate. So a file never starts, fills the disk, gets stopped and starts again in a loop. **Settings → Watch library** shows which
+estimate. So a file never starts, fills the disk, gets stopped and starts again in a loop. **Settings → Playback → Watch library** shows which
 kind of work is paused, and the Activity log records it once. Work carries on by itself once there
 is room, checked every minute, and straight away when a setting changes or someone is waiting on
 the player.
@@ -681,6 +681,19 @@ other release, so it is aligned to the audio automatically: speech energy is cro
 with when cues are on screen, trying the common 23.976/24/25 fps mismatches too. The change is
 only applied when the match clearly stands out; otherwise the file is left alone and the log
 says why.
+
+One shift and stretch can't fix subtitles made for a cut that differs further in (a recap
+trimmed, an ad break left in, a longer scene), or for a speed that isn't a usual frame rate:
+those drift further out as the episode goes on. So after the overall fit, every 90 seconds is
+aligned again on its own, within ±8 s. Between two stretches the timing either changes gradually
+or jumps at the line where the speech fits best, whichever matches better. This is only kept
+when the lines clearly sit on the speech better than before. The log then reads e.g. *shifted
+1.20s, fine-tuned in 9 stretches by up to 2.5s*. **Auto-sync** in the player does the same.
+
+Only one subtitle track shows at a time. Turning one on in the browser's own CC menu switches
+the subtitles menu to it, and closed captions carried inside the video stream aren't added as a
+second English track. A line an ASS file draws twice at once (one layer for the outline, one for
+the text) is shown once.
 
 ### Progress
 

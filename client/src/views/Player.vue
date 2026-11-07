@@ -258,7 +258,10 @@ function attach() {
   if (pb.value.mode === 'hls') {
     if (!pb.value.complete) startPolling();
     if (Hls.isSupported()) {
-      hls = new Hls({ startPosition: start || 0, maxBufferLength: 60 });
+      // enableCEA708Captions: closed captions some WEB releases carry inside
+      // the video stream would be a second, unlisted English track — and,
+      // turned on, every line twice. The subtitles menu is the one list.
+      hls = new Hls({ startPosition: start || 0, maxBufferLength: 60, enableCEA708Captions: false });
       hls.on(Hls.Events.ERROR, (_e, data) => {
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
@@ -348,10 +351,42 @@ function buildTracks() {
 function selectSub() {
   const v = video.value;
   if (!v) return;
-  const els = [...v.querySelectorAll('track')];
-  for (const el of els) el.track.mode = el.dataset.id === subId.value ? 'showing' : 'disabled';
+  const mine = [...v.querySelectorAll('track')].find(el => el.dataset.id === subId.value)?.track || null;
+  // Every text track, not just ours: captions carried in the video stream, or
+  // one picked in the browser's own CC menu, would otherwise show as well.
+  for (const t of [...v.textTracks]) t.mode = t === mine ? 'showing' : 'disabled';
+  shownTrack = mine;
   offset.value = 0;
   applyOffset();
+}
+
+let shownTrack = null;
+
+/**
+ * At most one subtitle track shows. A second can be turned on behind the
+ * menu's back — the browser's CC button, or a track the browser adds itself —
+ * and then both show, every line twice. The newest choice wins, and the menu
+ * follows it.
+ */
+function onTextTracksChange() {
+  const v = video.value;
+  if (!v) return;
+  const showing = [...v.textTracks].filter(t => t.mode === 'showing');
+  if (showing.length === 0) {
+    shownTrack = null;
+    if (subId.value) subId.value = '';
+    return;
+  }
+  const pick = showing.find(t => t !== shownTrack) || showing[0];
+  for (const t of showing) if (t !== pick) t.mode = 'disabled';
+  if (pick === shownTrack) return;
+  shownTrack = pick;
+  const id = [...v.querySelectorAll('track')].find(el => el.track === pick)?.dataset.id || '';
+  if (id !== subId.value) {
+    subId.value = id;
+    offset.value = 0;
+    applyOffset();
+  }
 }
 
 /** Shift every cue of the showing track by the current offset, in place. */
@@ -396,7 +431,8 @@ async function autoSync() {
   try {
     const r = await watch.syncSub(props.kind, props.id, subId.value);
     if (r.applied) {
-      notifySuccess(`Synced: moved ${(r.offsetMs / 1000).toFixed(2)}s${r.ratio !== 1 ? `, frame-rate corrected` : ''}`);
+      notifySuccess(`Synced: moved ${(r.offsetMs / 1000).toFixed(2)}s${r.ratio !== 1 ? ', frame-rate corrected' : ''}`
+        + `${r.refined ? `, fine-tuned along the way (up to ${(r.maxCorrectionMs / 1000).toFixed(1)}s)` : ''}`);
       reloadTracks();
     } else {
       notifySuccess(`Left as is: ${r.reason}`);
@@ -556,11 +592,13 @@ const onDocClick = (e) => { if (delMenu.value && !e.target.closest?.('.del')) de
 onMounted(() => {
   window.addEventListener('pagehide', onHide);
   document.addEventListener('click', onDocClick);
+  video.value?.textTracks.addEventListener('change', onTextTracksChange);
   load();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onHide);
   document.removeEventListener('click', onDocClick);
+  video.value?.textTracks.removeEventListener('change', onTextTracksChange);
   teardown();
 });
 watchRef(() => [props.kind, props.id], load);

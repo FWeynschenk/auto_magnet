@@ -214,6 +214,125 @@ function align(speech, cues, { maxOffsetSec = 600 } = {}) {
   };
 }
 
+// ─── Fine-tuning, a stretch at a time ────────────────────────────────────────
+//
+// One shift and one stretch fix a subtitle made for a release with a different
+// intro or frame rate. They can't fix one made for a cut that differs further
+// in — a recap trimmed, an ad break left in, a scene a few seconds longer —
+// or a speed difference that isn't one of the usual frame rates: there the
+// lines drift further out as the episode goes on. So after the global fit,
+// each couple of minutes is aligned again on its own, within a few seconds,
+// and the offsets found are joined up line by line.
+
+const WINDOW_MS = 90_000;      // aligned on its own
+const LOCAL_SEARCH_MS = 8_000; // how far a window may move from the global fit
+const LOCAL_MIN_CUES = 6;
+const LOCAL_MIN_Z = 3;
+
+/** How much the cues and the speech agree, overall: the quantity aligning maximises. */
+function agreement(speech, cues) {
+  const s = cueSignal(cues, speech.length);
+  let sum = 0;
+  for (let i = 0; i < speech.length; i++) sum += speech[i] * s[i];
+  return sum;
+}
+
+/** Median of the offsets next to i (itself included), to drop a stray window. */
+function medianAround(points, i) {
+  const near = points.slice(Math.max(0, i - 1), i + 2).map(p => p.offsetMs).sort((a, b) => a - b);
+  return near[Math.floor(near.length / 2)];
+}
+
+/**
+ * Cues already shifted and stretched by `align`, aligned again a window at a
+ * time. Returns the cues as they are best, and what changed:
+ * `{ cues, windows, maxCorrectionMs, refined }` — `refined` false means the
+ * windows didn't improve on the global fit and `cues` is what came in.
+ */
+function refine(speech, cues) {
+  const unchanged = { cues, windows: 0, maxCorrectionMs: 0, refined: false };
+  if (cues.length < LOCAL_MIN_CUES * 3) return unchanged;
+  const maxLag = Math.round(LOCAL_SEARCH_MS / 1000 * RATE);
+
+  // Consecutive windows of about WINDOW_MS, each with enough lines to go on.
+  const groups = [];
+  let cur = [];
+  for (const c of cues) {
+    if (cur.length && c.start - cur[0].start > WINDOW_MS && cur.length >= LOCAL_MIN_CUES) { groups.push(cur); cur = []; }
+    cur.push(c);
+  }
+  if (cur.length >= LOCAL_MIN_CUES || !groups.length) groups.push(cur);
+  else groups[groups.length - 1].push(...cur);
+
+  const points = [];
+  for (const g of groups) {
+    const from = Math.max(0, Math.floor(g[0].start / 1000 * RATE) - maxLag);
+    const to = Math.min(speech.length, Math.ceil(g[g.length - 1].end / 1000 * RATE) + maxLag);
+    if (to - from < 2 * maxLag) continue;
+    const a = speech.subarray(from, to);
+    const shifted = g.map(c => ({ start: c.start - from * (1000 / RATE), end: c.end - from * (1000 / RATE) }));
+    let n = 1;
+    while (n < a.length + maxLag + 1) n <<= 1;
+    const p = peakOf(correlate(spectrum(a, n), cueSignal(shifted, a.length), maxLag));
+    if (p.z < LOCAL_MIN_Z) continue;
+    const mid = (g[0].start + g[g.length - 1].end) / 2;
+    points.push({ at: mid, offsetMs: Math.round((p.index - maxLag) * (1000 / RATE)) });
+  }
+  if (points.length < 3) return unchanged;
+  // A window that disagrees with both neighbours is more likely wrong than a cut.
+  const smooth = points.map((p, i) => ({ at: p.at, offsetMs: medianAround(points, i) }));
+
+  // How much speech a line covers when moved by d — from prefix sums, so
+  // trying every split point between two windows costs next to nothing.
+  const prefix = new Float64Array(speech.length + 1);
+  for (let i = 0; i < speech.length; i++) prefix[i + 1] = prefix[i] + speech[i];
+  const at = (ms) => Math.min(speech.length, Math.max(0, Math.round(ms / (1000 / RATE))));
+  const score = (c, d) => prefix[at(c.end + d)] - prefix[at(c.start + d)];
+
+  // Between two windows the offset either changes gradually (a speed
+  // difference: a ramp) or jumps at one point (a cut: a step at the line that
+  // fits best). Each gap takes whichever matches the speech better.
+  const mid = (c) => (c.start + c.end) / 2;
+  const offsets = new Array(cues.length);
+  const ramps = [];
+  for (let s = 0; s < smooth.length - 1; s++) {
+    const a = smooth[s], b = smooth[s + 1];
+    const idx = [];
+    for (let i = 0; i < cues.length; i++) if (mid(cues[i]) >= a.at && mid(cues[i]) < b.at) idx.push(i);
+    const ramp = idx.map(i => a.offsetMs + (b.offsetMs - a.offsetMs) * (mid(cues[i]) - a.at) / (b.at - a.at));
+    const rampScore = idx.reduce((sum, i, k) => sum + score(cues[i], ramp[k]), 0);
+    // Step after line k: lines before it take a's offset, the rest b's.
+    let stepK = 0, stepScore = -Infinity;
+    let left = 0, right = idx.reduce((sum, i) => sum + score(cues[i], b.offsetMs), 0);
+    for (let k = 0; k <= idx.length; k++) {
+      if (left + right > stepScore) { stepScore = left + right; stepK = k; }
+      if (k < idx.length) { left += score(cues[idx[k]], a.offsetMs); right -= score(cues[idx[k]], b.offsetMs); }
+    }
+    const isRamp = rampScore >= stepScore;
+    ramps.push(isRamp);
+    idx.forEach((i, k) => { offsets[i] = isRamp ? ramp[k] : (k < stepK ? a.offsetMs : b.offsetMs); });
+  }
+  // Before the first window and after the last: carry on the way the
+  // neighbouring gap went — the same slope after a ramp, level after a step.
+  const edge = (p, q, isRamp) => (t) => (isRamp ? p.offsetMs + (q.offsetMs - p.offsetMs) * (t - p.at) / (q.at - p.at) : p.offsetMs);
+  const head = edge(smooth[0], smooth[1], ramps[0]);
+  const last = smooth.length - 1;
+  const tail = edge(smooth[last], smooth[last - 1], ramps[last - 1]);
+  for (let i = 0; i < cues.length; i++) {
+    if (offsets[i] !== undefined) continue;
+    offsets[i] = mid(cues[i]) < smooth[0].at ? head(mid(cues[i])) : tail(mid(cues[i]));
+  }
+  const moved = cues.map((c, i) => {
+    const d = Math.round(offsets[i]);
+    return { ...c, start: Math.max(0, c.start + d), end: c.end + d };
+  }).filter(c => c.end > 0);
+
+  const maxCorrectionMs = Math.max(...smooth.map(p => Math.abs(p.offsetMs)));
+  // Only worth it when the lines now sit on the speech clearly better.
+  if (maxCorrectionMs < 100 || agreement(speech, moved) < agreement(speech, cues) * 1.02) return unchanged;
+  return { cues: moved, windows: smooth.length, maxCorrectionMs, refined: true };
+}
+
 // ─── Files ────────────────────────────────────────────────────────────────────
 
 /** z-score the correlation peak must reach before a result is trusted. */
@@ -233,19 +352,30 @@ async function syncFile(videoPath, subtitlePath, { streamIndex = null, write = t
   if (speech.length < RATE * 60) return { applied: false, reason: 'audio too short to align' };
   const r = align(speech, cues);
 
-  const unchanged = Math.abs(r.offsetMs) < 100 && r.ratio === 1;
   if (r.confidence < MIN_CONFIDENCE) {
     return { applied: false, reason: `no clear match (confidence ${r.confidence.toFixed(1)})`, ...r };
   }
-  if (unchanged) return { applied: false, reason: 'already in sync', ...r };
+  const fine = refine(speech, subText.transform(cues, r));
+  const result = { ...r, refined: fine.refined, windows: fine.windows, maxCorrectionMs: fine.maxCorrectionMs };
+  const unchanged = Math.abs(r.offsetMs) < 100 && r.ratio === 1 && !fine.refined;
+  if (unchanged) return { applied: false, reason: 'already in sync', ...result };
   if (write) {
     const bak = `${subtitlePath}.bak`;
     if (!fs.existsSync(bak)) fs.writeFileSync(bak, original);
     const st = fs.statSync(subtitlePath);
-    fs.writeFileSync(subtitlePath, subText.toSrt(subText.transform(cues, r)));
+    fs.writeFileSync(subtitlePath, subText.toSrt(fine.cues));
     try { fs.chownSync(subtitlePath, st.uid, st.gid); } catch (_) {}
   }
-  return { applied: true, ...r };
+  return { applied: true, ...result };
+}
+
+/** How a sync went, for the activity log. */
+function describe(r) {
+  if (!r.applied) return r.reason;
+  const parts = [`shifted ${(r.offsetMs / 1000).toFixed(2)}s`];
+  if (r.ratio !== 1) parts.push(`stretched ×${r.ratio.toFixed(4)}`);
+  if (r.refined) parts.push(`fine-tuned in ${r.windows} stretches by up to ${(r.maxCorrectionMs / 1000).toFixed(1)}s`);
+  return parts.join(', ');
 }
 
 /** Shift an SRT file by a fixed amount, e.g. the offset chosen in the player. */
@@ -268,6 +398,6 @@ function restoreFile(subtitlePath) {
 }
 
 module.exports = {
-  syncFile, shiftFile, restoreFile, align, speechSignal, speechEnergy, cueSignal, fft,
+  syncFile, shiftFile, restoreFile, align, refine, describe, speechSignal, speechEnergy, cueSignal, fft,
   RATE, MIN_CONFIDENCE, RATIOS,
 };

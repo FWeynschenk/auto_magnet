@@ -2,16 +2,22 @@
   <div>
     <div class="view-header">
       <h1>Settings</h1>
-      <span class="tx-indicator" :class="status.connected ? 'ok' : 'err'">
+      <span v-if="status === null" class="tx-indicator">● Checking Transmission…</span>
+      <span v-else class="tx-indicator" :class="status.connected ? 'ok' : 'err'">
         ● {{ status.connected ? 'Transmission connected' : 'Transmission unreachable' }}
       </span>
     </div>
+
+    <nav class="tabs" role="tablist" aria-label="Settings sections">
+      <button v-for="t in TABS" :key="t.id" type="button" role="tab" class="tab"
+        :class="{ active: tab === t.id }" :aria-selected="tab === t.id" @click="setTab(t.id)">{{ t.label }}</button>
+    </nav>
 
     <div v-if="loading" class="state-msg">Loading…</div>
 
     <form v-else @submit.prevent="save" class="settings-form">
 
-      <section>
+      <section v-show="tab === 'transmission'">
         <h2>Transmission</h2>
         <div class="fields">
           <label>Host
@@ -29,7 +35,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'transmission'">
         <h2>Extra Transmission instances</h2>
         <p class="section-note">
           Optional. Give each one a name, then pick it per movie or show with “Download to”.
@@ -47,14 +53,14 @@
         </div>
         <button type="button" class="btn-ghost btn-sm add-instance" @click="addInstance">+ Add instance</button>
 
-        <div v-if="status.instances?.length > 1" class="instance-status">
+        <div v-if="status?.instances?.length > 1" class="instance-status">
           <span v-for="inst in status.instances" :key="inst.name" :class="inst.connected ? 'ok' : 'err'">
             ● {{ inst.name }}
           </span>
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'library'">
         <h2>Download Paths</h2>
         <div class="fields">
           <label>Movies directory
@@ -66,7 +72,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'search'">
         <h2>Prowlarr</h2>
         <div class="fields">
           <label>Host
@@ -81,7 +87,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'search'">
         <h2>TMDB</h2>
         <div class="fields">
           <label>API Key
@@ -93,7 +99,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'transmission'">
         <h2>Scheduler</h2>
         <div class="fields">
           <label>Check interval (minutes) <span class="hint">min 5</span>
@@ -105,7 +111,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'search'">
         <h2>Search</h2>
         <div class="fields">
           <label>Minimum seeders
@@ -151,7 +157,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'library'">
         <h2>After a download finishes</h2>
         <p class="section-note">
           The finished file is opened and its streams checked: a file with no video, no audio,
@@ -198,7 +204,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'search'">
         <h2>Safety</h2>
         <p class="section-note">
           Releases are checked against their real file list before anything downloads.
@@ -220,7 +226,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'library'">
         <h2>Show folders</h2>
         <p class="section-note">
           Shows are saved in a folder named after the show, made safe for Windows — a colon
@@ -277,7 +283,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'playback'">
         <h2>Playback</h2>
         <p class="section-note">
           Files a browser can't play are repackaged (MKV, AC-3/DTS audio — fast, video untouched) or
@@ -341,7 +347,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'accounts'">
         <h2>API token</h2>
         <div class="fields">
           <label class="span2">Token <span class="hint">only for scripts — the server's AMAGNET_TOKEN. Signing in replaces it in the browser.</span>
@@ -350,7 +356,7 @@
         </div>
       </section>
 
-      <section>
+      <section v-show="tab === 'accounts'">
         <h2>Notifications</h2>
         <div class="notif-row">
           <div>
@@ -376,10 +382,10 @@
       </div>
     </form>
 
-    <PlaybackPanel />
-    <UsersPanel />
+    <PlaybackPanel v-if="tab === 'playback'" />
+    <UsersPanel v-if="tab === 'accounts'" />
 
-    <div class="run-section">
+    <div v-if="tab === 'transmission'" class="run-section">
       <div class="run-header">
         <div>
           <div class="run-title">Scheduler</div>
@@ -396,6 +402,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { settings as api, scheduler, library, getToken, setToken } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
 import PlaybackPanel from '../components/PlaybackPanel.vue';
@@ -425,7 +432,21 @@ const loading   = ref(true);
 const saving    = ref(false);
 const saved     = ref(false);
 const saveError = ref('');
-const status    = ref({ connected: false });
+const status    = ref(null);   // null while Transmission is being asked
+
+// One section at a time: the page had grown to a long scroll. The tab is in
+// the address (?tab=…), so a reload or a shared link opens the same one.
+const TABS = [
+  { id: 'transmission', label: 'Transmission' },
+  { id: 'library',      label: 'Library' },
+  { id: 'search',       label: 'Searching' },
+  { id: 'playback',     label: 'Playback' },
+  { id: 'accounts',     label: 'Accounts' },
+];
+const route  = useRoute();
+const router = useRouter();
+const tab = computed(() => (TABS.some(t => t.id === route.query.tab) ? route.query.tab : 'transmission'));
+function setTab(id) { router.replace({ query: { ...route.query, tab: id } }); }
 const running   = ref(false);
 const runMsg    = ref('');
 
@@ -494,7 +515,10 @@ const allowDiscImagesBool = computed({
 
 onMounted(async () => {
   try {
-    [form.value, status.value] = await Promise.all([api.get(), api.status()]);
+    // Transmission can take seconds to answer (or time out): the form shows
+    // without waiting for it.
+    api.status().then((s) => { status.value = s; }, () => { status.value = { connected: false }; });
+    form.value = await api.get();
     try {
       const parsed = JSON.parse(form.value.transmission_extra || '[]');
       instances.value = Array.isArray(parsed) ? parsed : [];
@@ -535,7 +559,7 @@ async function save() {
     };
     await api.save(payload);
     saved.value   = true;
-    status.value  = await api.status();
+    api.status().then((s) => { status.value = s; }, () => {});
     setTimeout(() => { saved.value = false; }, 3000);
   } catch (err) {
     saveError.value = err.message;
@@ -630,7 +654,26 @@ input:focus, select:focus { border-color: var(--accent); }
 .saved-msg { color: var(--green); font-size: 13px; }
 .error-msg { color: var(--red);   font-size: 13px; }
 
-.form-footer { padding-top: 4px; }
+/* Always in reach, whichever tab and however far down. */
+.form-footer {
+  position: sticky; bottom: 0; z-index: 2;
+  padding: 10px 0; background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.tabs {
+  display: flex; gap: 4px; margin: -8px 0 24px; max-width: 640px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); font: inherit; font-size: 13px; font-weight: 500;
+  padding: 8px 12px; margin-bottom: -1px; cursor: pointer; white-space: nowrap;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
 
 .run-section {
   margin-top: 32px; max-width: 640px;

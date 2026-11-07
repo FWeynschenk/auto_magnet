@@ -315,10 +315,10 @@ async function autoSync(entry, videoPath, subPath, matchedBy) {
   try {
     const { chooseAudio, probe: probeFull } = require('./media');
     const audio = chooseAudio((await probeFull(videoPath)).streams);
-    const r = await require('./subsync').syncFile(videoPath, subPath, { streamIndex: audio?.index ?? null });
-    log.info(r.applied
-      ? `subtitles aligned to the audio: shifted ${(r.offsetMs / 1000).toFixed(2)}s${r.ratio !== 1 ? `, stretched ×${r.ratio.toFixed(4)}` : ''}`
-      : `subtitles not re-timed: ${r.reason}`, { type: entry.kind, id: entry.id });
+    const subsync = require('./subsync');
+    const r = await subsync.syncFile(videoPath, subPath, { streamIndex: audio?.index ?? null });
+    log.info(r.applied ? `subtitles aligned to the audio: ${subsync.describe(r)}` : `subtitles not re-timed: ${r.reason}`,
+      { type: entry.kind, id: entry.id });
   } catch (err) {
     log.warn(`subtitle sync skipped: ${err.message}`, { type: entry.kind, id: entry.id });
   }

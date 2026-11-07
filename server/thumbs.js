@@ -83,6 +83,9 @@ async function make(kind, id) {
 
   let info = null;
   try { info = JSON.parse(row.probe); } catch (_) {}
+  // A clip shorter than two steps has nothing to preview (and gives no frames).
+  const length = row.duration || Number(info?.format?.duration) || 0;
+  if (length && length < INTERVAL * 2) return;
   const v = info && media.mainVideo(info.streams || []);
   const h = v?.width && v?.height ? Math.max(2, Math.round((W * v.height / v.width) / 2) * 2) : 90;
 

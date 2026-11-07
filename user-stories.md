@@ -774,3 +774,31 @@ audio stored `audio_lang: nl`. Skip intro appeared during a seeded intro and ski
 nudges reloaded without error, and Save to file and Auto-sync reached the server. Deleting a web
 version asked first and then deleted. Found and fixed: the timing dialog's left button kept
 saying Restore after a nudge.
+
+## Implementation notes (2026-11-07): HEVC, repackaging on request, Cast
+
+**HEVC** (`web_codec`). `planFor` takes `codec` and `maxHeight` (from the settings by default).
+With `hevc`, an HEVC SDR 4:2:0 8/10-bit source within the size limit plans as `remux` ("HEVC
+video kept as it is"), so the video is copied. `-tag:v hvc1` is added to any copied HEVC,
+because Safari and Chrome only take hvc1 from fMP4. Conversions go through one `videoEncoder()`
+helper: h264/hevc × vaapi/cpu. HEVC is 0.6× the H.264 bitrate, `hevc_vaapi -profile:v main`, or
+`libx265 -preset fast -crf 24`. `media_files.web_codec` (`h264`/`hevc`/`hevc10`) is set at encode
+and sent as `playback.codec`. The web player checks
+`MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L123.B0"')` (or `hvc1.2.4` for 10-bit),
+then ManagedMediaSource and canPlayType, and says plainly when it can't. `replanStored()` now
+re-plans every row without a finished web version, and runs when `web_codec`/`web_max_height`
+change. Tested with real ffmpeg (4.4 and 5.1): a 10-bit x265 MKV is copied to an hvc1 init
+segment, and MPEG-4 is converted with x265.
+
+**Repackaging on request.** Considered: true on-the-fly repackaging, cut from the original per
+segment as Jellyfin does. That means a keyframe index, a VOD playlist built up front, and an
+ffmpeg session restarted at each seek: a lot of new, fragile code. Done instead:
+`preparesAhead()` no longer prepares remuxes in the background (`web_remux_ahead` '0'). The
+existing on-demand path makes them when played, at ~30× real time and playable while growing.
+`dropUnwatched()` (every 6 h) deletes `remux` web versions not opened for `web_keep_days` (14):
+`web_last_used` is set on master/index playlist requests, and never when the original is
+missing or removed, or for conversions. Seed cleanup's `webIssue` now returns `prepare` for a
+missing copy, and `sweepSeeded` makes it, so removing originals still works.
+
+**Chromecast.** Left out: no HTTPS. A Cast receiver page is HTTPS and blocks plain-HTTP media.
+See TODO.md.

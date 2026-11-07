@@ -19,7 +19,7 @@ const ALLOWED_KEYS = [
   'transmission_extra',
   'postprocess_enabled', 'postprocess_action', 'subtitle_languages', 'subtitle_retry_hours', 'media_path_map',
   'opensubtitles_api_key', 'opensubtitles_username', 'opensubtitles_password',
-  'web_prepare', 'web_encoder', 'web_max_height', 'web_min_free_gb', 'download_min_free_gb', 'web_reserve_gb', 'subtitle_autosync',
+  'web_prepare', 'web_encoder', 'web_max_height', 'web_min_free_gb', 'download_min_free_gb', 'web_codec', 'web_remux_ahead', 'web_keep_days', 'web_reserve_gb', 'subtitle_autosync',
   'seed_cleanup', 'seed_cleanup_ratio', 'seed_cleanup_days',
 ];
 
@@ -83,7 +83,17 @@ router.put('/', (req, res) => {
 
   settings.setMany(data);
   // Space limits may have moved: let waiting web versions start now.
-  if (Object.keys(data).some(k => k.startsWith('web_'))) setImmediate(() => require('../media').pump());
+  // The web video codec or size limit changed: what isn't converted yet is
+  // planned again (HEVC sources become a copy instead of a conversion).
+  if (Object.keys(data).some(k => k.startsWith('web_'))) {
+    setImmediate(() => {
+      const media = require('../media');
+      if ('web_codec' in data || 'web_max_height' in data) {
+        try { media.replanStored(); } catch (err) { console.error('[settings] re-plan failed:', err.message); }
+      }
+      media.pump();
+    });
+  }
   res.json({ success: true });
 });
 

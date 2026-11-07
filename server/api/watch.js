@@ -140,7 +140,7 @@ function playback(kind, id, m) {
   if (m.plan === 'direct') return { mode: 'file', url: file.url, download: { type: 'file', ...file }, reason: m.plan_reason };
   const hls = `${base(kind, id)}/hls/${media.hlsEntry(kind, id)}`;
   const info = { plan: m.plan, reason: m.plan_reason, state: m.web_state, progress: m.web_progress, encoder: m.web_encoder,
-    original: !m.original_removed_at };
+    original: !m.original_removed_at, codec: m.web_codec || 'h264' };
   if (m.web_state === 'ready') return { mode: 'hls', url: hls, complete: true, download: { type: 'hls', url: hls }, ...info };
   // An MP4 that only needs a web version for its other audio tracks plays as
   // it is meanwhile — all of it, at once, rather than as far as the remux got.
@@ -298,6 +298,8 @@ const sendHls = wrap(async (req, res) => {
     // someone is watching, so the request stays alive.
     const m = media.rows.get(kind, id);
     if (m?.web_state === 'encoding') wantNow(kind, id, m);
+    // Watched: a repackaged copy's clock restarts.
+    if (name === 'master.m3u8' || (!dir && name === 'index.m3u8')) media.touchWeb(kind, id);
     res.type('application/vnd.apple.mpegurl');
     res.set('Cache-Control', 'no-cache');
   } else {

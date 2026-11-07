@@ -330,6 +330,27 @@
               <option value="2160">2160p (keep 4K)</option>
             </select>
           </label>
+          <label>Web version video
+            <select v-model="form.web_codec">
+              <option value="h264">H.264 — plays in every browser</option>
+              <option value="hevc">HEVC — smaller; HEVC files copied, not converted</option>
+            </select>
+            <span v-if="form.web_codec === 'hevc'" class="hint">
+              plays in Safari, in Chrome or Edge with hardware HEVC decoding, and in the app — not in Firefox
+              or Chrome on Linux. Web versions already made stay as they are.
+            </span>
+          </label>
+          <label>Repackaged copies
+            <select v-model="form.web_remux_ahead">
+              <option value="0">Made when played — saves space</option>
+              <option value="1">Made ahead of time and kept</option>
+            </select>
+            <span class="hint">a repackaged copy is the original's size again; it's made in about a minute and plays while it's made</span>
+          </label>
+          <label v-if="form.web_remux_ahead !== '1'">Drop copies unwatched for (days)
+            <input v-model="form.web_keep_days" type="number" min="0" step="1" />
+            <span class="hint">0 keeps them; the only copy left after seeding is never dropped</span>
+          </label>
           <label>Keep free (GB)
             <span class="hint">web versions stop below this; 0 = off</span>
             <input v-model.number="form.web_min_free_gb" type="number" min="0" step="5" />

@@ -288,11 +288,21 @@ const isHdr = (v) => ['smpte2084', 'arib-std-b67'].includes(v?.color_transfer);
  * whether the file plays as it is, which it does meanwhile.
  * @returns {{ plan: 'direct'|'remux'|'transcode'|'unplayable', reason: string }}
  */
-function planFor({ streams, format }, wanted, { multiAudio = true } = {}) {
+function planFor({ streams, format }, wanted, { multiAudio = true, codec = webCodec(), maxHeight = webMaxHeight() } = {}) {
   const video = mainVideo(streams);
   if (!video) return { plan: 'unplayable', reason: 'no video stream' };
   const audios = streams.filter(s => s.codec_type === 'audio');
   const audio = chooseAudio(streams, wanted);
+
+  // HEVC web versions: an HEVC video that a browser with HEVC support plays
+  // (SDR, 4:2:0, 8 or 10-bit, no bigger than the size limit) is copied as it
+  // is — no loss, a minute's work instead of an hour's, and no GPU.
+  if (codec === 'hevc' && copiesAsHevc(video, maxHeight)) {
+    const container = String(format?.format_name || '').split(',')[0];
+    const extra = [container === 'matroska' ? 'MKV container' : null,
+      audio && !['aac', 'mp3'].includes(audio.codec_name) ? `${String(audio.codec_name).toUpperCase()} audio` : null].filter(Boolean);
+    return { plan: 'remux', reason: ['HEVC video kept as it is', ...extra].join(', ') };
+  }
 
   const why = [];
   if (video.codec_name !== 'h264') why.push(`${String(video.codec_name || 'unknown').toUpperCase()} video`);
@@ -319,6 +329,74 @@ function planFor({ streams, format }, wanted, { multiAudio = true } = {}) {
   if (!audioOk) reasons.push(`${String(audio.codec_name).toUpperCase()} audio`);
   else if (!audioFirst) reasons.push('preferred audio isn\'t the first track');
   return { plan: 'remux', reason: reasons.join(', ') };
+}
+
+/**
+ * Whether a web version is made before anyone asks for it. Conversions are
+ * (an hour's work: done ahead, it plays at once). A repackaged copy by default
+ * isn't: it's the original's size again, made in a minute, and plays while it
+ * is being made — so it's made when someone presses play, and dropped again
+ * after a while unwatched (dropUnwatched).
+ */
+function preparesAhead(plan) {
+  if (settings.get('web_prepare') === 'demand') return false;
+  if (plan === 'remux') return settings.get('web_remux_ahead') === '1';
+  return plan === 'transcode';
+}
+
+// ─── Repackaged copies nobody watches ────────────────────────────────────────
+
+const DROP_CHECK_MS = 6 * 3600_000;
+
+/** A web version was opened: its clock restarts. Cheap enough per playlist request. */
+function touchWeb(kind, id) {
+  db.prepare("UPDATE media_files SET web_last_used = datetime('now') WHERE kind = ? AND item_id = ?").run(kind, id);
+}
+
+/**
+ * Delete repackaged copies not opened for `web_keep_days` days. Only copies of
+ * a file that is still there: one whose original was removed after seeding is
+ * the only copy left, and conversions (an hour each to make again) stay.
+ */
+function dropUnwatched() {
+  const days = Number(settings.get('web_keep_days'));
+  if (!Number.isFinite(days) || days <= 0 || settings.get('web_remux_ahead') === '1') return { dropped: 0, bytes: 0 };
+  const old = db.prepare(`
+    SELECT * FROM media_files WHERE plan = 'remux' AND web_state = 'ready' AND original_removed_at IS NULL
+      AND COALESCE(web_last_used, updated_at) < datetime('now', ?)
+  `).all(`-${Math.floor(days)} days`);
+  let dropped = 0, bytes = 0;
+  for (const r of old) {
+    if (!fs.existsSync(r.path)) continue;           // the copy might be all there is
+    if (running.has(jobKey(r.kind, r.item_id))) continue;
+    const b = dirBytes(webDir(r.kind, r.item_id));
+    removeWebVersion(r.kind, r.item_id);
+    rows.update(r.kind, r.item_id, { web_state: 'none', web_progress: 0, web_error: null });
+    dropped++; bytes += b;
+  }
+  if (dropped) log.info(`dropped ${dropped} repackaged cop${dropped === 1 ? 'y' : 'ies'} nobody opened for ${days} days — ${gb(bytes)} freed; each is made again in a minute when played`);
+  return { dropped, bytes };
+}
+
+/** 'h264' (plays in every browser) or 'hevc' (smaller; HEVC sources copied). */
+function webCodec() {
+  return settings.get('web_codec') === 'hevc' ? 'hevc' : 'h264';
+}
+
+function webMaxHeight() {
+  return Number(settings.get('web_max_height')) || 1080;
+}
+
+function copiesAsHevc(video, maxHeight) {
+  return video?.codec_name === 'hevc' && ['yuv420p', 'yuv420p10le'].includes(video.pix_fmt)
+    && !isHdr(video) && (!video.height || video.height <= maxHeight);
+}
+
+/** What a web version's video is, for players that must check they can play it. */
+function webCodecOf(plan, info, codec) {
+  const v = mainVideo(info.streams || []);
+  if (plan === 'remux') return v?.codec_name === 'hevc' ? (/10/.test(v.pix_fmt || '') ? 'hevc10' : 'hevc') : 'h264';
+  return codec === 'hevc' ? 'hevc' : 'h264';
 }
 
 // ─── Finding the file ────────────────────────────────────────────────────────
@@ -434,9 +512,7 @@ async function record(kind, id, file, { probed = null } = {}) {
     web_state: 'none', web_progress: 0, web_error: null,
     original_removed_at: null, subs_snapshot: null, web_estimate: null,
   });
-  if (plan === 'remux' || plan === 'transcode') {
-    if (settings.get('web_prepare') !== 'demand') enqueue(kind, id);
-  }
+  if (preparesAhead(plan)) enqueue(kind, id);
   return row;
 }
 
@@ -602,7 +678,30 @@ const TONEMAP = ['format=gbrpf32le', 'zscale=p=bt709', 'tonemap=tonemap=hable:de
  * make a GPU encode slow otherwise: the encoder waits on them. HDR still comes
  * down to the CPU for tone mapping — at 1080p, after the GPU scaled it.
  */
-function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted, hwDecode = false }) {
+/**
+ * The video encoder's arguments: H.264 or HEVC, on the GPU (VAAPI) or the CPU.
+ * HEVC needs about 60% of H.264's bitrate for the same picture, and is
+ * tagged hvc1 — the form Safari and Chrome accept in fMP4.
+ */
+function videoEncoder({ encoder, codec, outHeight }) {
+  const br = bitrateFor(outHeight);
+  const kf = ['-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_SECONDS})`];
+  if (codec === 'hevc') {
+    const hb = Math.round(br * 0.6);
+    return encoder === 'vaapi'
+      ? ['-c:v', 'hevc_vaapi', '-profile:v', 'main', '-rc_mode', 'VBR', '-b:v', String(hb),
+        '-maxrate', String(Math.round(hb * 1.5)), '-tag:v', 'hvc1', ...kf]
+      : ['-c:v', 'libx265', '-preset', 'fast', '-crf', '24', '-x265-params', 'log-level=error',
+        '-maxrate', String(Math.round(hb * 1.5)), '-bufsize', String(hb * 2), '-tag:v', 'hvc1', ...kf];
+  }
+  return encoder === 'vaapi'
+    ? ['-c:v', 'h264_vaapi', '-profile:v', 'high', '-rc_mode', 'VBR', '-b:v', String(br),
+      '-maxrate', String(Math.round(br * 1.5)), ...kf]
+    : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-profile:v', 'high',
+      '-maxrate', String(Math.round(br * 1.5)), '-bufsize', String(br * 2), ...kf];
+}
+
+function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted, hwDecode = false, codec = 'h264' }) {
   const video = mainVideo(info.streams);
   const audio = audioRenditions(info.streams, wanted);
   const args = ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
@@ -620,6 +719,9 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted,
   let outHeight = video.height || 1080;
   if (!transcode) {
     args.push('-c:v', 'copy');
+    // A copied HEVC stream as hvc1 (parameter sets in the init segment), the
+    // only form Safari and Chrome play from fMP4.
+    if (video.codec_name === 'hevc') args.push('-tag:v', 'hvc1');
   } else if (gpuDecode) {
     const size = scaledSize(video, maxHeight);
     if (size) outHeight = size.h;
@@ -630,10 +732,7 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted,
       ? ['hwdownload', `format=${/10/.test(video.pix_fmt) ? 'p010le' : 'nv12'}`,
         `zscale=${dims}t=linear:npl=100`, ...TONEMAP, 'format=nv12', 'hwupload']
       : [`scale_vaapi=${dims}format=nv12`];
-    const br = bitrateFor(outHeight);
-    args.push('-vf', filters.join(','), '-c:v', 'h264_vaapi', '-profile:v', 'high',
-      '-rc_mode', 'VBR', '-b:v', String(br), '-maxrate', String(Math.round(br * 1.5)),
-      '-force_key_frames', `expr:gte(t,n_forced*${SEGMENT_SECONDS})`);
+    args.push('-vf', filters.join(','), ...videoEncoder({ encoder, codec, outHeight }));
   } else {
     const filters = [];
     if (video.height && video.height > maxHeight) {
@@ -644,19 +743,8 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted,
       // Tone-map HDR to SDR; without it, HDR shown as SDR looks washed out.
       filters.push('zscale=t=linear:npl=100', ...TONEMAP);
     }
-    const kf = `expr:gte(t,n_forced*${SEGMENT_SECONDS})`;
-    if (encoder === 'vaapi') {
-      filters.push('format=nv12', 'hwupload');
-      const br = bitrateFor(outHeight);
-      args.push('-vf', filters.join(','), '-c:v', 'h264_vaapi', '-profile:v', 'high',
-        '-rc_mode', 'VBR', '-b:v', String(br), '-maxrate', String(Math.round(br * 1.5)),
-        '-force_key_frames', kf);
-    } else {
-      filters.push('format=yuv420p');
-      args.push('-vf', filters.join(','), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21',
-        '-profile:v', 'high', '-maxrate', String(Math.round(bitrateFor(outHeight) * 1.5)),
-        '-bufsize', String(bitrateFor(outHeight) * 2), '-force_key_frames', kf);
-    }
+    filters.push(...(encoder === 'vaapi' ? ['format=nv12', 'hwupload'] : ['format=yuv420p']));
+    args.push('-vf', filters.join(','), ...videoEncoder({ encoder, codec, outHeight }));
   }
 
   // Every track becomes stereo AAC (copied when it already is), in its own
@@ -681,10 +769,10 @@ function buildEncodeArgs({ input, info, plan, encoder, maxHeight = 1080, wanted,
 }
 
 /** Peak bits per second of a web version's video, for the master playlist. */
-function webBandwidth({ plan, info, size, duration, maxHeight = 1080 }) {
+function webBandwidth({ plan, info, size, duration, maxHeight = 1080, codec = 'h264' }) {
   if (plan === 'transcode') {
     const h = Math.min(mainVideo(info.streams)?.height || 1080, maxHeight);
-    return Math.round(bitrateFor(h) * 1.5);
+    return Math.round(bitrateFor(h) * (codec === 'hevc' ? 0.6 : 1) * 1.5);
   }
   const v = Number(mainVideo(info.streams)?.bit_rate);
   if (v > 0) return Math.round(v * 1.5);
@@ -953,14 +1041,16 @@ async function encode(job, opts = {}) {
   const wanted = wantedLanguages();
   const hwDecode = encoder === 'vaapi' && (opts.hwDecode ?? gpuDecodeFailures < GPU_DECODE_GIVE_UP)
     && gpuDecodable(mainVideo(info.streams));
-  const args = buildEncodeArgs({ input: job.path, info, plan: job.plan, encoder, maxHeight, wanted, hwDecode });
+  const codec = webCodec();
+  const args = buildEncodeArgs({ input: job.path, info, plan: job.plan, encoder, maxHeight, wanted, hwDecode, codec });
   // Written before ffmpeg starts: a player that opens it while the encode
   // runs finds the playlists it names filling up.
   fs.writeFileSync(path.join(outDir, 'master.m3u8'), masterPlaylist({
     renditions: audioRenditions(info.streams, wanted),
-    bandwidth: webBandwidth({ plan: job.plan, info, size: job.size, duration: job.duration, maxHeight }),
+    bandwidth: webBandwidth({ plan: job.plan, info, size: job.size, duration: job.duration, maxHeight, codec }),
   }));
-  rows.update(kind, id, { web_state: 'encoding', web_progress: 0, web_error: null, web_encoder: encoder });
+  rows.update(kind, id, { web_state: 'encoding', web_progress: 0, web_error: null, web_encoder: encoder,
+    web_codec: webCodecOf(job.plan, info, codec) });
   const started = Date.now();
   const label = `${kind} #${id}`;
 
@@ -1063,9 +1153,14 @@ function startWorker() {
   db.prepare("UPDATE media_files SET web_state = 'queued', web_progress = 0 WHERE web_state = 'encoding'").run();
   try {
     const n = replanStored();
-    if (n) log.info(`${n} file(s) with several audio tracks get a web version so a browser can switch between them`);
+    if (n) log.info(`${n} file(s) planned again under the current rules (several audio tracks, the web video codec)`);
   } catch (err) { console.error('[media] re-plan failed:', err.message); }
   setImmediate(pump);
+  // Copies made before web_last_used existed start their clock now, rather
+  // than all looking a month old at once.
+  db.prepare("UPDATE media_files SET web_last_used = datetime('now') WHERE web_last_used IS NULL AND web_state = 'ready'").run();
+  setTimeout(() => { try { dropUnwatched(); } catch (err) { console.error('[media] drop pass failed:', err.message); } }, 5 * 60_000).unref();
+  setInterval(() => { try { dropUnwatched(); } catch (err) { console.error('[media] drop pass failed:', err.message); } }, DROP_CHECK_MS).unref();
   // Paused for space: look again now and then, and carry on once there is room.
   setInterval(pump, SPACE_RECHECK_MS).unref();
   // Index what finished before playback existed, a batch at a time, so the
@@ -1249,13 +1344,17 @@ function playsAsIs(row) {
  */
 function replanStored() {
   let changed = 0;
-  for (const r of rows.all().filter(x => x.plan === 'direct' && x.probe)) {
+  // Files that play as they are, and anything whose web version isn't made
+  // yet: a web version already made keeps working, whatever the rules now say.
+  const open = (x) => x.plan === 'direct' || ['none', 'queued', 'failed'].includes(x.web_state);
+  for (const r of rows.all().filter(x => x.probe && !x.original_removed_at && open(x))) {
     let info;
     try { info = JSON.parse(r.probe); } catch (_) { continue; }
     const p = planFor(info, wantedLanguages());
-    if (p.plan === 'direct') continue;
+    if (p.plan === r.plan) continue;
+    const queued = r.web_state === 'queued';
     rows.update(r.kind, r.item_id, { plan: p.plan, plan_reason: p.reason, web_state: 'none', web_progress: 0, web_error: null });
-    if (settings.get('web_prepare') !== 'demand') enqueue(r.kind, r.item_id);
+    if (p.plan !== 'direct' && (queued || preparesAhead(p.plan))) enqueue(r.kind, r.item_id);
     changed++;
   }
   return changed;
@@ -1460,7 +1559,7 @@ module.exports = {
   WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
   record, locate, indexPass, enqueue, startWorker, waitingFor, DEMAND_PRIORITY, MAX_DEMAND, reserveBytes, pump,
   SOON_PRIORITY, DEMAND_TTL_MS, SOON_TTL_MS, touch, estimateBytes, roomFor, learnEstimate, expireRequests,
-  dirBytes, largestWebVersions, webUsage, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, spaceStatus, spaceOk, freeBytes,
+  dirBytes, largestWebVersions, webUsage, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, touchWeb, dropUnwatched, preparesAhead, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
   videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),

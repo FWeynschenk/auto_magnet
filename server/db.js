@@ -210,6 +210,11 @@ const migrations = [
   // replaced by what it actually wrote if it ever ran out of room.
   'ALTER TABLE media_files ADD COLUMN web_estimate INTEGER',
   'ALTER TABLE media_files ADD COLUMN subs_snapshot TEXT',
+  // 'h264', 'hevc' or 'hevc10': what a web version's video is, for players
+  // that must check they can play it.
+  'ALTER TABLE media_files ADD COLUMN web_codec TEXT',
+  // When a web version was last opened, for dropping repackaged copies nobody watches.
+  'ALTER TABLE media_files ADD COLUMN web_last_used TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -299,6 +304,16 @@ const defaultSettings = {
   web_encoder:               'auto',
   // Re-encoded video is scaled down to this height; copied video is never touched.
   web_max_height:            '1080',
+  // 'h264' plays in every browser. 'hevc' copies HEVC sources as they are
+  // (no conversion at all) and converts the rest to HEVC: smaller, but only
+  // browsers with HEVC support (Safari; Chrome and Edge with hardware
+  // decoding) and the Android app play it.
+  web_codec:                 'h264',
+  // Repackaged copies (the original's size again, made in a minute): '0'
+  // makes them when someone presses play and drops them after web_keep_days
+  // unwatched; '1' makes them ahead of time and keeps them.
+  web_remux_ahead:           '0',
+  web_keep_days:             '14',
   // Web versions pause while the disk holding them has less than this free
   // (GB), so they can never fill it — a full disk takes the database down too.
   // 0 turns the check off.

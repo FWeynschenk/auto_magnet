@@ -53,7 +53,7 @@
       <div v-if="notice" class="notice" role="status">{{ notice }}</div>
 
       <video
-        v-show="pb && (playing || pb.mode === 'file' || pb.mode === 'hls')"
+        v-show="pb && !fatal && (playing || pb.mode === 'file' || pb.mode === 'hls')"
         ref="video"
         class="video"
         controls
@@ -314,6 +314,17 @@ function attach() {
   if (start) setTimeout(() => { resumedAt.value = 0; }, 8000);
 
   if (pb.value.mode === 'hls') {
+    // An HEVC web version (Settings → Playback → Web version video) plays
+    // only where the browser decodes HEVC: say so plainly, instead of a black
+    // screen or a cryptic media error.
+    const codec = pb.value.codec || 'h264';
+    if (codec.startsWith('hevc') && !canPlayHevc(codec === 'hevc10', v)) {
+      playing.value = false;
+      attachedUrl = null;
+      fatal.value = `This is HEVC${codec === 'hevc10' ? ' (10-bit)' : ''} video, which this browser can't play. `
+        + 'Safari, and Chrome or Edge on a computer with hardware HEVC decoding, can — and so can the Android app.';
+      return;
+    }
     if (!pb.value.complete) startPolling();
     if (Hls.isSupported()) {
       // enableCEA708Captions: closed captions some WEB releases carry inside
@@ -351,6 +362,16 @@ function attach() {
   buildTracks();
   v.play().catch(() => { /* autoplay blocked — the user presses play */ });
   page.value?.focus();
+}
+
+/** Whether this browser decodes HEVC (Main, or Main 10) from fMP4: through MSE, or Safari's own HLS. */
+function canPlayHevc(tenBit, v) {
+  const type = `video/mp4; codecs="${tenBit ? 'hvc1.2.4.L123.B0' : 'hvc1.1.6.L123.B0'}"`;
+  try {
+    if (window.MediaSource?.isTypeSupported?.(type)) return true;
+    if (window.ManagedMediaSource?.isTypeSupported?.(type)) return true;
+  } catch (_) { /* treated as no */ }
+  return !!v?.canPlayType?.(type);
 }
 
 function teardown() {

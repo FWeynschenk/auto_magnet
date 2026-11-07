@@ -11,6 +11,13 @@ Last reviewed: 2026-11-05
 
 These shipped but can only be confirmed on the real box.
 
+- **HEVC on the GPU.** `hevc_vaapi` (Settings → Playback → Web version video → HEVC) never ran
+  here: no GPU. The RX 6600 encodes HEVC Main; a failure falls back to x265 on the CPU, which
+  is slow. Try one conversion and check the Activity log line. Copies of HEVC sources need no
+  GPU and were tested on ffmpeg 4.4 and 5.1.
+- **Repackaged copies are now made when played** and dropped after 14 days unwatched. The first
+  drop pass runs 5 minutes after start. Copies made before this have their clock started at
+  the deploy, so nothing is dropped for 14 days.
 - **Keep free for downloads.** Settings → Status should show the download disk's free space
   as Transmission reports it (`free-space` RPC) within two minutes of starting. Is 30 GB right
   for `/HDD0`? Below it, running downloads pause; check they resume on their own.
@@ -158,7 +165,11 @@ enforces the documented limits — so they can be rebuilt rather than rediscover
 - **Web version clean-up.** Nothing deletes web versions except *Delete all* or removing the item.
   A "watched by everyone, older than N days" sweep would bound the disk use. (Removing originals
   after seeding, the other half of the disk, shipped.)
-- **Chromecast / TV.** Not started. Media3 has a Cast extension; HLS output is Cast-compatible.
+- **Chromecast / TV.** Not done, and blocked on HTTPS (decided 2026-11-07: the server has none).
+  A Cast receiver fetches the media itself, from a page served over HTTPS, and Chrome there
+  blocks or upgrades plain-HTTP video, so http://192.168.0.102:62201 can't be cast however it's
+  built. With HTTPS (Caddy, or a Tailscale HTTPS name), it's Media3's Cast extension plus
+  time-limited signed URLs, since the receiver can't sign in.
 
 ## Smaller
 

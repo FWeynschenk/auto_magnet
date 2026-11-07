@@ -211,6 +211,8 @@ Advanced settings (UI only, not in `.env`):
 | Prepare web versions | as soon as checked | Or only when someone presses play |
 | Encoder | automatic | GPU (VAAPI) when available, else libx264 |
 | Converted video height | `1080p` | Converted video is scaled down to this; repackaged video is never touched |
+| Web version video | H.264 | *HEVC*: HEVC sources copied, the rest converted to HEVC (see below) |
+| Repackaged copies | made when played | dropped after 14 days unwatched; or *made ahead of time and kept* |
 | Keep free | `20` GB | Web versions pause while the disk holding them has less free than this, and carry on once there is room. `0` turns it off |
 | Room for on-demand | `50` GB | Extra space on top of *Keep free* that preparing ahead leaves alone, so what someone presses play on can still be converted |
 | Align fetched subtitles | on | Sync subtitles not matched by file hash to the audio |
@@ -557,9 +559,32 @@ others are named after their language and title. Switch with the **Audio** menu 
 every track too. Web versions made before this have one track; they keep playing, and are rebuilt
 with all of them before *Remove originals after seeding* lets their original go.
 
-By default a web version is built as soon as a download passes its file check. Set **Settings →
-Playback → Prepare web versions** to *Only when someone presses play* to save disk space; the
-first play then waits for the first segment. Budget roughly the size of the converted originals.
+By default a conversion is made as soon as a download passes its file check, so it plays at
+once. Set **Settings → Playback → Prepare web versions** to *Only when someone presses play* to
+save disk space; the first play then waits for the first segment.
+
+**Repackaged copies are made when played** (Settings → Playback → *Repackaged copies*). A copy is
+the original's size again, made in about a minute, and playable while it's made. So it's made
+when someone presses play (or downloads it to the app), and dropped again when nobody has
+opened it for **14 days** (*Drop copies unwatched for*; `0` keeps them). It's checked every six
+hours and logged with the space freed. Never dropped: a copy whose original was removed after
+seeding (it's the only one), and conversions (an hour each to make again). *Made ahead of time
+and kept* brings back the old behaviour. With *Remove originals after seeding* on, a torrent
+that has seeded enough gets its copies made first, and its original goes on a later run.
+
+### HEVC web versions
+
+**Settings → Playback → Web version video**: *H.264* (default) plays in every browser. *HEVC*:
+
+- **HEVC files are copied, not converted:** SDR, 8 or 10-bit, within the size limit. That's most
+  x265 releases. No quality loss, about a minute instead of an hour, and no GPU.
+- **Everything else is converted to HEVC** instead of H.264: on the GPU (`hevc_vaapi`) or with
+  x265, at about 60% of the H.264 bitrate. HDR is still tone-mapped first.
+- **Who can play it:** Safari, Chrome and Edge on a computer with hardware HEVC decoding, and the
+  Android app. Not Firefox, nor Chrome on Linux. A browser that can't is told so, instead of a
+  black screen.
+- **Switching:** web versions already made stay as they are. Anything not converted yet is
+  planned again at once, so a queued HEVC conversion becomes a copy.
 
 Files downloaded before this existed are indexed in the background, 40 every half hour, or all
 at once with **Settings → Playback → Watch library → Scan library now**.

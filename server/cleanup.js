@@ -48,7 +48,9 @@ function policy() {
  * holds one audio track of several, and is rebuilt so the rest are kept.
  */
 function webIssue(row) {
-  if (row.web_state !== 'ready' || !media.hlsComplete(row.kind, row.item_id)) return { reason: 'has no finished web version' };
+  // Not made yet: repackaged copies are made when played, so one may never
+  // have been. Removing the original needs it, so it is made now.
+  if (row.web_state !== 'ready' || !media.hlsComplete(row.kind, row.item_id)) return { reason: 'has no finished web version', prepare: true };
   if (!media.webHasAllAudio(row)) return { reason: 'has a web version without every audio track', rebuild: true };
   return null;
 }
@@ -79,7 +81,7 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue, subsP
   const videos = media.videoFilesIn(torrent.files).filter(f => f.wanted !== false);
   if (videos.length === 0) return { ok: false, reason: 'no video files' };
   const byPath = new Map(rows.map(r => [key(r.path), r]));
-  const covered = [], rebuild = [];
+  const covered = [], rebuild = [], prepare = [];
   for (const f of videos) {
     const r = byPath.get(key(toLocal(path.join(torrent.downloadDir, f.name))));
     if (!r) return { ok: false, reason: `${f.name} isn't in the library` };
@@ -88,10 +90,12 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue, subsP
     // A subtitle found on a later try is saved beside the original.
     if (subsPending(r)) return { ok: false, reason: `${f.name} is still waiting for subtitles` };
     const issue = check(r);
+    if (issue?.prepare) { prepare.push(r); continue; }
     if (issue && !issue.rebuild) return { ok: false, reason: `${f.name} ${issue.reason}` };
     if (issue) rebuild.push(r);
     covered.push(r);
   }
+  if (prepare.length) return { ok: false, reason: 'making the web versions first', prepare, rebuild };
   if (rebuild.length) return { ok: false, reason: 'rebuilding web versions to keep every audio track', rebuild };
   if (covered.length === 0) return { ok: false, reason: 'already removed' };
   return {
@@ -193,11 +197,19 @@ async function sweepSeeded({ tx = require('./transmission') } = {}) {
   let removed = 0;
   for (const group of torrentGroups()) {
     // Only ask Transmission about torrents that could possibly qualify.
-    if (!group.rows.some(r => !r.original_removed_at && pol.plans.includes(r.plan) && r.web_state === 'ready')) continue;
+    if (!group.rows.some(r => !r.original_removed_at && pol.plans.includes(r.plan))) continue;
     let torrent;
     try { torrent = await tx.getSeedInfo(group.torrentId, tx.resolveTarget(group.target)); } catch (_) { continue; }
     const decision = decide(torrent, group.rows, pol);
-    if (decision.rebuild) {
+    if (decision.prepare) {
+      // Seeded enough: make the web versions it needs, in the background; a
+      // later run removes the original once they're done.
+      for (const r of decision.prepare) {
+        if (!['queued', 'encoding'].includes(r.web_state)) media.enqueue(r.kind, r.item_id);
+      }
+      continue;
+    }
+    if (decision.rebuild?.length) {
       // Seeded enough, but a web version predates multi-track audio. Rebuild
       // it now; a later run removes the original once it is done.
       for (const r of decision.rebuild) {

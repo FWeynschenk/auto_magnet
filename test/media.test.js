@@ -134,6 +134,36 @@ test('the master playlist names each track and marks the default', () => {
   assert.ok(!media.masterPlaylist({ renditions: [], bandwidth: 1 }).includes('AUDIO='), 'a silent file has no audio group');
 });
 
+test('HEVC web versions: HEVC sources a browser can play are copied, not converted', () => {
+  const hevc = (o = {}) => ({ streams: [v({ codec_name: 'hevc', pix_fmt: 'yuv420p10le', width: 1920, height: 1080, ...o }), a({ codec_name: 'eac3', channels: 6 })], format: mkv });
+  const p = media.planFor(hevc(), ['en'], { codec: 'hevc', maxHeight: 1080 });
+  assert.equal(p.plan, 'remux');
+  assert.match(p.reason, /HEVC video kept as it is, MKV container, EAC3 audio/);
+  assert.equal(media.planFor(hevc(), ['en'], { codec: 'h264', maxHeight: 1080 }).plan, 'transcode', 'with H.264 web versions it is converted');
+  assert.equal(media.planFor(hevc({ color_transfer: 'smpte2084' }), ['en'], { codec: 'hevc', maxHeight: 1080 }).plan, 'transcode', 'HDR still needs tone mapping');
+  assert.equal(media.planFor(hevc({ width: 3840, height: 2160 }), ['en'], { codec: 'hevc', maxHeight: 1080 }).plan, 'transcode', 'over the size limit');
+  assert.equal(media.planFor(hevc({ width: 3840, height: 2160 }), ['en'], { codec: 'hevc', maxHeight: 2160 }).plan, 'remux', 'within a 4K limit');
+  assert.equal(media.planFor(hevc({ pix_fmt: 'yuv422p10le' }), ['en'], { codec: 'hevc', maxHeight: 1080 }).plan, 'transcode', '4:2:2 plays nowhere');
+
+  const copy = args({ plan: 'remux', encoder: 'copy', info: hevc() });
+  assert.deepEqual(copy.slice(copy.indexOf('-c:v'), copy.indexOf('-c:v') + 4), ['-c:v', 'copy', '-tag:v', 'hvc1'], 'as hvc1, the form Safari and Chrome play');
+  const h264copy = args({ plan: 'remux', encoder: 'copy', info: { streams: [v(), a()] } });
+  assert.ok(!h264copy.includes('-tag:v'));
+});
+
+test('HEVC web versions: the rest is converted to HEVC, on the GPU or with x265', () => {
+  const info = { streams: [v({ codec_name: 'mpeg4', width: 1280, height: 720 }), a()] };
+  const gpu = args({ plan: 'transcode', encoder: 'vaapi', codec: 'hevc', info });
+  assert.equal(gpu[gpu.indexOf('-c:v') + 1], 'hevc_vaapi');
+  assert.equal(gpu[gpu.indexOf('-b:v') + 1], String(Math.round(4_500_000 * 0.6)), 'about 60% of the H.264 rate');
+  assert.equal(gpu[gpu.indexOf('-tag:v') + 1], 'hvc1');
+  const cpu = args({ plan: 'transcode', encoder: 'x264', codec: 'hevc', info });
+  assert.equal(cpu[cpu.indexOf('-c:v') + 1], 'libx265');
+  assert.match(cpu[cpu.indexOf('-force_key_frames') + 1], /n_forced\*6/, 'segments still start on a keyframe');
+  const h264 = args({ plan: 'transcode', encoder: 'vaapi', info });
+  assert.equal(h264[h264.indexOf('-c:v') + 1], 'h264_vaapi', 'H.264 stays the default');
+});
+
 test('4K HEVC is scaled down and encoded on the GPU', () => {
   const x = args({ plan: 'transcode', encoder: 'vaapi', info: { streams: [v({ codec_name: 'hevc', height: 2160 }), a()] } });
   assert.ok(x.includes('h264_vaapi'));

@@ -119,9 +119,11 @@ test('removes the original and keeps playback and subtitles working', { skip: !h
 
   const movieFile = path.join(lib.movies, 'Remux.Film.2021', 'Remux.Film.2021.mkv');
   const sidecar = lib.episode.replace(/\.mkv$/, '.en.srt');
+  settings.set('web_remux_ahead', '0');   // the default: repackaged copies only when needed
   await media.record('movie', 2, movieFile);
   await media.record('episode', 1, lib.episode);
-  await until(() => media.rows.get('movie', 2).web_state === 'ready' && media.rows.get('episode', 1).web_state === 'ready');
+  await until(() => media.rows.get('episode', 1).web_state === 'ready');
+  assert.equal(media.rows.get('movie', 2).web_state, 'none', 'no repackaged copy made ahead of time');
 
   const purged = [];
   const fakeTx = {
@@ -143,6 +145,10 @@ test('removes the original and keeps playback and subtitles working', { skip: !h
   assert.deepEqual(await cleanup.sweepSeeded({ tx: fakeTx }), { removed: 0 }, 'off by default');
 
   settings.set('seed_cleanup', 'remux');
+  // Seeded enough, but no copy yet: the sweep has it made, and removes nothing.
+  assert.deepEqual(await cleanup.sweepSeeded({ tx: fakeTx }), { removed: 0 });
+  assert.ok(['queued', 'encoding', 'ready'].includes(media.rows.get('movie', 2).web_state), 'the copy is being made');
+  await until(() => media.rows.get('movie', 2).web_state === 'ready');
   assert.deepEqual(await cleanup.sweepSeeded({ tx: fakeTx }), { removed: 1 });
   assert.deepEqual(purged, [41], 'only the repackaged movie; the converted episode needs "all"');
 
@@ -176,4 +182,31 @@ test('removes the original and keeps playback and subtitles working', { skip: !h
   // Nothing left to do; a second pass is a no-op.
   assert.deepEqual(await cleanup.sweepSeeded({ tx: fakeTx }), { removed: 0 });
   assert.deepEqual(purged, [41, 42]);
+});
+
+test('repackaged copies nobody opened for a while are dropped; the only copy, and conversions, stay', () => {
+  const { db } = require('../server/db');
+  const fsx = require('fs');
+  const pathx = require('path');
+  settings.set('web_keep_days', '14');
+  settings.set('web_remux_ahead', '0');
+  const src = pathx.join(dir, 'still-here.mkv');
+  fsx.writeFileSync(src, 'x');
+  const old = "datetime('now', '-30 days')";
+  for (const [id, plan, removed] of [[501, 'remux', null], [502, 'remux', 'x'], [503, 'transcode', null], [504, 'remux', null]]) {
+    media.rows.upsert('movie', id, { path: src, size: 1, plan, plan_reason: 'x', web_state: 'ready', original_removed_at: removed });
+    fsx.mkdirSync(media.webDir('movie', id), { recursive: true });
+    fsx.writeFileSync(pathx.join(media.webDir('movie', id), 'master.m3u8'), '#EXTM3U\n');
+    db.prepare(`UPDATE media_files SET web_last_used = ${id === 504 ? "datetime('now', '-2 days')" : old} WHERE kind = 'movie' AND item_id = ?`).run(id);
+  }
+  const r = media.dropUnwatched();
+  assert.equal(r.dropped, 1);
+  assert.equal(media.rows.get('movie', 501).web_state, 'none', 'unwatched for 30 days: dropped');
+  assert.equal(fsx.existsSync(media.webDir('movie', 501)), false);
+  assert.equal(media.rows.get('movie', 502).web_state, 'ready', 'the only copy left stays');
+  assert.equal(media.rows.get('movie', 503).web_state, 'ready', 'a conversion stays');
+  assert.equal(media.rows.get('movie', 504).web_state, 'ready', 'watched two days ago stays');
+  media.touchWeb('movie', 504);
+  settings.set('web_keep_days', '0');
+  assert.equal(media.dropUnwatched().dropped, 0, '0 keeps them all');
 });

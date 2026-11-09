@@ -231,6 +231,9 @@ const migrations = [
   'ALTER TABLE shows    ADD COLUMN first_air_year INTEGER',
   'ALTER TABLE shows    ADD COLUMN origin_country TEXT',
   'ALTER TABLE shows    ADD COLUMN original_title TEXT',
+  // Ways releases write this show's name that the strict rule turned down,
+  // and what was decided about each: { "<name>": { verdict, how, at, other? } }.
+  'ALTER TABLE shows    ADD COLUMN name_variants TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}
@@ -556,12 +559,17 @@ const logs = {
    * parameters — never interpolated — so a crafted query string cannot reach
    * the SQL.
    */
-  recent: ({ limit = 200, level = null, entityType = null, entityId = null } = {}) => {
+  recent: ({ limit = 200, level = null, entityType = null, entityId = null, showId = null } = {}) => {
     const where = [];
     const args  = [];
     if (level)      { where.push('level = ?');       args.push(level); }
     if (entityType) { where.push('entity_type = ?'); args.push(entityType); }
     if (entityId)   { where.push('entity_id = ?');   args.push(Number(entityId)); }
+    // A show and all its episodes.
+    if (showId) {
+      where.push("((entity_type = 'show' AND entity_id = ?) OR (entity_type = 'episode' AND entity_id IN (SELECT id FROM episodes WHERE show_id = ?)))");
+      args.push(Number(showId), Number(showId));
+    }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     args.push(Math.min(Math.max(Number(limit) || 200, 1), 1000));
     return db.prepare(`

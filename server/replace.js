@@ -54,6 +54,8 @@ async function replaceDownload(kind, id, { reason = 'wrong video', wrong = true,
     removed = (await deletion.removeDownload(kind, id, tx ? { tx } : {})).original;
   }
 
+  // Found under a name learned from TMDB, and wrong after all: never that name again.
+  if (wrong && kind === 'episode' && row.release_title) require('./shownames').unlearn(item.show, row.release_title);
   const rejected = parseList(row.rejected_releases);
   if (wrong && row.magnet && !rejected.some(r => r.magnet === row.magnet)) {
     rejected.push({ magnet: row.magnet, title: row.release_title || null, reason, at: new Date().toISOString(), by });
@@ -78,4 +80,72 @@ async function replaceDownload(kind, id, { reason = 'wrong video', wrong = true,
   return { removed, release };
 }
 
-module.exports = { replaceDownload, RESET };
+/**
+ * The items a download shares its torrent with (a season or series pack),
+ * this one included: [{ kind, id }]. Just this one for a single release.
+ */
+function packOf(kind, id) {
+  const item = media.itemFor(kind, id);
+  if (!item?.row.torrent_id) return item ? [{ kind, id }] : [];
+  const target = kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
+  return [{ kind, id: Number(id) }, ...deletion.sharers(item, item.row.torrent_id, target)];
+}
+
+/**
+ * A whole pack was wrong (the wrong show's season, a mislabelled set): every
+ * episode it downloaded is replaced at once, and the torrent goes with all its
+ * data — rather than one Wrong video per episode, each dropping one file. A
+ * torrent that was in Transmission before auto_magnet asked for it is left
+ * as it was, its files with it; only the library forgets them.
+ */
+async function replacePack(kind, id, { reason = 'wrong pack', by = null, tx = require('./transmission') } = {}) {
+  const item = media.itemFor(kind, id);
+  if (!item) throw fail('Not found', 404);
+  const members = packOf(kind, id).map(m => media.itemFor(m.kind, m.id)).filter(Boolean);
+  if (members.length < 2) return { ...(await replaceDownload(kind, id, { reason, wrong: true, by, tx })), count: 1 };
+
+  const target = kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
+  const ours = item.row.torrent_origin !== 'duplicate';
+  // Subtitles beside each file are found by its name: collect them before anything goes.
+  const sidecars = members.flatMap((m) => {
+    const r = media.rows.get(m.kind, m.id);
+    return r && !r.original_removed_at ? media.listSubtitles(r).filter(s => s.source === 'file').map(s => s.file) : [];
+  });
+  const files = members.map(m => media.rows.get(m.kind, m.id)?.path).filter(Boolean);
+  if (ours) {
+    try { await tx.purgeTorrent(item.row.torrent_id, tx.resolveTarget(target)); } catch (err) {
+      throw fail(`Transmission can't be reached to remove the pack (${err.message}) — try again once it is`, 503);
+    }
+    for (const f of sidecars) {
+      if (!deletion.insideLibrary(f)) continue;
+      require('fs').rmSync(f, { force: true });
+      require('fs').rmSync(`${f}.bak`, { force: true });
+    }
+    for (const f of files) deletion.removeEmptyReleaseFolder(f);
+  }
+
+  let release = null;
+  for (const m of members) {
+    const row = m.row;
+    release ??= row.release_title || null;
+    deletion.forgetFile(m.kind, m.id);
+    if (m.kind === 'episode' && row.release_title) require('./shownames').unlearn(m.show, row.release_title);
+    const rejected = parseList(row.rejected_releases);
+    if (row.magnet && !rejected.some(r => r.magnet === row.magnet)) {
+      rejected.push({ magnet: row.magnet, title: row.release_title || null, reason, at: new Date().toISOString(), by });
+    }
+    const tried = parseList(row.tried_magnets);
+    if (row.magnet && !tried.includes(row.magnet)) tried.push(row.magnet);
+    (m.kind === 'movie' ? movies : episodes).update(m.id, {
+      ...RESET, tried_magnets: JSON.stringify(tried), rejected_releases: JSON.stringify(rejected),
+      last_error: `Replacing the wrong pack: ${reason}`,
+    });
+  }
+  log.info(`wrong pack replaced${by ? ` by ${by}` : ''}${release ? ` — "${release}"` : ''} (${reason}): `
+    + `${members.length} items; ${ours ? 'torrent removed with its files' : 'torrent was already in Transmission — left as it was'}; looking for others`,
+  { type: kind, id });
+  setImmediate(() => require('./scheduler').run().catch(() => {}));
+  return { removed: ours ? 'torrent removed with its files' : 'left in Transmission', release, count: members.length };
+}
+
+module.exports = { replaceDownload, replacePack, packOf, RESET };

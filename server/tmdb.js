@@ -27,6 +27,18 @@ async function searchMulti(query) {
     }));
 }
 
+/** TV shows only: [{ tmdb_id, name, original_name, year }]. */
+async function searchTv(query) {
+  const url = `${BASE}/search/tv?api_key=${apiKey()}&query=${encodeURIComponent(query)}&include_adult=false`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.results || []).slice(0, 20).map(r => ({
+    tmdb_id: r.id, name: r.name, original_name: r.original_name || null,
+    year: Number(String(r.first_air_date || '').slice(0, 4)) || null,
+  }));
+}
+
 async function getMovieDetails(tmdbId) {
   const url = `${BASE}/movie/${tmdbId}?api_key=${apiKey()}&append_to_response=external_ids`;
   const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
@@ -150,4 +162,4 @@ async function getMovieReleaseDates(tmdbId, region = 'US') {
   }
 }
 
-module.exports = { searchMulti, getMovieDetails, getTvDetails, getSeasonDetails, getMovieReleaseDates };
+module.exports = { searchMulti, searchTv, getMovieDetails, getTvDetails, getSeasonDetails, getMovieReleaseDates };

@@ -153,10 +153,12 @@ router.post('/preview', async (req, res) => {
       const d = await getTvDetails(tmdb_id);
       if (!d) return res.status(404).json({ error: 'Not found on TMDB' });
       ({ title, imdb_id: imdbId } = d);
+      const tracked = shows.all().find(s => Number(s.tmdb_id) === Number(tmdb_id));
       identity = {
         firstAirYear: d.first_air_year || null,
         countries: String(d.origin_country || '').split(',').filter(Boolean),
         originalTitle: d.original_title || null,
+        variants: tracked ? require('../shownames').accepted(tracked) : [],
       };
     }
 
@@ -279,6 +281,11 @@ router.post('/grab', async (req, res) => {
       `grabbed by hand: ${torrent.title || torrentUrl.slice(0, 60)}`,
       { type: target.kind, id: target.id },
     );
+    // Someone looked: the way this release writes the show's name is right.
+    if (target.kind === 'episode' && torrent.title) {
+      const sh = shows.byId(target.row.show_id);
+      if (sh) require('../shownames').learnPicked(sh, torrent.title);
+    }
     // Its progress now, not at the next hourly run: a torrent Transmission
     // already had may well be complete.
     setTimeout(() => require('../scheduler').quickSync().catch(() => {}), 3000);

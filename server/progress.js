@@ -14,7 +14,9 @@ const END_SHARE = 0.92;
 /** Below this, it's someone pressing play by accident — no resume point. */
 const MIN_RESUME = 30;
 
-function isFinished(position, duration) {
+function isFinished(position, duration, creditsAt = null) {
+  // The end credits were found: reaching them is the end of the episode.
+  if (creditsAt && position >= creditsAt - 5) return true;
   if (!duration || duration <= 0) return false;
   return position >= duration * END_SHARE || duration - position <= Math.min(END_SECONDS, duration * 0.1);
 }
@@ -39,7 +41,7 @@ function forUser(userId) {
  * Record a position. Returns the stored row, which is the existing one when
  * the incoming report is older than what is already there.
  */
-function report(userId, kind, id, { position, duration = null, at = Date.now(), watched = null }) {
+function report(userId, kind, id, { position, duration = null, at = Date.now(), watched = null, creditsAt = null }) {
   const pos = Math.max(0, Number(position) || 0);
   const dur = Number(duration) > 0 ? Number(duration) : null;
   const when = Number.isFinite(Date.parse(at)) ? Date.parse(at) : Number(at) || Date.now();
@@ -49,9 +51,10 @@ function report(userId, kind, id, { position, duration = null, at = Date.now(), 
   const prev = get(userId, kind, id);
   if (prev && prev.updated_at > stamp) return prev;
 
-  const done = watched === null ? (isFinished(pos, dur) || (prev?.watched && pos < MIN_RESUME) ? 1 : 0) : (watched ? 1 : 0);
+  const finished = isFinished(pos, dur, creditsAt);
+  const done = watched === null ? (finished || (prev?.watched && pos < MIN_RESUME) ? 1 : 0) : (watched ? 1 : 0);
   // Finished: the resume point goes back to the start for a rewatch.
-  const keep = done && isFinished(pos, dur) ? 0 : (pos < MIN_RESUME ? 0 : pos);
+  const keep = done && finished ? 0 : (pos < MIN_RESUME ? 0 : pos);
   db.prepare(`
     INSERT INTO playback_progress (user_id, kind, item_id, position, duration, watched, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)

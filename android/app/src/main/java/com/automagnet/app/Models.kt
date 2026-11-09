@@ -172,9 +172,13 @@ data class ItemDetail(
     /** This account's audio languages to try, in order: a remembered pick first. */
     @SerialName("audio_langs") val audioLangs: List<String> = emptyList(),
     val intro: Intro? = null,
+    /** The end credits, when found: the next episode is offered from there. */
+    val credits: Intro? = null,
     val original: Original? = null,
     /** Admins: the release it came from. */
     val release: String? = null,
+    /** Admins: how many items the same torrent downloaded (a pack when over 1). */
+    @SerialName("pack_size") val packSize: Int? = null,
 ) {
     fun asItem() = Item(
         kind = kind, id = id, title = title, posterUrl = posterUrl, duration = duration, progress = progress,
@@ -224,7 +228,7 @@ data class LocalSubtitle(val id: String, val label: String, val lang: String? = 
 @Serializable
 data class AdminMovie(
     val id: Int,
-    @SerialName("tmdb_id") val tmdbId: Int,
+    @SerialName("tmdb_id") val tmdbId: Int = 0,
     val title: String,
     val year: Int? = null,
     @SerialName("poster_url") val posterUrl: String? = null,
@@ -261,7 +265,7 @@ data class AdminEpisode(
 @Serializable
 data class AdminShow(
     val id: Int,
-    @SerialName("tmdb_id") val tmdbId: Int,
+    @SerialName("tmdb_id") val tmdbId: Int = 0,
     val title: String,
     @SerialName("poster_url") val posterUrl: String? = null,
     val active: Int = 1,
@@ -281,7 +285,7 @@ data class AdminShow(
 
 @Serializable
 data class TmdbResult(
-    @SerialName("tmdb_id") val tmdbId: Int,
+    @SerialName("tmdb_id") val tmdbId: Int = 0,
     val type: String,                       // "movie" | "tv"
     val title: String,
     val year: String? = null,

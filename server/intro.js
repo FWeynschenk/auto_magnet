@@ -49,6 +49,23 @@ db.exec(`
     data     BLOB    NOT NULL,
     PRIMARY KEY (kind, item_id)
   );
+  CREATE TABLE IF NOT EXISTS audio_tail_prints (
+    kind     TEXT    NOT NULL,
+    item_id  INTEGER NOT NULL,
+    secs     REAL    NOT NULL,
+    start    REAL    NOT NULL DEFAULT 0,  -- where in the episode the printed audio starts
+    data     BLOB    NOT NULL,
+    PRIMARY KEY (kind, item_id)
+  );
+  CREATE TABLE IF NOT EXISTS credits (
+    kind        TEXT    NOT NULL,
+    item_id     INTEGER NOT NULL,
+    start       REAL,
+    end         REAL,
+    siblings    INTEGER NOT NULL DEFAULT 0,
+    detected_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (kind, item_id)
+  );
   CREATE TABLE IF NOT EXISTS intros (
     kind        TEXT    NOT NULL,
     item_id     INTEGER NOT NULL,
@@ -60,12 +77,16 @@ db.exec(`
   );
 `);
 
+// Intro prints from before credits existed: they start at 0.
+try { db.exec('ALTER TABLE audio_prints ADD COLUMN start REAL NOT NULL DEFAULT 0'); } catch (_) {}
+
 // ─── Fingerprints ─────────────────────────────────────────────────────────────
 
 /** Raw Chromaprint values for the first `secs` of an audio stream, as a Uint32Array. */
-function fingerprint(file, { secs = SCAN_SECS, map = '0:a:0' } = {}) {
+function fingerprint(file, { secs = SCAN_SECS, map = '0:a:0', start = 0 } = {}) {
   return new Promise((resolve, reject) => {
-    const args = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-t', String(secs), '-i', file,
+    const args = ['-nostdin', '-hide_banner', '-loglevel', 'error',
+      ...(start > 0 ? ['-ss', String(start)] : []), '-t', String(secs), '-i', file,
       '-map', map, '-vn', '-sn', '-dn', '-ac', '1', '-f', 'chromaprint', '-fp_format', 'raw', 'pipe:1'];
     const p = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks = [];
@@ -144,12 +165,35 @@ function sharedStretch(A, B, { minSecs = MIN_SECS, maxSecs = MAX_SECS } = {}) {
 
 // ─── Episodes ─────────────────────────────────────────────────────────────────
 
-async function printOf(row) {
-  const kept = db.prepare('SELECT data FROM audio_prints WHERE kind = ? AND item_id = ?').get(row.kind, row.item_id);
+// ─── Intro and credits ────────────────────────────────────────────────────────
+//
+// The same comparison finds both. The intro is shared near the start (the
+// first third, at most ten minutes); the end credits near the end (the last
+// quarter, at most seven minutes). Prints are kept per part.
+
+const PARTS = {
+  intro:   { table: 'intros',  prints: 'audio_prints',      min: MIN_SECS, max: MAX_SECS },
+  credits: { table: 'credits', prints: 'audio_tail_prints', min: 15,       max: 420 },
+};
+const TAIL_SECS = 420;
+
+/** Where the audio to print starts, and how long it is: { start, secs }, or null. */
+function window(row, part) {
+  if (part === 'intro') return { start: 0, secs: Math.min(SCAN_SECS, row.duration ? row.duration / 3 : SCAN_SECS) };
+  if (!row.duration || row.duration < 120) return null;
+  const secs = Math.min(TAIL_SECS, row.duration / 4);
+  return { start: Math.max(0, row.duration - secs), secs };
+}
+
+async function printOf(row, part = 'intro') {
+  const P = PARTS[part];
+  const kept = db.prepare(`SELECT data, start FROM ${P.prints} WHERE kind = ? AND item_id = ?`).get(row.kind, row.item_id);
   if (kept) {
     const b = Buffer.from(kept.data);
-    return new Uint32Array(b.buffer, b.byteOffset, Math.floor(b.length / 4));
+    return { fp: new Uint32Array(b.buffer, b.byteOffset, Math.floor(b.length / 4)), start: kept.start || 0 };
   }
+  const w = window(row, part);
+  if (!w) return null;
   const media = require('./media');
   let src = null, map = '0:a:0';
   if (row.path && !row.original_removed_at && fs.existsSync(row.path)) {
@@ -164,11 +208,10 @@ async function printOf(row) {
     src = fs.existsSync(a0) ? a0 : fs.existsSync(v) ? v : null;
   }
   if (!src) return null;
-  const secs = Math.min(SCAN_SECS, row.duration ? row.duration / 3 : SCAN_SECS);
-  const fp = await fingerprint(src, { secs, map });
-  db.prepare('INSERT OR REPLACE INTO audio_prints (kind, item_id, secs, data) VALUES (?, ?, ?, ?)')
-    .run(row.kind, row.item_id, secs, Buffer.from(fp.buffer, fp.byteOffset, fp.byteLength));
-  return fp;
+  const fp = await fingerprint(src, { secs: w.secs, map, start: w.start });
+  db.prepare(`INSERT OR REPLACE INTO ${P.prints} (kind, item_id, secs, start, data) VALUES (?, ?, ?, ?, ?)`)
+    .run(row.kind, row.item_id, w.secs, w.start, Buffer.from(fp.buffer, fp.byteOffset, fp.byteLength));
+  return { fp, start: w.start };
 }
 
 /** Episodes of the same season that have a file, in order: [{ id, episode, row }]. */
@@ -181,71 +224,85 @@ function seasonOf(episodeId) {
   `).all(ep.show_id, ep.season);
 }
 
-function save(id, found, siblings) {
-  db.prepare('INSERT OR REPLACE INTO intros (kind, item_id, start, end, siblings) VALUES (?, ?, ?, ?, ?)')
+function save(part, id, found, siblings) {
+  db.prepare(`INSERT OR REPLACE INTO ${PARTS[part].table} (kind, item_id, start, end, siblings) VALUES (?, ?, ?, ?, ?)`)
     .run('episode', id, found ? found[0] : null, found ? found[1] : null, siblings);
 }
 
 /**
- * Look for this episode's intro by comparing it with the next episode of the
- * season (or the previous). Saves what it finds for both.
+ * Look for this episode's intro (or credits) by comparing it with the next
+ * episode of the season (or the previous). Saves what it finds for both.
  */
-async function detect(episodeId) {
+async function detect(episodeId, part = 'intro') {
+  const P = PARTS[part];
   const season = seasonOf(episodeId);
   const k = season.findIndex(r => r.id === episodeId);
   if (k < 0 || season.length < 2) return null;
-  const me = await printOf(season[k]);
+  const me = await printOf(season[k], part);
   if (!me) return null;
   for (const other of [season[k + 1], season[k - 1], season[k + 2], season[k - 2]].filter(Boolean)) {
-    const them = await printOf(other);
+    const them = await printOf(other, part);
     if (!them) continue;
-    const r = sharedStretch(me, them);
+    const r = sharedStretch(me.fp, them.fp, { minSecs: P.min, maxSecs: P.max });
     if (!r) continue;
-    save(episodeId, r.a, season.length);
-    const known = db.prepare("SELECT start FROM intros WHERE kind = 'episode' AND item_id = ?").get(other.id);
-    if (!known || known.start === null) save(other.id, r.b, season.length);
-    return { start: r.a[0], end: r.a[1] };
+    const at = (s, [a, b]) => [Math.round((s + a) * 10) / 10, Math.round((s + b) * 10) / 10];
+    const mine = at(me.start, r.a);
+    save(part, episodeId, mine, season.length);
+    const known = db.prepare(`SELECT start FROM ${P.table} WHERE kind = 'episode' AND item_id = ?`).get(other.id);
+    if (!known || known.start === null) save(part, other.id, at(them.start, r.b), season.length);
+    return { start: mine[0], end: mine[1] };
   }
-  save(episodeId, null, season.length);
+  save(part, episodeId, null, season.length);
   return null;
 }
 
-/** The intro of an episode, if one was found: { start, end }. */
-function introOf(kind, id) {
+function partOf(kind, id, part) {
   if (kind !== 'episode') return null;
-  const r = db.prepare("SELECT start, end FROM intros WHERE kind = 'episode' AND item_id = ?").get(id);
+  const r = db.prepare(`SELECT start, end FROM ${PARTS[part].table} WHERE kind = 'episode' AND item_id = ?`).get(id);
   return r && r.start !== null ? { start: r.start, end: r.end } : null;
 }
+
+/** The intro of an episode, if one was found: { start, end }. */
+const introOf = (kind, id) => partOf(kind, id, 'intro');
+/** The end credits of an episode, if found: { start, end }. */
+const creditsOf = (kind, id) => partOf(kind, id, 'credits');
 
 /**
  * A batch of episodes still to look at: never looked, or nothing found while
  * the season had fewer episodes than it does now. Oldest first.
  */
-async function pass({ limit = 12 } = {}) {
-  const todo = db.prepare(`
-    SELECT e.id FROM episodes e
-      JOIN media_files m ON m.kind = 'episode' AND m.item_id = e.id
-      LEFT JOIN intros i ON i.kind = 'episode' AND i.item_id = e.id
-    WHERE e.status = 'done'
-      AND (i.item_id IS NULL OR (i.start IS NULL AND i.siblings < (
-        SELECT COUNT(*) FROM episodes s JOIN media_files sm ON sm.kind = 'episode' AND sm.item_id = s.id
-        WHERE s.show_id = e.show_id AND s.season = e.season AND s.status = 'done')))
-      AND (SELECT COUNT(*) FROM episodes s JOIN media_files sm ON sm.kind = 'episode' AND sm.item_id = s.id
-           WHERE s.show_id = e.show_id AND s.season = e.season AND s.status = 'done') >= 2
-    ORDER BY e.id LIMIT ?
-  `).all(limit);
-  let found = 0;
-  for (const { id } of todo) {
-    if (introOf('episode', id)) continue;   // found meanwhile, comparing a neighbour
-    try { if (await detect(id)) found++; } catch (err) { log.warn(`intro detection failed: ${err.message}`, { type: 'episode', id }); }
+async function pass({ limit = 12, parts = ['intro', 'credits'] } = {}) {
+  let checked = 0, found = 0;
+  for (const part of parts) {
+    const T = PARTS[part].table;
+    const todo = db.prepare(`
+      SELECT e.id FROM episodes e
+        JOIN media_files m ON m.kind = 'episode' AND m.item_id = e.id
+        LEFT JOIN ${T} i ON i.kind = 'episode' AND i.item_id = e.id
+      WHERE e.status = 'done'
+        AND (i.item_id IS NULL OR (i.start IS NULL AND i.siblings < (
+          SELECT COUNT(*) FROM episodes s JOIN media_files sm ON sm.kind = 'episode' AND sm.item_id = s.id
+          WHERE s.show_id = e.show_id AND s.season = e.season AND s.status = 'done')))
+        AND (SELECT COUNT(*) FROM episodes s JOIN media_files sm ON sm.kind = 'episode' AND sm.item_id = s.id
+             WHERE s.show_id = e.show_id AND s.season = e.season AND s.status = 'done') >= 2
+      ORDER BY e.id LIMIT ?
+    `).all(limit);
+    let n = 0;
+    for (const { id } of todo) {
+      if (partOf('episode', id, part)) continue;   // found meanwhile, comparing a neighbour
+      try { if (await detect(id, part)) n++; } catch (err) { log.warn(`${part} detection failed: ${err.message}`, { type: 'episode', id }); }
+    }
+    if (n) log.info(`found the ${part === 'intro' ? 'intro' : 'end credits'} in ${n} episode(s)`);
+    checked += todo.length; found += n;
   }
-  if (found) log.info(`found the intro in ${found} episode(s)`);
-  return { checked: todo.length, found };
+  return { checked, found };
 }
 
 function forget(kind, id) {
-  db.prepare('DELETE FROM audio_prints WHERE kind = ? AND item_id = ?').run(kind, id);
-  db.prepare('DELETE FROM intros WHERE kind = ? AND item_id = ?').run(kind, id);
+  for (const P of Object.values(PARTS)) {
+    db.prepare(`DELETE FROM ${P.prints} WHERE kind = ? AND item_id = ?`).run(kind, id);
+    db.prepare(`DELETE FROM ${P.table} WHERE kind = ? AND item_id = ?`).run(kind, id);
+  }
 }
 
 let timer = null;
@@ -256,4 +313,4 @@ function start() {
   timer.unref();
 }
 
-module.exports = { start, pass, detect, introOf, forget, sharedStretch, fingerprint, SECS_PER_POINT };
+module.exports = { start, pass, detect, introOf, creditsOf, forget, sharedStretch, fingerprint, SECS_PER_POINT };

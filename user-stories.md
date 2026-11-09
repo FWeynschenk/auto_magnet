@@ -847,3 +847,46 @@ Redo and adding a show call `run()` directly, so a test server could still searc
 
 **Shown:** `release_title` is stored at every grab and shown in Movies, Shows, the player
 menu (admins) and the app. Redo of a downloaded item asks first, naming the release.
+
+## Implementation notes (2026-11-09): credits, packs, library check, learning names
+
+**Two bugs first:**
+1. Post-processing could run twice at once: the minute-level `quickSync()` and the hourly run
+   both called `postProcessCompleted()`. It now joins a pass already in flight
+   (`passInFlight`), and `run()` waits while a quick sync is going.
+2. The Android Manage tab failed on a movie without `tmdb_id` ("Unexpected JSON token").
+   The JSON parser now has `coerceInputValues = true`, and the ids default to 0.
+
+**Skip credits / Up next.** `intro.js` has a second part, `credits`: the last
+`min(7 min, duration / 4)` is fingerprinted (`-ss` before `-i`, so it's quick) into
+`audio_tail_prints`, matched across the season with the same `sharedStretch()`, and stored in
+`credits` as absolute times. `creditsOf(kind, id)` comes with the item. The web player and the
+app start Up next at the credits start and cancel it on a seek back. When more than 20 s of the file follow the
+shared stretch (a scene after the credits), they don't move on there but show Skip credits, and
+the usual Up next comes at the end. `progress.isFinished()` takes `creditsAt`: from 5 s before the credits it's watched.
+
+**Wrong pack.** `replace.packOf()` is the item plus `deletion.sharers()`. `replacePack()` purges
+the torrent once (when ours), removes sidecars and the empty release folder, then for each
+member: forget the file, add the release to `rejected_releases`, reset. `POST
+/items/:kind/:id/wrong` takes `pack: true`; the item reports `pack_size` to admins.
+
+**Library check.** `librarycheck.js` `run()` compares `done`/`downloading` items with the disk
+and each Transmission instance (an instance that can't be asked is listed, never counted
+against anything), finds `movie-N`/`episode-N` folders in `WEB_ROOT`, `thumbs/` and `subs/` with
+no row, and keeps the report in the `library_check` setting. `fix(kind)` handles missing and
+stuck (a replace that doesn't mark the release wrong), broken web versions (encode again) and
+leftover folders (removed only inside `WEB_ROOT`), then checks again. Weekly; `GET/POST
+/api/health/library`, `POST /api/health/library/fix/:kind`.
+
+**Activity.** `/api/log` adds a label, `show_id` and `show_label` to each row and filters by
+`show_id` (the show and its episodes) as well as `entity_id`.
+
+**Learning names.** `shownames.js`. Matching stays strict (`extraShowWords`). After
+`RELAX_AFTER_RUNS` (3) empty runs, `learnFrom()` takes the rejections whose reason is that the
+name belongs to another show, groups them by `showPartOf()` (the words before the episode
+marker), and asks TMDB `searchTv()` about each new one. A name that is exactly another show's
+name or original name is stored as `other`, otherwise as `variant`. `shows.name_variants` holds
+`{part: {verdict, how: tmdb|picked|wrong, at}}`; `accepted()` feeds `want.variants`, and
+`extraShowWords()` returns nothing for those parts. A hand grab for an episode calls
+`learnPicked()`; Wrong video calls `unlearn()`, which marks the part `other` so it isn't
+learned back.

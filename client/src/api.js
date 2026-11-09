@@ -95,6 +95,9 @@ export const settings = {
 export const health = {
   report: ()  => req('GET',  '/health', null, { timeoutMs: 30_000 }),
   backup: ()  => req('POST', '/health/backup', null, { timeoutMs: 120_000 }),
+  library:    ()     => req('GET',  '/health/library'),
+  checkLibrary: ()   => req('POST', '/health/library', null, { timeoutMs: 120_000 }),
+  fixLibrary: (kind) => req('POST', `/health/library/fix/${kind}`, null, { timeoutMs: 300_000 }),
 };
 
 export const scheduler = {
@@ -150,7 +153,7 @@ export const watch = {
   reencode:    (kind, id)         => req('POST', `${item(kind, id)}/reencode`),
   deleteWeb:   (kind, id)         => req('DELETE', `${item(kind, id)}/web`),
   // Admin: not the right video — removed, never picked again, another found.
-  wrong:       (kind, id, reason) => req('POST', `${item(kind, id)}/wrong`, { reason }, { timeoutMs: 60_000 }),
+  wrong:       (kind, id, reason, pack = false) => req('POST', `${item(kind, id)}/wrong`, { reason, pack }, { timeoutMs: 60_000 }),
   // What was picked in the player, remembered for the show (or film).
   choice:      (kind, id, body)   => req('POST', `${item(kind, id)}/choice`, body, { timeoutMs: 15_000 }),
   deleteAll:   (kind, id)         => req('DELETE', item(kind, id)),

@@ -53,3 +53,25 @@ test('the status report lists every disk and service without waiting long on any
   assert.equal(r.scheduler.running, false);
   void db;
 });
+
+test('the library check finds what drifted, and puts it right', async () => {
+  const media = require('../server/media');
+  const check = require('../server/librarycheck');
+  db.prepare("INSERT INTO movies (id, title, year, status, torrent_id, torrent_origin) VALUES (61, 'Gone Film', 2020, 'done', 5, 'added'), (62, 'Stuck Film', 2021, 'downloading', 6, 'added')").run();
+  media.rows.upsert('movie', 61, { path: path.join(dir, 'not-there.mkv'), size: 1, plan: 'direct', plan_reason: 'x' });
+  fs.mkdirSync(path.join(media.WEB_ROOT, 'movie-999', 'v'), { recursive: true });
+  fs.writeFileSync(path.join(media.WEB_ROOT, 'movie-999', 'v', 'seg_00000.m4s'), Buffer.alloc(1000));
+  const fakeTx = { listTargets: () => [{ name: 'default' }], resolveTarget: () => ({ name: 'default' }), listTorrents: async () => [{ id: 1 }] };
+
+  const r = await check.run({ tx: fakeTx });
+  assert.deepEqual(r.missing.map(m => m.id), [61]);
+  assert.deepEqual(r.stuck.map(m => m.id), [62]);
+  assert.deepEqual(r.notSeeding.map(m => m.id), [61]);
+  assert.equal(r.orphans.length, 1);
+  assert.ok(r.orphanBytes >= 1000);
+  assert.deepEqual(check.last().missing.map(m => m.id), [61], 'kept for the status view');
+
+  const f = await check.fix('orphans');
+  assert.equal(f.fixed, 1);
+  assert.equal(fs.existsSync(path.join(media.WEB_ROOT, 'movie-999')), false);
+});

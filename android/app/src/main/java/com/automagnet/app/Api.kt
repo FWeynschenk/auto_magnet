@@ -72,7 +72,9 @@ class AuthException(msg: String) : IOException(msg)
 class ApiException(val status: Int, msg: String) : IOException(msg)
 
 object Api {
-    val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true }
+    // coerceInputValues: a null where a field has a default takes the default,
+    // so one odd row (a movie without a TMDB id) can't fail a whole list.
+    val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true; coerceInputValues = true }
     private val JSON_TYPE = "application/json".toMediaType()
 
     /**
@@ -160,8 +162,8 @@ object Api {
     suspend fun deleteWebVersion(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id/web") }
     suspend fun deleteFromDisk(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id") }
     /** Admin: not the right video. Deleted, never picked again for it, another looked for. */
-    suspend fun wrongVideo(kind: String, id: Int, reason: String) {
-        call("POST", "/api/watch/items/$kind/$id/wrong", obj("reason" to reason))
+    suspend fun wrongVideo(kind: String, id: Int, reason: String, pack: Boolean = false) {
+        call("POST", "/api/watch/items/$kind/$id/wrong", obj("reason" to reason, "pack" to pack))
     }
 
     suspend fun setWatched(kind: String, id: Int, watched: Boolean): Progress =

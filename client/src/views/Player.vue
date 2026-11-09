@@ -70,6 +70,7 @@
         @loadedmetadata="onMeta"
       />
       <button v-if="showSkip" class="skip-intro" @click="skipIntro">Skip intro ▸</button>
+      <button v-else-if="showSkipCredits" class="skip-intro" @click="skipCredits">Skip credits ▸</button>
       <ScrubBar v-if="playing" :video="video" :thumbs-url="`/api/watch/items/${props.kind}/${props.id}/thumbs.json`" :marks="introMarks" />
 
       <div v-if="resumedAt" class="toast-resume">
@@ -389,6 +390,7 @@ function teardown() {
   delMenu.value = false;
   audioTracks.value = [];
   audioPreferred = false;
+  creditsReached = false;
   const v = video.value;
   if (v) {
     v.removeAttribute('src');
@@ -603,15 +605,49 @@ function onMeta() { applyOffset(); }
 // ─── Skip intro ──────────────────────────────────────────────────────────────
 const now = ref(0);
 const intro = computed(() => item.value?.intro || null);
-const introMarks = computed(() => (intro.value ? [{ start: intro.value.start, end: intro.value.end, label: 'Intro' }] : []));
+const credits = computed(() => item.value?.credits || null);
+const introMarks = computed(() => [
+  ...(intro.value ? [{ start: intro.value.start, end: intro.value.end, label: 'Intro' }] : []),
+  ...(credits.value ? [{ start: credits.value.start, end: credits.value.end, label: 'Credits' }] : []),
+]);
 // From its start until a couple of seconds before it ends.
 const showSkip = computed(() => !!intro.value && now.value >= intro.value.start && now.value < intro.value.end - 2);
 function skipIntro() {
   if (video.value && intro.value) video.value.currentTime = intro.value.end;
 }
 
+// ─── End credits ─────────────────────────────────────────────────────────────
+// Found by comparing episodes (intro.js). With a next episode, "Up next" starts
+// counting down when the credits do, not when the file ends. Without one,
+// "Skip credits" — only when something follows them (a scene after the credits).
+let creditsReached = false;
+// More than a logo after the credits: a scene, so don't move on at the credits.
+const sceneAfterCredits = () => {
+  const c = credits.value, d = video.value?.duration;
+  return !!c && Number.isFinite(d) && d - c.end > 20;
+};
+const showSkipCredits = computed(() => {
+  const c = credits.value;
+  return !!c && now.value >= c.start && now.value < c.end - 2 && sceneAfterCredits();
+});
+function skipCredits() {
+  if (video.value && credits.value) video.value.currentTime = credits.value.end;
+}
+function watchCredits() {
+  const c = credits.value;
+  if (!c) return;
+  if (now.value < c.start - 1) {
+    // Went back before the credits: no countdown any more.
+    if (creditsReached) { creditsReached = false; if (upNext.value) cancelNext(); }
+  } else if (!creditsReached && now.value >= c.start) {
+    creditsReached = true;
+    if (item.value?.next && !sceneAfterCredits()) startUpNext();
+  }
+}
+
 function onTime() {
   now.value = video.value?.currentTime || 0;
+  watchCredits();
   if (Date.now() - lastReportAt > 10_000) report(false);
   prepareNext();
 }
@@ -652,7 +688,11 @@ function report(force, { beacon = false } = {}) {
 
 function onEnded() {
   report(true);
-  if (!item.value?.next) return;
+  if (!item.value?.next || upNext.value) return;
+  startUpNext();
+}
+
+function startUpNext() {
   upNext.value = true;
   countdown.value = 10;
   clearInterval(nextTimer);
@@ -686,10 +726,13 @@ async function wrongVideo() {
     + `It is deleted (file, subtitles, web version), ${item.value.release ? `"${item.value.release}" ` : 'this release '}`
     + 'is never picked for it again, and another is looked for.', 'another show');
   if (reason === null) return;
+  // It came in a pack: the whole pack is likely wrong too.
+  const pack = item.value.pack_size > 1 && window.confirm(`This came in a pack of ${item.value.pack_size} episodes `
+    + `(${item.value.release || 'one torrent'}).\n\nOK: replace the whole pack — every episode in it.\nCancel: only this one.`);
   deleting.value = true;
   try {
-    await watch.wrong(props.kind, props.id, reason.trim() || 'the wrong video');
-    notifySuccess('Deleted — looking for another release. It appears here once it has downloaded.');
+    const r = await watch.wrong(props.kind, props.id, reason.trim() || 'the wrong video', pack);
+    notifySuccess(pack ? `Deleted ${r.count} episodes — looking for others.` : 'Deleted — looking for another release. It appears here once it has downloaded.');
     teardown();
     back();
   } catch (err) { notifyError(err.message); }
@@ -750,6 +793,7 @@ function onKey(e) {
   else if (k === 'x') nudge(250);
   else if (k === 'n') playNext();
   else if (k === 's' && showSkip.value) skipIntro();
+  else if (k === 's' && showSkipCredits.value) skipCredits();
   else if (k === 'a' && audioTracks.value.length > 1) {
     audioIdx.value = (audioIdx.value + 1) % audioTracks.value.length;
     onAudioPick();

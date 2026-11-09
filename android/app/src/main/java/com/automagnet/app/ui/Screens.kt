@@ -393,6 +393,7 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<String?>(null) }   // "web" | "all"
     var wrongReason by remember { mutableStateOf<String?>(null) }   // set: the Wrong video dialog is open
+    var wholePack by remember { mutableStateOf(false) }
 
     // Admin: the wrong video (another show or episode, a bad copy).
     wrongReason?.let { reason ->
@@ -405,15 +406,24 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
                         (detail?.release?.let { "\"$it\" " } ?: "this release ") +
                         "is never picked for it again, and another is looked for.")
                     OutlinedTextField(reason, { wrongReason = it }, label = { Text("What's wrong") }, singleLine = true)
+                    // It came in a pack: the whole pack is likely wrong too.
+                    val packSize = detail?.packSize ?: 1
+                    if (packSize > 1) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Checkbox(wholePack, { wholePack = it })
+                            Text("The whole pack ($packSize episodes)")
+                        }
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val why = reason.trim().ifEmpty { "the wrong video" }
+                    val pack = wholePack
                     wrongReason = null
                     scope.launch {
-                        runCatching { Api.wrongVideo(kind, id, why) }
-                            .onSuccess { Toast.makeText(ctx, "Deleted — looking for another release", Toast.LENGTH_LONG).show(); back() }
+                        runCatching { Api.wrongVideo(kind, id, why, pack) }
+                            .onSuccess { Toast.makeText(ctx, if (pack) "Pack deleted — looking for others" else "Deleted — looking for another release", Toast.LENGTH_LONG).show(); back() }
                             .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
                     }
                 }) { Text("Replace") }

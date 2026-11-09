@@ -154,7 +154,7 @@ class PlayerActivity : Activity() {
             }
             setPadding((18 * dp).toInt(), 0, (18 * dp).toInt(), 0)
             visibility = View.GONE
-            setOnClickListener { detail?.intro?.let { player?.seekTo((it.end * 1000).toLong()) } }
+            setOnClickListener { cornerAction?.invoke() }
         }
         menu = TextView(this).apply {
             text = "⋯"
@@ -206,6 +206,7 @@ class PlayerActivity : Activity() {
         streamSubs = emptyList()
         offsetMs = 0
         remembered = null
+        creditsAt = 0
         skipIntro.visibility = View.GONE
         message.text = "Loading…"
         message.visibility = View.VISIBLE
@@ -468,13 +469,47 @@ class PlayerActivity : Activity() {
 
     // ─── Skip intro ──────────────────────────────────────────────────────────
 
+    /** What the corner button does now: skip the intro, the credits, or go to the next episode. */
+    private var cornerAction: (() -> Unit)? = null
+    /** When the credits were reached with a next episode: the countdown runs from here. */
+    private var creditsAt: Long = 0
+
     private val introWatch = object : Runnable {
         override fun run() {
-            val intro = detail?.intro
+            val d = detail
             val p = player
             val t = (p?.currentPosition ?: 0) / 1000.0
-            val show = intro != null && p != null && !isInPictureInPictureMode && t >= intro.start && t < intro.end - 2
-            skipIntro.visibility = if (show) View.VISIBLE else View.GONE
+            val dur = p?.duration?.takeIf { it > 0 && it != C.TIME_UNSET }?.let { it / 1000.0 }
+            val intro = d?.intro
+            val credits = d?.credits
+            var label: String? = null
+            cornerAction = null
+            if (p != null && !isInPictureInPictureMode) {
+                if (intro != null && t >= intro.start && t < intro.end - 2) {
+                    label = "Skip intro ▸"
+                    cornerAction = { p.seekTo((intro.end * 1000).toLong()) }
+                } else if (credits != null && t >= credits.start) {
+                    val n = next
+                    // More than a logo after the credits: a scene, so don't move on at the credits.
+                    val sceneAfter = dur != null && dur - credits.end > 20
+                    if (n != null && !sceneAfter) {
+                        // The credits: the next episode in ten seconds, or now with a tap.
+                        if (creditsAt == 0L) creditsAt = System.currentTimeMillis()
+                        val left = 10 - ((System.currentTimeMillis() - creditsAt) / 1000).toInt()
+                        if (left <= 0) { creditsAt = 0; switchTo(n.kind, n.id); return }
+                        label = "Next episode in $left ▸"
+                        cornerAction = { creditsAt = 0; switchTo(n.kind, n.id) }
+                    } else if (sceneAfter && t < credits.end - 2) {
+                        // Something follows the credits: skip to it.
+                        label = "Skip credits ▸"
+                        cornerAction = { p.seekTo((credits.end * 1000).toLong()) }
+                    }
+                } else if (credits != null && t < credits.start - 1) {
+                    creditsAt = 0   // went back before the credits: no countdown
+                }
+            }
+            skipIntro.text = label ?: ""
+            skipIntro.visibility = if (label != null) View.VISIBLE else View.GONE
             handler.postDelayed(this, 500)
         }
     }

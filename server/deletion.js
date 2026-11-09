@@ -226,4 +226,4 @@ async function dropRunningTorrent(item, tx) {
   return 'shared torrent left as it was';
 }
 
-module.exports = { deleteWebVersion, deleteEverything, removeDownload, insideLibrary };
+module.exports = { deleteWebVersion, deleteEverything, removeDownload, insideLibrary, sharers, forgetFile, removeEmptyReleaseFolder };

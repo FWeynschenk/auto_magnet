@@ -31,6 +31,12 @@
       </div>
     </div>
 
+    <!-- Looking at one item (or one show and its episodes): click a name below. -->
+    <div v-if="focus" class="focus">
+      Showing <strong>{{ focus.label }}</strong>{{ focus.show ? ' and its episodes' : '' }}
+      <button class="btn-ghost btn-sm" @click="focus = null">Show everything</button>
+    </div>
+
     <div v-if="loading && rows.length === 0" class="state-msg">Loading…</div>
 
     <div v-else-if="visible.length === 0" class="empty-state">
@@ -44,7 +50,14 @@
         <span class="log-level" :class="row.level">{{ row.level }}</span>
         <span v-if="row.entity_type" class="log-entity">{{ row.entity_type }}</span>
         <span v-else class="log-entity" />
-        <span class="log-msg">{{ row.message }}</span>
+        <span class="log-msg">
+          <template v-if="row.label">
+            <button class="log-item" :title="`Only ${row.label}`" @click="focusOn(row)">{{ row.label }}</button>
+            <button v-if="row.show_label" class="log-show" :title="`${row.show_label} and all its episodes`"
+              @click="focus = { show: row.show_id, label: row.show_label }">all of the show</button>
+            ·
+          </template>{{ row.message }}
+        </span>
       </div>
     </div>
 
@@ -77,18 +90,33 @@ const search       = ref('');
 const level        = ref('');
 const entityType   = ref('');
 const confirmClear = ref(false);
+// { type, id, label } for one item, or { show, label } for a show and its episodes.
+const focus        = ref(null);
+
+function focusOn(row) {
+  focus.value = row.entity_type === 'show'
+    ? { show: row.entity_id, label: row.label }
+    : { type: row.entity_type, id: row.entity_id, label: row.label };
+}
+
+function query() {
+  const f = focus.value;
+  return {
+    level: level.value, entity_type: f?.type || entityType.value, entity_id: f?.id || '', show_id: f?.show || '', limit: 500,
+  };
+}
 
 const visible = computed(() => {
   const q = search.value.trim().toLowerCase();
   if (!q) return rows.value;
-  return rows.value.filter(r => r.message.toLowerCase().includes(q));
+  return rows.value.filter(r => `${r.label || ''} ${r.message}`.toLowerCase().includes(q));
 });
 
 async function reload() {
   loading.value = true;
   try {
     const data = await guard(
-      () => api.list({ level: level.value, entity_type: entityType.value, limit: 500 }),
+      () => api.list(query()),
       'Could not load the activity log',
     );
     if (data) rows.value = data;
@@ -99,11 +127,11 @@ async function reload() {
 
 // Level and type are filtered server-side; the text box is client-side so it
 // stays responsive as you type.
-watch([level, entityType], reload);
+watch([level, entityType, focus], reload);
 
 async function silentReload() {
   try {
-    rows.value = await api.list({ level: level.value, entity_type: entityType.value, limit: 500 });
+    rows.value = await api.list(query());
   } catch (_) { /* transient poll failure — the next tick retries */ }
 }
 
@@ -183,6 +211,16 @@ h1 { font-size: 22px; font-weight: 700; }
 .log-level.error { background: #7f1d1d; color: #fecaca; }
 .log-entity { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
 .log-msg    { word-break: break-word; }
+.log-item, .log-show {
+  background: none; border: none; padding: 0; font: inherit; cursor: pointer; color: var(--accent-h, var(--accent));
+}
+.log-item:hover, .log-show:hover { text-decoration: underline; }
+.log-show { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.focus {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+.focus button { margin-left: auto; }
 
 .retention-note { margin-top: 10px; font-size: 11px; color: var(--muted); }
 

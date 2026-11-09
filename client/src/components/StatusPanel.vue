@@ -57,6 +57,34 @@
         </span>
         <button class="btn-ghost btn-sm" :disabled="backingUp" @click="backupNow">{{ backingUp ? 'Backing up…' : 'Back up now' }}</button>
       </div>
+
+      <h3>Library check</h3>
+      <div class="svc">
+        <span class="dot" :class="!lib ? 'w' : libProblems ? 'w' : 'ok'" />
+        <span class="name">Last check</span>
+        <span class="muted small detail">
+          <template v-if="lib">{{ ago(lib.at) }}, {{ libProblems ? `${libProblems} thing(s) to put right` : 'all in order' }}<template
+            v-if="lib.unreachable?.length"> · couldn't ask {{ lib.unreachable.join(', ') }}</template></template>
+          <template v-else>not run yet — it runs once a week</template>
+        </span>
+        <button class="btn-ghost btn-sm" :disabled="!!libBusy" @click="checkLibrary">{{ libBusy === 'check' ? 'Checking…' : 'Check now' }}</button>
+      </div>
+      <template v-if="lib">
+        <div v-for="g in libGroups" :key="g.key" class="lib-group">
+          <div class="lib-head">
+            <span class="name">{{ g.label }} ({{ lib[g.key].length }})</span>
+            <span class="muted small">{{ g.what }}</span>
+            <button v-if="g.fix" class="btn-ghost btn-sm" :disabled="!!libBusy" @click="fixLibrary(g)">
+              {{ libBusy === g.key ? 'Working…' : g.fix }}</button>
+          </div>
+          <ul class="lib-list">
+            <li v-for="x in lib[g.key].slice(0, 12)" :key="x.kind ? x.kind + x.id : x.dir">
+              {{ x.title || x.dir }}<span v-if="x.bytes" class="muted"> · {{ size(x.bytes) }}</span>
+            </li>
+            <li v-if="lib[g.key].length > 12" class="muted">and {{ lib[g.key].length - 12 }} more</li>
+          </ul>
+        </div>
+      </template>
     </template>
   </section>
 </template>
@@ -67,6 +95,36 @@ import { health } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
 
 const r = ref(null);
+const lib = ref(null);
+const libBusy = ref('');
+const LIB_GROUPS = [
+  { key: 'missing', label: 'Files missing', what: 'downloaded, but not on disk any more', fix: 'Download again' },
+  { key: 'stuck', label: 'Downloads gone', what: '"downloading", but Transmission no longer has them', fix: 'Download again' },
+  { key: 'brokenWeb', label: 'Broken web versions', what: "marked ready, but can't be played", fix: 'Make again' },
+  { key: 'orphans', label: 'Leftover folders', what: 'web versions and thumbnails of items no longer in the library', fix: 'Delete them' },
+  { key: 'notSeeding', label: 'No longer seeding', what: 'removed from Transmission by hand? Nothing to fix', fix: null },
+];
+const libGroups = computed(() => (lib.value ? LIB_GROUPS.filter(g => lib.value[g.key]?.length) : []));
+const libProblems = computed(() => (lib.value
+  ? ['missing', 'stuck', 'brokenWeb', 'orphans'].reduce((a, k) => a + (lib.value[k]?.length || 0), 0) : 0));
+
+async function checkLibrary() {
+  libBusy.value = 'check';
+  try { lib.value = await health.checkLibrary(); } catch (e) { notifyError(e.message); }
+  finally { libBusy.value = ''; }
+}
+
+async function fixLibrary(g) {
+  const n = lib.value[g.key].length;
+  if (!window.confirm(`${g.fix}: ${g.label.toLowerCase()} (${n})?`)) return;
+  libBusy.value = g.key;
+  try {
+    const out = await health.fixLibrary(g.key);
+    lib.value = out.report;
+    notifySuccess(`Done: ${out.fixed}`);
+  } catch (e) { notifyError(e.message); }
+  finally { libBusy.value = ''; }
+}
 const err = ref('');
 const busy = ref(false);
 const backingUp = ref(false);
@@ -127,6 +185,7 @@ async function backupNow() {
 
 onMounted(() => {
   refresh();
+  health.library().then((l) => { lib.value = l; }, () => {});
   timer = setInterval(refresh, 60_000);
   tick = setInterval(() => { now.value = Date.now(); }, 15_000);
 });
@@ -159,4 +218,9 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .dot.ok { background: var(--green); }
 .dot.w { background: var(--yellow); }
 .dot.bad { background: var(--red); }
+.lib-group { margin: 6px 0 10px 18px; font-size: 13px; }
+.lib-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lib-head .name { font-weight: 500; }
+.lib-head .small { flex: 1; min-width: 0; }
+.lib-list { margin: 4px 0 0 16px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 </style>

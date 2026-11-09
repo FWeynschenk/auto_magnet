@@ -52,12 +52,41 @@ test('two episodes with the theme at different points: each one\'s intro is foun
   media.rows.upsert('episode', 1, { path: f1, size: 1, duration: 600, plan: 'direct', plan_reason: 'x', probe });
   media.rows.upsert('episode', 2, { path: f2, size: 1, duration: 600, plan: 'direct', plan_reason: 'x', probe });
 
-  const r = await intro.pass();
+  const r = await intro.pass({ parts: ['intro'] });
   assert.equal(r.found, 1, 'one comparison finds both');
   const i1 = intro.introOf('episode', 1), i2 = intro.introOf('episode', 2);
   // The edges blur by a second or so; the end errs early (intro left, nothing skipped).
   assert.ok(Math.abs(i1.start - 25) < 1.5 && i1.end > 62.5 && i1.end <= 65.5, `episode 1: ${JSON.stringify(i1)}`);
   assert.ok(Math.abs(i2.start - 70) < 1.5 && i2.end > 107.5 && i2.end <= 110.5, `episode 2: ${JSON.stringify(i2)}`);
-  assert.deepEqual(await intro.pass(), { checked: 0, found: 0 }, 'not looked at again');
+  assert.deepEqual(await intro.pass({ parts: ['intro'] }), { checked: 0, found: 0 }, 'not looked at again');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM audio_prints').get().n, 2, 'prints kept');
+});
+
+// The end credits: a different melody, the same at the end of every episode.
+const CREDITS = "aevalsrc='0.4*sin(2*PI*(330+44*mod(floor(t*3)*5,11))*t)+0.2*sin(2*PI*(660+25*mod(floor(t*2)*3,7))*t)':s=44100:d=40";
+
+test('the end credits two episodes share are found, near the end of each', { skip: !hasFfmpeg && 'ffmpeg not installed' }, async () => {
+  const dir = tmpdir();
+  const make = (name, seed, body) => {
+    const file = path.join(dir, `${name}.mka`);
+    ffmpeg(['-f', 'lavfi', '-i', other(seed, body), '-f', 'lavfi', '-i', CREDITS,
+      '-filter_complex', '[0:a]aresample=44100[a];[1:a]aresample=44100[b];[a][b]concat=n=2:v=0:a=1[o]',
+      '-map', '[o]', '-c:a', 'aac', '-b:a', '128k', file]);
+    return file;
+  };
+  // 130 s and 150 s of the episode's own sound, then 40 s of credits.
+  const f1 = make('c1', 5, 130), f2 = make('c2', 6, 150);
+  db.prepare("INSERT INTO shows (id, tmdb_id, title) VALUES (2, 2, 'Credits Show')").run();
+  db.prepare("INSERT INTO episodes (id, show_id, season, episode, status) VALUES (11, 2, 1, 1, 'done'), (12, 2, 1, 2, 'done')").run();
+  const probe = JSON.stringify({ streams: [{ index: 0, codec_type: 'audio', codec_name: 'aac', channels: 1 }], format: {} });
+  media.rows.upsert('episode', 11, { path: f1, size: 1, duration: 170, plan: 'direct', plan_reason: 'x', probe });
+  media.rows.upsert('episode', 12, { path: f2, size: 1, duration: 190, plan: 'direct', plan_reason: 'x', probe });
+
+  const r = await intro.pass({ parts: ['credits'] });
+  assert.equal(r.found, 1);
+  const c1 = intro.creditsOf('episode', 11), c2 = intro.creditsOf('episode', 12);
+  assert.ok(Math.abs(c1.start - 130) < 2, `episode 1: ${JSON.stringify(c1)}`);
+  assert.ok(Math.abs(c2.start - 150) < 2, `episode 2: ${JSON.stringify(c2)}`);
+  assert.ok(c1.end > 160, 'they run to (about) the end');
+  assert.equal(intro.introOf('episode', 11), null, 'credits are not an intro');
 });

@@ -109,3 +109,47 @@ test('progress is synced every minute, not only in the hourly run', async () => 
   assert.equal(ep.progress, 100);
   void dir;
 });
+
+test('a wrong pack is replaced at once: every episode it brought, one torrent removal', async () => {
+  const { replacePack, packOf } = require('../server/replace');
+  const lib = settings.get('shows_path');
+  const packDir = path.join(lib, 'Ghosts', 'Ghosts.UK.S02.1080p');
+  fs.mkdirSync(packDir, { recursive: true });
+  const magnet = `magnet:?xt=urn:btih:${'e'.repeat(40)}`;
+  const probe = JSON.stringify({ streams: [{ index: 0, codec_type: 'video', codec_name: 'h264' }], format: {} });
+  for (const n of [1, 2, 3]) {
+    const f = path.join(packDir, `Ghosts.UK.S02E0${n}.mkv`);
+    fs.writeFileSync(f, 'x');
+    fs.writeFileSync(f.replace(/\.mkv$/, '.en.srt'), '1\n00:00:01,000 --> 00:00:02,000\nhi\n');
+    db.prepare(`INSERT INTO episodes (id, show_id, season, episode, status, magnet, torrent_id, torrent_origin, release_title)
+      VALUES (?, 1, 2, ?, 'done', ?, 30, 'added', 'Ghosts.UK.S02.1080p')`).run(20 + n, n, magnet);
+    media.rows.upsert('episode', 20 + n, { path: f, size: 1, plan: 'direct', plan_reason: 'x', probe });
+  }
+  assert.equal(packOf('episode', 22).length, 3);
+  const purged = [];
+  const fakeTx = {
+    resolveTarget: () => null,
+    purgeTorrent: async (id) => { purged.push(id); for (const n of [1, 2, 3]) fs.rmSync(path.join(packDir, `Ghosts.UK.S02E0${n}.mkv`), { force: true }); },
+  };
+  const r = await replacePack('episode', 22, { reason: 'the UK show', tx: fakeTx });
+  assert.equal(r.count, 3);
+  assert.deepEqual(purged, [30], 'one removal for the whole pack');
+  assert.equal(fs.existsSync(packDir), false, 'subtitles gone, so the emptied release folder goes too');
+  for (const n of [1, 2, 3]) {
+    const ep = episodes.byId(20 + n);
+    assert.equal(ep.status, 'pending');
+    assert.match(ep.last_error, /wrong pack: the UK show/);
+    assert.deepEqual(scheduler.wrongReleases(ep), [magnet]);
+    assert.equal(media.rows.get('episode', 20 + n), undefined);
+  }
+});
+
+test('the activity log can show one show and all its episodes', () => {
+  const { logs } = require('../server/db');
+  logs.add('info', 'show', 1, 'show line');
+  logs.add('info', 'episode', 1, 'episode line');
+  logs.add('info', 'movie', 1, 'movie line');
+  const msgs = logs.recent({ showId: 1 }).map(r => r.message);
+  assert.ok(msgs.includes('show line') && msgs.includes('episode line'));
+  assert.ok(!msgs.includes('movie line'));
+});

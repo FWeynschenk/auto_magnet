@@ -88,6 +88,15 @@ These shipped but can only be confirmed on the real box.
   (32 checks). The first real magnet grab after deploy is the first live run: its torrent
   should appear in Transmission labelled `amagnet-quarantine` at 4 kB/s, then lose the
   label and speed up once its file list checks out.
+- **Credits on real episodes.** Open an episode of a show with two or more downloaded in a
+  season, a day after deploy: the bar should mark *Credits* near the end, and Up next should
+  start there. If a show's credits aren't found, check that its episodes are over 2 minutes and
+  share the same end music.
+- **Learned show names.** `docker compose logs | grep "another way of writing"`: each line
+  names the release name now accepted and the show. A wrong one: Wrong video on the grab un-learns it.
+- **Library check against the real Transmission.** Settings → Status → *Check now*. Expect
+  some *No longer seeding* (removed by hand over the years); look at *Files missing* and
+  *Leftover folders* before using their fix.
 - **Five suspicious files still on disk**, from before the quarantine existed. Each fails
   the current screen:
   - `#440` Starfleet Academy S01E02 — 3 MB `.mkv` beside a **4.3 GB `.txt`**

@@ -280,6 +280,13 @@ A year or country tag is fine when it's this show's own (*Ghosts 2021*, *Ghosts 
 gives it away when it isn't (*Ghosts UK*, *Doctor Who 1963*). The first-air year, origin
 country and original title come from TMDB. Accents are folded (*Shōgun* = *Shogun*).
 
+**Strict first, then it learns.** Some shows are released under a longer name (*Star Wars
+Andor*). When an episode has found nothing on three runs in a row, each name it turned down is
+looked up on TMDB. A name that belongs to no other show is learned as one of this show's names
+and used from then on. A name that is another show's (*Andor Rising*) stays turned down for
+good. A grab made under a learned name says so on the item. Picking a release by hand teaches
+its name too, and **Wrong video** on such a grab un-learns it.
+
 Download progress is read from Transmission every minute, and 3 seconds after a hand-picked
 grab: a torrent Transmission already had at 100% shows as done at once, not at the next run.
 
@@ -298,6 +305,10 @@ another** in the player, or **⋮ → Wrong video** in the app. Then:
 - **The item's download and check fields are reset**, so the new file gets its file check and
   subtitle search, and another release is looked for straight away. In manual mode, use
   **Choose**.
+
+**A wrong season pack.** When the wrong file came in a pack, the player and the app ask
+whether to replace the whole pack (*N episodes*). Then the torrent goes once, every episode it
+held is reset and looked for again, and the pack is never picked for any of them.
 
 Hand-picking a different release for something already downloaded replaces it the same way,
 without marking the old one wrong (it may only have been the lesser quality). Web version
@@ -519,7 +530,8 @@ first is the cautious way.
 ## Activity log
 
 The **Activity** page records every search, grab, rejection, screen verdict and failure, with
-level and item-type filters. It is written to the database as well as stdout, so it survives a
+level and item-type filters. Each entry names its movie or episode; click it to see only that
+item's history, or *all of the show* for a show and its episodes. It is written to the database as well as stdout, so it survives a
 restart. Entries older than 30 days are pruned at the end of each scheduler run.
 
 A search that keeps coming up empty (an episode that aired but has no release yet) is logged
@@ -538,6 +550,10 @@ Finding something is logged as usual.
   OpenSubtitles (and whether today's downloads are used up), and the encoder.
 - **Work:** when the scheduler last ran and runs next, web versions being made and waiting, and
   the last database backup, with **Back up now**.
+- **Library check:** once a week (and on **Check now**) the whole library is compared with the
+  disk and Transmission: files that are gone, downloads Transmission no longer has, web
+  versions that can't play, folders left behind by deleted items, and torrents that stopped
+  seeding. Each kind has its fix (download again, make again, delete them), after asking.
 
 ### Downloads never fill the disk
 
@@ -797,7 +813,7 @@ track numbers differ from file to file, and per account.
 **Aa** next to the subtitles menu: size (S–XL) and background (none with an outline, shaded,
 solid). It's kept per browser, since a phone and a TV want different sizes.
 
-### Seek previews and Skip intro
+### Seek previews, Skip intro and Skip credits
 
 The bar under the video shows a thumbnail of where you'd land, and seeks on click or drag. The
 thumbnails are made after a web version is ready, or the first time something that plays as it
@@ -810,15 +826,21 @@ the intro, wherever it sits in each. The player then shows **Skip intro** (`S`) 
 and the intro is marked on the bar. Episodes are checked in batches every 20 minutes. A season
 where nothing was found is tried again when another episode arrives.
 
+The end credits are found the same way, from the last minutes (a quarter of the running time,
+at most 7). When they start, **Up next** counts down to the next episode; seeking back cancels
+it. When more than 20 seconds follow the credits (a scene after them), it doesn't move on there:
+**Skip credits** jumps to the scene, and Up next comes at the end as usual. Reaching the
+credits counts as watched.
+
 ### Progress
 
 Each account has its own resume points. Past 92% of the running time (or within the last two
-minutes) counts as watched. Under 30 seconds isn't a resume point. A report carries the time it
+minutes, or once the end credits start) counts as watched. Under 30 seconds isn't a resume point. A report carries the time it
 was made, so progress uploaded late from a phone never overwrites newer progress from elsewhere.
 
 ### Keyboard (player)
 
-`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `S` skip intro · `N` next episode
+`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `S` skip intro or credits · `N` next episode
 
 ### Android app
 
@@ -851,7 +873,8 @@ Sign in with the server address (e.g. `http://192.168.0.102:62201`) and an accou
 - **Your languages and picks**, as in the browser: your account's audio languages choose the
   track, and an audio track, subtitle language or *subtitles off* picked here is remembered for
   the show.
-- **Skip intro** shows while a detected intro plays.
+- **Skip intro** shows while a detected intro plays. At the end credits, **Next episode in
+  10** counts down (tap to go now), or **Skip credits** when a scene follows them.
 - **⋯** (top right, with the controls): subtitle size and background (or the phone's own caption
   settings), and **Subtitle timing**. Earlier and later in ¼ s steps apply live, since the
   subtitle is fetched again shifted. For a `.srt` beside the video, **Save to file**,

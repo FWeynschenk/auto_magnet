@@ -337,7 +337,19 @@ async function recordForPlayback(entry, localPath) {
  * Check every download that has completed since this feature existed and not
  * yet been checked, and retry any subtitle fetch left pending.
  */
-async function postProcessCompleted({ limit = 25 } = {}) {
+/**
+ * One pass at a time. The minute progress sync and the hourly run can both
+ * ask; two passes at once would check the same download twice — two subtitle
+ * downloads from the day's quota, two writers to the same .srt. A second caller
+ * joins the pass already running.
+ */
+let passInFlight = null;
+function postProcessCompleted(opts = {}) {
+  passInFlight ??= postProcessPass(opts).finally(() => { passInFlight = null; });
+  return passInFlight;
+}
+
+async function postProcessPass({ limit = 25 } = {}) {
   if (settings.get('postprocess_enabled') === '0') return;
   const wanted = wantedLanguages();
 

@@ -228,12 +228,21 @@ const SMALL_WORDS = new Set(['the', 'a', 'an', 'and', 'of']);
  * show's own (Ghosts 2021, Ghosts US) and gives it away when it isn't (Ghosts
  * UK, Doctor Who 1963). Empty means the name fits.
  */
-function extraShowWords(releaseTitle, want) {
+/** The show's name as a release writes it, normalized: what comes before the episode or season marker. */
+function showPartOf(releaseTitle) {
   const title = String(releaseTitle || '')
     .replace(/^\s*(?:\[[^\]]*\]|\([^)]*\)|www\.[^\s]+\s*-?)\s*/i, '');   // [group], (tag), www.site -
   const end = SHOW_END_RE.exec(title);
-  if (!end || end.index === 0) return [];
-  const part = normalizeTitle(title.slice(0, end.index)).split(' ').filter(Boolean);
+  if (!end || end.index === 0) return null;
+  return normalizeTitle(title.slice(0, end.index)) || null;
+}
+
+function extraShowWords(releaseTitle, want) {
+  const whole = showPartOf(releaseTitle);
+  if (!whole) return [];
+  // Learned (or picked by hand) as another way of writing this show's name.
+  if (Array.isArray(want.variants) && want.variants.includes(whole)) return [];
+  const part = whole.split(' ').filter(Boolean);
   const own = new Set([...normalizeTitle(want.title).split(' '), ...normalizeTitle(want.originalTitle).split(' ')].filter(Boolean));
   const countries = (want.countries || []).flatMap(c => COUNTRY_WORDS[String(c).toLowerCase()] || [String(c).toLowerCase()]);
   return part.filter((w) => {
@@ -637,6 +646,6 @@ module.exports = {
   evaluate,
   // Exported for inspection and testing rather than for production callers —
   // these are the rules most likely to need checking against a real title.
-  dedupe, detectQuality, normalizeTitle, titleMatchRatio, extraShowWords, btihOf,
+  dedupe, detectQuality, normalizeTitle, titleMatchRatio, extraShowWords, showPartOf, btihOf,
   isSeasonPack, isSeriesPack, claimedSeasons,
 };

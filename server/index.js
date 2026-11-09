@@ -75,6 +75,16 @@ app.get('/api/health', admin, async (_req, res, next) => {
   try { res.json(await require('./health').report()); } catch (err) { next(err); }
 });
 
+// The library check (Settings → Status): the last report, a new run, a fix.
+app.get('/api/health/library', admin, (_req, res) => res.json(require('./librarycheck').last()));
+app.post('/api/health/library', admin, async (_req, res, next) => {
+  try { res.json(await require('./librarycheck').run()); } catch (err) { next(err); }
+});
+app.post('/api/health/library/fix/:kind', admin, async (req, res, next) => {
+  try { res.json(await require('./librarycheck').fix(req.params.kind, { by: req.user?.username })); }
+  catch (err) { if (err.status) return res.status(err.status).json({ error: err.message }); next(err); }
+});
+
 // Take a database backup now, from the status view.
 app.post('/api/health/backup', admin, (_req, res, next) => {
   try { res.json(require('./backup').backupNow()); } catch (err) { next(err); }
@@ -150,4 +160,5 @@ app.listen(PORT, HOST, () => {
   // After the scheduler kill switch above: pausing and resuming torrents is
   // reaching Transmission too.
   step('download disk guard', () => require('./diskguard').start());
+  step('library check', () => require('./librarycheck').start());
 });

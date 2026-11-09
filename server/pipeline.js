@@ -131,7 +131,7 @@ async function findCandidates({
   quality = '1080p', exclude = [], wrong = [], limit = 20, refresh = false,
   query = null, allowPacks = false, pack = false, seasons = null, episodeCount = 1,
   // A show's identity beyond its title, to tell it from another of that name.
-  firstAirYear = null, countries = [], originalTitle = null,
+  firstAirYear = null, countries = [], originalTitle = null, variants = [],
 }) {
   const raw = await gather({ type, title, year, imdbId, tmdbId, season, episode, quality, query, pack, refresh });
 
@@ -139,7 +139,7 @@ async function findCandidates({
   // the user said what they wanted, so second-guessing the words is exactly the
   // behaviour the manual box exists to escape. Safety and quality filters stay.
   const want    = query ? null : {
-    title, year, season, episode, seasons, episodeCount, imdbId, tmdbId, firstAirYear, countries, originalTitle,
+    title, year, season, episode, seasons, episodeCount, imdbId, tmdbId, firstAirYear, countries, originalTitle, variants,
   };
   const packsOk = allowPacks || pack || !!query;
   const { accepted, rejected } = evaluate(raw, {

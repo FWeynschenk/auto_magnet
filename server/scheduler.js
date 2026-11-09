@@ -10,6 +10,7 @@ const { sweepSeeded } = require('./cleanup');
 const { showDir } = require('./paths');
 const log = require('./log');
 const diskguard = require('./diskguard');
+const shownames = require('./shownames');
 
 // ─── Searches that keep coming up empty ──────────────────────────────────────
 //
@@ -554,6 +555,7 @@ function showIdentity(show) {
     firstAirYear:  show.first_air_year || null,
     countries:     String(show.origin_country || '').split(',').filter(Boolean),
     originalTitle: show.original_title || null,
+    variants:      shownames.accepted(show),
   };
 }
 
@@ -739,8 +741,18 @@ async function grabEpisode(show, ep) {
 
   const key = `episode:${ep.id}`;
   searching(key, `searching for "${show.title}" ${label}`, { type: 'episode', id: ep.id });
-  const { accepted } = await findCandidates({ ...episodeSearch(show, ep), limit: 1 });
-  const winner = accepted[0];
+  let { accepted, rejected } = await findCandidates({ ...episodeSearch(show, ep), limit: 1 });
+  let winner = accepted[0];
+  // Strict found nothing for a few runs: look up the names it turned down,
+  // learn those no other show has, and search again (see shownames.js).
+  let loose = false;
+  if (!winner && (stillEmpty.get(key)?.runs || 0) + 1 >= shownames.RELAX_AFTER_RUNS
+      && await shownames.learnFrom(show, rejected)) {
+    show = shows.byId(show.id) || show;
+    ({ accepted } = await findCandidates({ ...episodeSearch(show, ep), limit: 1 }));
+    winner = accepted[0];
+    loose = !!winner && shownames.looselyMatched(show, winner.title);
+  }
   if (!winner) {
     nothingFound(key, `"${show.title}" ${label}`, { type: 'episode', id: ep.id });
     return false;
@@ -780,6 +792,11 @@ async function grabEpisode(show, ep) {
     ...afterAdd(result),
   });
   log.info(`added "${show.title}" ${label} — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'episode', id: ep.id });
+  if (loose) {
+    episodes.update(ep.id, {
+      last_error: `Found under a name learned from TMDB ("${require('./selector').showPartOf(winner.title)}") — check it is "${show.title}"; Wrong video un-learns that name`,
+    });
+  }
   return true;
 }
 
@@ -800,6 +817,8 @@ async function run() {
   if (process.env.AMAGNET_NO_SCHEDULER === '1') return;
   if (_running) { console.log('[scheduler] already running, skipping'); return; }
   _running = true;
+  // The minute sync may be mid-way: let it finish rather than sync alongside it.
+  while (_syncing) await new Promise(r => setTimeout(r, 200));
   const startedAt = Date.now();
   _info.lastStartedAt = new Date(startedAt).toISOString();
   emptyThisRun = [];

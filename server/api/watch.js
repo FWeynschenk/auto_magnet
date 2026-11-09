@@ -200,8 +200,11 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     audio_langs: tracks.audio,
     remembered: tracks.remembered,
     intro: require('../intro').introOf(kind, id),
+    credits: require('../intro').creditsOf(kind, id),
     // The release it came from: shown to admins, so a wrong one is easy to spot.
     release: req.user.role === 'admin' ? (item.row.release_title || null) : undefined,
+    // Admins: how many items came in the same torrent (a pack), for Wrong pack.
+    pack_size: req.user.role === 'admin' ? require('../replace').packOf(kind, id).length : undefined,
     original: m ? originalInfo(kind, id, m) : null,
     next,
   };
@@ -256,7 +259,11 @@ function originalInfo(kind, id, m) {
 router.post('/items/:kind/:id/wrong', requireAdmin, wrap(async (req) => {
   const { kind, id } = params(req);
   const reason = String(req.body?.reason || 'the wrong video').slice(0, 200);
-  const r = await require('../replace').replaceDownload(kind, id, { reason, wrong: true, by: req.user.username });
+  const replace = require('../replace');
+  // { pack: true }: every item the same torrent downloaded, at once.
+  const r = req.body?.pack
+    ? await replace.replacePack(kind, id, { reason, by: req.user.username })
+    : await replace.replaceDownload(kind, id, { reason, wrong: true, by: req.user.username });
   return { ok: true, ...r };
 }));
 
@@ -438,7 +445,9 @@ const putProgress = wrap((req) => {
   const { kind, id } = params(req);
   const { position, duration, at } = req.body || {};
   if (!Number.isFinite(Number(position))) throw bad('position required');
-  return progressOf(progress.report(req.user.id, kind, id, { position, duration, at: at ?? Date.now() }));
+  return progressOf(progress.report(req.user.id, kind, id, {
+    position, duration, at: at ?? Date.now(), creditsAt: require('../intro').creditsOf(kind, id)?.start ?? null,
+  }));
 });
 router.put('/progress/:kind/:id', putProgress);
 // navigator.sendBeacon can only POST — it is how the player saves the
@@ -474,6 +483,7 @@ router.post('/progress/sync', wrap((req) => {
     if (!exists) continue;
     progress.report(req.user.id, it.kind, Number(it.id), {
       position: it.position, duration: it.duration, at: it.at ?? it.updated_at, watched: typeof it.watched === 'boolean' ? it.watched : null,
+      creditsAt: require('../intro').creditsOf(it.kind, Number(it.id))?.start ?? null,
     });
   }
   return db.prepare('SELECT kind, item_id AS id, position, duration, watched, updated_at FROM playback_progress WHERE user_id = ?')

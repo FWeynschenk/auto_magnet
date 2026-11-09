@@ -144,7 +144,7 @@ router.post('/preview', async (req, res) => {
   }
 
   try {
-    let title, imdbId, year = null;
+    let title, imdbId, year = null, identity = {};
     if (type === 'movie') {
       const d = await getMovieDetails(tmdb_id);
       if (!d) return res.status(404).json({ error: 'Not found on TMDB' });
@@ -153,16 +153,25 @@ router.post('/preview', async (req, res) => {
       const d = await getTvDetails(tmdb_id);
       if (!d) return res.status(404).json({ error: 'Not found on TMDB' });
       ({ title, imdb_id: imdbId } = d);
+      identity = {
+        firstAirYear: d.first_air_year || null,
+        countries: String(d.origin_country || '').split(',').filter(Boolean),
+        originalTitle: d.original_title || null,
+      };
     }
 
     const exclude = (() => {
       try { return JSON.parse(target?.row?.tried_magnets || '[]'); } catch (_) { return []; }
     })();
 
+    // Marked wrong for this item: shown among the filtered, never offered.
+    const wrong = (() => {
+      try { return JSON.parse(target?.row?.rejected_releases || '[]').map(r => r.magnet).filter(Boolean); } catch (_) { return []; }
+    })();
     const { accepted, rejected } = await findCandidates({
       type, title, year, imdbId, tmdbId: tmdb_id,
       season: season ?? null, episode: ep ?? null,
-      quality, exclude, limit: maxRows, refresh,
+      quality, exclude, wrong, limit: maxRows, refresh, ...identity,
     });
 
     // Persist so the next open — and the grab itself — need no further searching.
@@ -238,6 +247,15 @@ router.post('/grab', async (req, res) => {
     if (require('../diskguard').isLow(txTarget)) {
       return res.status(409).json({ error: 'The download disk is nearly full — downloads are paused until there is room (Settings → Library → Keep free for downloads)' });
     }
+    // Picking a release for something already downloaded (or downloading)
+    // replaces that download: its file, web version and the rest go first,
+    // so nothing of the old one can play or mix into the new one.
+    const current = target.store.byId(target.id);
+    if (current && ['done', 'downloading'].includes(current.status) && current.magnet !== torrentUrl) {
+      await require('../replace').replaceDownload(target.kind, Number(target.id), {
+        reason: 'another release picked by hand', wrong: false, search: false, by: req.user?.username,
+      });
+    }
     const result = await addTorrent(torrentUrl, downloadDir, {
       // A hand-picked row may well be a pack the user chose on purpose, so the
       // single-episode file-count rule must not second-guess them here.
@@ -251,7 +269,7 @@ router.post('/grab', async (req, res) => {
     });
 
     target.store.update(target.id, {
-      status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
+      status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: torrent.title || null,
       results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
       ...afterAdd(result),
@@ -261,6 +279,9 @@ router.post('/grab', async (req, res) => {
       `grabbed by hand: ${torrent.title || torrentUrl.slice(0, 60)}`,
       { type: target.kind, id: target.id },
     );
+    // Its progress now, not at the next hourly run: a torrent Transmission
+    // already had may well be complete.
+    setTimeout(() => require('../scheduler').quickSync().catch(() => {}), 3000);
 
     res.json({
       success:     true,

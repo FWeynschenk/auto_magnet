@@ -173,6 +173,8 @@ data class ItemDetail(
     @SerialName("audio_langs") val audioLangs: List<String> = emptyList(),
     val intro: Intro? = null,
     val original: Original? = null,
+    /** Admins: the release it came from. */
+    val release: String? = null,
 ) {
     fun asItem() = Item(
         kind = kind, id = id, title = title, posterUrl = posterUrl, duration = duration, progress = progress,
@@ -232,6 +234,8 @@ data class AdminMovie(
     val progress: Int? = 0,
     @SerialName("release_date") val releaseDate: String? = null,
     @SerialName("last_error") val lastError: String? = null,
+    /** The release it was downloaded from, so a wrong one is easy to spot. */
+    @SerialName("release_title") val releaseTitle: String? = null,
     @SerialName("transmission_target") val target: String? = null,
 ) {
     /** Manual mode, waiting for someone to pick a release. */
@@ -247,6 +251,8 @@ data class AdminEpisode(
     val progress: Int? = 0,
     @SerialName("air_date") val airDate: String? = null,
     @SerialName("last_error") val lastError: String? = null,
+    /** The release it was downloaded from, so a wrong one is easy to spot. */
+    @SerialName("release_title") val releaseTitle: String? = null,
 ) {
     val code get() = "S%02dE%02d".format(season, episode)
 }

@@ -236,7 +236,7 @@ Advanced settings (UI only, not in `.env`):
 2. Choose the season and episode to start from (useful if you already have early seasons), quality, and mode.
 3. The scheduler grabs episodes as they air. Multiple simultaneously-released episodes are all picked up in a single run.
 4. Click a show card to open the manage dialog where you can:
-   - **Redo** — reset an episode to pending so it gets re-grabbed
+   - **Redo** — for something downloaded (or downloading): replace it. See *When the wrong thing downloads* below. For something not downloaded: start it over
    - **Skip** — mark an episode as skipped so the scheduler advances past it
    - **Refresh TMDB** — re-sync all air dates and insert any missing episodes
    - **Choose…** — pick a release for one episode by hand, without switching the whole show to manual mode
@@ -273,6 +273,36 @@ are done once, up front:
 
 Everything that reaches the picker therefore already has a magnet, so clicking
 **Grab** hands it to Transmission immediately and returns.
+
+**A show's name must be its own.** The words before the episode marker (`S01E02`) all have
+to belong to the show: "Silo.Stories.S02E01" is not *Silo*, "9-1-1.Lone.Star" is not *9-1-1*.
+A year or country tag is fine when it's this show's own (*Ghosts 2021*, *Ghosts US*) and
+gives it away when it isn't (*Ghosts UK*, *Doctor Who 1963*). The first-air year, origin
+country and original title come from TMDB. Accents are folded (*Shōgun* = *Shogun*).
+
+Download progress is read from Transmission every minute, and 3 seconds after a hand-picked
+grab: a torrent Transmission already had at 100% shows as done at once, not at the next run.
+
+### When the wrong thing downloads
+
+Each movie and episode shows the release it came from (↳ under it in Movies and Shows,
+*From …* in the player's **Fix or delete…** menu and the app's ⋮), so a wrong one is easy to
+spot. To put it right, use **Redo** in Movies or Shows, **Fix or delete… → Wrong video — find
+another** in the player, or **⋮ → Wrong video** in the app. Then:
+
+- **Everything of the old download goes:** its torrent (or its file, in a pack), the file, the
+  subtitles beside it, its web version, seek thumbnails and intro.
+- **That release is never picked for this item again**, matched by info hash, so a copy with
+  other trackers doesn't sneak back. The picker lists it under *filtered out* as "marked as the
+  wrong video".
+- **The item's download and check fields are reset**, so the new file gets its file check and
+  subtitle search, and another release is looked for straight away. In manual mode, use
+  **Choose**.
+
+Hand-picking a different release for something already downloaded replaces it the same way,
+without marking the old one wrong (it may only have been the lesser quality). Web version
+addresses carry a generation number, so a player can never mix the old web version's pieces into
+the new one.
 
 ### Quarantine
 

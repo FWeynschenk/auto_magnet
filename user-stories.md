@@ -802,3 +802,48 @@ missing copy, and `sweepSeeded` makes it, so removing originals still works.
 
 **Chromecast.** Left out: no HTTPS. A Cast receiver page is HTTPS and blocks plain-HTTP media.
 See TODO.md.
+
+## Implementation notes (2026-11-09): when the wrong thing downloads
+
+**Reported:** a similar show's episode downloaded. Redo, then playback mixed the two shows. A
+second Redo said "already in Transmission" and sat at 0% though the torrent was complete.
+
+**Causes:**
+1. Redo only reset the item's fields. The old file stayed on record (`media_files`) and kept
+   playing until a new one came. Its web version, thumbnails, intro and subtitles stayed too.
+2. When the new download was made into a web version, its segments had the same URLs as the
+   old one's, and those were cached as `immutable`, so the browser mixed old pieces into the
+   new stream.
+3. Redo cleared `tried_magnets`, so the same wrong release was picked again. Transmission
+   already had it: "duplicate".
+4. Progress and completion were only synced in the hourly scheduler run, so a
+   torrent already at 100% showed 0% for up to an hour.
+5. Title matching only checked that the wanted title's words appear in the release name.
+   "Silo" matches "Silo Stories".
+
+**Fixes:**
+1. `replace.js` `replaceDownload()` calls `deletion.removeDownload()`. That's the
+   delete-everything logic split out without the status change, and it now also handles a running
+   download (purge if only ours, else drop the file from the pack, never touch a `duplicate`).
+   It records the release in `rejected_releases` and resets the download, check and subtitle
+   fields. Redo (movies and episodes, when done or downloading), `POST /items/:kind/:id/wrong`
+   and a hand-picked grab for an already-downloaded item all use it.
+2. Web version URLs are `/hls/g<web_gen>/…`; `web_gen` counts up per encode. A stale
+   generation gets 410, and unversioned URLs (older apps) are `no-cache`. Thumbnail sheets get
+   `?v=`.
+3. The selector excludes by info hash as well as URL, and `wrong` releases are rejected with
+   their own reason; a Redo of a failed item clears `tried_magnets` but never `rejected_releases`.
+4. `quickSync()` runs every minute, and 3 s after a hand grab: `syncDownloading()`, then
+   post-processing if anything completed.
+5. `extraShowWords()`: the release's words before the episode or season marker must be the
+   show's own. A year within ±1 of `first_air_year` and the show's `origin_country` words are
+   allowed; others count against it. Unknown year or country isn't held against a release.
+   `normalizeTitle` folds accents. Shows store `first_air_year`, `origin_country` and
+   `original_title` from TMDB.
+
+**Also found:** `AMAGNET_NO_SCHEDULER` only guarded starting the scheduler and the Run button.
+Redo and adding a show call `run()` directly, so a test server could still search and grab.
+`run()` and `quickSync()` now check it themselves.
+
+**Shown:** `release_title` is stored at every grab and shown in Movies, Shows, the player
+menu (admins) and the app. Redo of a downloaded item asks first, naming the release.

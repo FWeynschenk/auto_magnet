@@ -402,6 +402,7 @@ fun ManageMovieScreen(id: Int, back: () -> Unit, openPick: (PickFor) -> Unit, on
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmRedoMovie by remember { mutableStateOf(false) }
     // Downloads move on their own; keep the numbers current.
     LaunchedEffect(id) { while (true) { delay(10_000); refresh++ } }
 
@@ -430,12 +431,18 @@ fun ManageMovieScreen(id: Int, back: () -> Unit, openPick: (PickFor) -> Unit, on
                     }
                 }
                 m.lastError?.let { Text("⚠ $it", color = Red, fontSize = 13.sp) }
+                m.releaseTitle?.takeIf { m.status == "done" || m.status == "downloading" }?.let {
+                    Text("↳ $it", color = Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = { openPick(PickFor("movie", m.tmdbId, m.id, m.title, m.quality)) }) {
                         Text(if (m.needsChoice) "Choose a release" else "Choose…")
                     }
                     if (m.status in setOf("done", "downloading", "failed") || (m.mode == "auto" && m.status == "pending")) {
-                        OutlinedButton(onClick = { act(ctx, scope, "Searching again", after) { Api.redoMovie(m.id) } }) { Text("Redo") }
+                        OutlinedButton(onClick = {
+                            if (m.status == "done" || m.status == "downloading") confirmRedoMovie = true
+                            else act(ctx, scope, "Searching again", after) { Api.redoMovie(m.id) }
+                        }) { Text("Redo") }
                     }
                 }
                 Labeled("Quality") { Chips(QUALITIES.map { it to it }, m.quality) { q -> act(ctx, scope, null, after) { Api.updateMovie(m.id, "quality" to q) } } }
@@ -444,6 +451,15 @@ fun ManageMovieScreen(id: Int, back: () -> Unit, openPick: (PickFor) -> Unit, on
                 }
             }
         }
+    }
+    if (confirmRedoMovie && m != null) {
+        ConfirmDialog(
+            "Replace ${m.title}?" + (m.releaseTitle?.let { "\n\n$it" } ?: "") +
+                "\n\nThe downloaded file, its subtitles and web version are deleted, this release is never picked for it again, and another is looked for.",
+            "Replace",
+            onConfirm = { confirmRedoMovie = false; act(ctx, scope, "Replacing — looking for another", { refresh++ }) { Api.redoMovie(m.id) } },
+            onDismiss = { confirmRedoMovie = false },
+        )
     }
     if (confirmDelete && m != null) {
         ConfirmDialog("Stop tracking ${m.title}? Files already downloaded stay where they are.", "Remove",
@@ -461,6 +477,7 @@ fun ManageShowScreen(id: Int, back: () -> Unit, openPick: (PickFor) -> Unit, onA
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmRedo by remember { mutableStateOf<AdminEpisode?>(null) }
     var season by rememberSaveable { mutableStateOf<Int?>(null) }
     LaunchedEffect(id) { while (true) { delay(15_000); refresh++ } }
 
@@ -520,11 +537,23 @@ fun ManageShowScreen(id: Int, back: () -> Unit, openPick: (PickFor) -> Unit, onA
                 items(seasons[current] ?: emptyList(), key = { it.id }) { ep ->
                     EpisodeRow(ep,
                         choose = { openPick(PickFor("show", sh.tmdbId, sh.id, sh.title, sh.quality, ep.season, ep.episode, ep.id)) },
-                        redo = { act(ctx, scope, null, after) { Api.redoEpisode(sh.id, ep.id) } },
+                        redo = {
+                            if (ep.status == "done" || ep.status == "downloading") confirmRedo = ep
+                            else act(ctx, scope, null, after) { Api.redoEpisode(sh.id, ep.id) }
+                        },
                         skip = { act(ctx, scope, null, after) { Api.skipEpisode(sh.id, ep.id) } })
                 }
             }
         }
+    }
+    confirmRedo?.let { ep ->
+        if (sh != null) ConfirmDialog(
+            "Replace episode ${ep.episode}?" + (ep.releaseTitle?.let { "\n\n$it" } ?: "") +
+                "\n\nThe downloaded file, its subtitles and web version are deleted, this release is never picked for it again, and another is looked for.",
+            "Replace",
+            onConfirm = { confirmRedo = null; act(ctx, scope, "Replacing — looking for another", { refresh++ }) { Api.redoEpisode(sh.id, ep.id) } },
+            onDismiss = { confirmRedo = null },
+        )
     }
     if (confirmDelete && sh != null) {
         ConfirmDialog("Stop tracking ${sh.title}? Files already downloaded stay where they are.", "Remove",
@@ -549,6 +578,9 @@ private fun EpisodeRow(ep: AdminEpisode, choose: () -> Unit, redo: () -> Unit, s
             if (ep.status == "pending" || ep.status == "failed") TextButton(onClick = skip) { Text("Skip", color = Muted) }
         }
         if (ep.status == "downloading") LinearProgressIndicator(progress = { (ep.progress ?: 0) / 100f }, modifier = Modifier.fillMaxWidth())
+        ep.releaseTitle?.takeIf { ep.status == "done" || ep.status == "downloading" }?.let {
+            Text("↳ $it", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
         ep.lastError?.let { Text("⚠ $it", color = Red, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis) }
     }
 }

@@ -1050,6 +1050,7 @@ async function encode(job, opts = {}) {
     bandwidth: webBandwidth({ plan: job.plan, info, size: job.size, duration: job.duration, maxHeight, codec }),
   }));
   rows.update(kind, id, { web_state: 'encoding', web_progress: 0, web_error: null, web_encoder: encoder,
+    web_gen: (Number(job.web_gen) || 0) + 1,
     web_codec: webCodecOf(job.plan, info, codec) });
   const started = Date.now();
   const label = `${kind} #${id}`;

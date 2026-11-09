@@ -200,6 +200,10 @@ async function syncShowMeta(show) {
     changes.show_status = details.show_status;
   }
   if (details.imdb_id && !show.imdb_id) changes.imdb_id = details.imdb_id;
+  // Identity beyond the title, for telling it from a show of the same name.
+  for (const k of ['first_air_year', 'origin_country', 'original_title']) {
+    if (details[k] != null && details[k] !== show[k]) changes[k] = details[k];
+  }
 
   if (Object.keys(changes).length > 0) {
     shows.update(show.id, changes);
@@ -226,9 +230,10 @@ function isStale(startedAt) {
 
 async function syncDownloading() {
   _showTargetCache.clear();
+  let completed = 0;
   try {
     const progressMap = await getTorrentProgress();
-    if (progressMap.size === 0) return;
+    if (progressMap.size === 0) return 0;
 
     for (const movie of movies.downloading()) {
       const t = progressMap.get(progressKey(movie.transmission_target, movie.torrent_id));
@@ -239,6 +244,7 @@ async function syncDownloading() {
         movies.update(movie.id, {
           status: 'done', progress: 100, last_error: null, completed_at: new Date().toISOString(),
         });
+        completed++;
         log.info(`"${movie.title}" download complete`, { type: 'movie', id: movie.id });
       } else {
         if (t.progress !== movie.progress) movies.update(movie.id, { progress: t.progress });
@@ -262,6 +268,7 @@ async function syncDownloading() {
         episodes.update(ep.id, {
           status: 'done', progress: 100, last_error: null, completed_at: new Date().toISOString(),
         });
+        completed++;
         log.info(`${epLabel(ep.season, ep.episode)} download complete`, { type: 'episode', id: ep.id });
       } else {
         if (t.progress !== ep.progress) episodes.update(ep.id, { progress: t.progress });
@@ -279,6 +286,26 @@ async function syncDownloading() {
     }
   } catch (err) {
     log.error(`Transmission sync failed: ${err.message}`);
+  }
+  return completed;
+}
+
+/**
+ * Download progress, every minute and right after a grab — not only in the
+ * hourly run. Progress used to move only once an hour, so a hand-picked (or
+ * re-picked) torrent Transmission already had at 100% sat at 0% for up to an
+ * hour. Whatever finishes is checked straight away.
+ */
+let _syncing = false;
+async function quickSync() {
+  if (_running || _syncing || process.env.AMAGNET_NO_SCHEDULER === '1') return;
+  _syncing = true;
+  try {
+    if (await syncDownloading()) {
+      await postProcessCompleted().catch(err => log.error(`post-processing failed: ${err.message}`));
+    }
+  } finally {
+    _syncing = false;
   }
 }
 
@@ -316,7 +343,7 @@ async function processMovie(movie) {
   const search  = {
     type: 'movie', title: movie.title, year: movie.year,
     imdbId: movie.imdb_id, tmdbId: movie.tmdb_id,
-    quality, exclude: parseList(movie.tried_magnets),
+    quality, exclude: parseList(movie.tried_magnets), wrong: wrongReleases(movie),
   };
 
   if (movie.mode === 'manual') {
@@ -369,7 +396,7 @@ async function processMovie(movie) {
   }
 
   movies.update(movie.id, {
-    status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
+    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: winner.title || null,
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),
   });
@@ -511,6 +538,22 @@ function episodeSearch(show, ep) {
     episode: ep.episode,
     quality: show.quality || settings.get('default_quality') || '1080p',
     exclude: parseList(ep.tried_magnets),
+    wrong:   wrongReleases(ep),
+    ...showIdentity(show),
+  };
+}
+
+/** Releases marked as the wrong video for an item: never picked for it again. */
+function wrongReleases(row) {
+  return parseList(row.rejected_releases).map(r => r.magnet).filter(Boolean);
+}
+
+/** What tells a show from another of the same name. */
+function showIdentity(show) {
+  return {
+    firstAirYear:  show.first_air_year || null,
+    countries:     String(show.origin_country || '').split(',').filter(Boolean),
+    originalTitle: show.original_title || null,
   };
 }
 
@@ -543,11 +586,11 @@ function packableSeasons(show) {
  * Mark every episode a pack covers as downloading against the same torrent, so
  * progress and completion are reported for all of them together.
  */
-function claimEpisodesForPack(eps, magnet, result) {
+function claimEpisodesForPack(eps, magnet, result, releaseTitle = null) {
   const startedAt = new Date().toISOString();
   for (const ep of eps) {
     episodes.update(ep.id, {
-      status: 'downloading', magnet, torrent_id: result.id,
+      status: 'downloading', magnet, torrent_id: result.id, release_title: releaseTitle,
       results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
       ...afterAdd(result),
@@ -594,7 +637,7 @@ async function grabSeriesPack(show) {
   );
 
   const { accepted } = await findCandidates({
-    type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id,
+    type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id, ...showIdentity(show),
     quality, pack: 'series', seasons, episodeCount: all.length,
     exclude: [...tried], limit: 1,
   });
@@ -622,7 +665,7 @@ async function grabSeriesPack(show) {
     throw err;
   }
 
-  claimEpisodesForPack(wanted, winner.magnet, result);
+  claimEpisodesForPack(wanted, winner.magnet, result, winner.title);
   log.info(
     `added "${show.title}" complete series covering ${wanted.length} episode(s) — ${winner.title} ` +
     `(${(winner.size / 1e9).toFixed(1)} GB, ${winner.seeders} seeds)`,
@@ -647,7 +690,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
       { type: 'show', id: show.id });
 
     const { accepted } = await findCandidates({
-      type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id,
+      type: 'show', title: show.title, imdbId: show.imdb_id, tmdbId: show.tmdb_id, ...showIdentity(show),
       season, episode: null, quality, pack: 'season',
       episodeCount: seasonEps.length,
       exclude: [...tried], limit: 1,
@@ -679,7 +722,7 @@ async function grabSeasonPacks(show, deadline = Infinity) {
       throw err;
     }
 
-    claimEpisodesForPack(seasonEps, winner.magnet, result);
+    claimEpisodesForPack(seasonEps, winner.magnet, result, winner.title);
     log.info(
       `added "${show.title}" ${label} pack covering ${seasonEps.length} episode(s) — ${winner.title}`,
       { type: 'show', id: show.id },
@@ -731,7 +774,7 @@ async function grabEpisode(show, ep) {
   }
 
   episodes.update(ep.id, {
-    status: 'downloading', magnet: torrentUrl, torrent_id: result.id,
+    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: winner.title || null,
     results_cache: null,
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),
@@ -752,6 +795,9 @@ function runInfo() {
 }
 
 async function run() {
+  // The kill switch holds for every way in — Redo, Wrong video and adding a
+  // show call run() directly, not only the timer and the Run button.
+  if (process.env.AMAGNET_NO_SCHEDULER === '1') return;
   if (_running) { console.log('[scheduler] already running, skipping'); return; }
   _running = true;
   const startedAt = Date.now();
@@ -796,9 +842,10 @@ function scheduleNext() {
 function start() {
   run().catch(err => console.error('[scheduler] initial run error:', err.message));
   scheduleNext();
+  setInterval(() => { quickSync().catch(err => console.error('[scheduler] progress sync failed:', err.message)); }, 60_000).unref();
 }
 
 module.exports = {
-  start, run, runInfo, hasAired, effectivelyAired,
+  start, run, runInfo, quickSync, hasAired, effectivelyAired, wrongReleases, showIdentity,
   syncEpisodes, syncShowMeta, makeSeasonFetcher,
 };

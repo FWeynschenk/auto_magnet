@@ -9,8 +9,12 @@
       </div>
       <div v-if="item && isAdmin" class="del">
         <button class="btn-ghost btn-sm" :disabled="deleting" aria-haspopup="menu" :aria-expanded="delMenu" @click="delMenu = !delMenu">
-          {{ deleting ? 'Deleting…' : 'Delete…' }}</button>
+          {{ deleting ? 'Working…' : 'Fix or delete…' }}</button>
         <div v-if="delMenu" class="del-menu" role="menu">
+          <div v-if="item.release" class="del-release" :title="item.release">From {{ item.release }}</div>
+          <button role="menuitem" @click="wrongVideo">
+            Wrong video — find another<span>Another show or episode, or a bad copy: it's deleted, never picked again, and another is found</span>
+          </button>
           <button v-if="pb && pb.plan && pb.plan !== 'direct' && pb.original !== false" role="menuitem" @click="deleteWeb">
             Delete web version<span>The original stays and keeps seeding; it's made again when next played</span>
           </button>
@@ -675,6 +679,23 @@ async function toggleWatched() {
   } catch (err) { notifyError(err.message); }
 }
 
+async function wrongVideo() {
+  delMenu.value = false;
+  const name = item.value.kind === 'episode' ? `${item.value.show_title} ${epCode(item.value)}` : item.value.title;
+  const reason = window.prompt(`What's wrong with "${name}"?\n\n`
+    + `It is deleted (file, subtitles, web version), ${item.value.release ? `"${item.value.release}" ` : 'this release '}`
+    + 'is never picked for it again, and another is looked for.', 'another show');
+  if (reason === null) return;
+  deleting.value = true;
+  try {
+    await watch.wrong(props.kind, props.id, reason.trim() || 'the wrong video');
+    notifySuccess('Deleted — looking for another release. It appears here once it has downloaded.');
+    teardown();
+    back();
+  } catch (err) { notifyError(err.message); }
+  finally { deleting.value = false; }
+}
+
 async function deleteWeb() {
   delMenu.value = false;
   if (!window.confirm('Delete the web version? The original stays and keeps seeding; the web version is made again the next time this is played.')) return;
@@ -798,6 +819,10 @@ watchRef(() => [props.kind, props.id], load);
   display: flex; flex-direction: column; gap: 2px; border-radius: 6px;
 }
 .del-menu button:hover { background: var(--border); opacity: 1; }
+.del-release {
+  padding: 8px 12px 6px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
+  max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border);
+}
 .del-menu button span { font-size: 11px; color: var(--muted); font-weight: 400; }
 .del-menu button.danger { color: var(--red); }
 .toast-resume {

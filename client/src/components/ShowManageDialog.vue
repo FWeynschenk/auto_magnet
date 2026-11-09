@@ -125,6 +125,10 @@
               >Choose…</button>
             </div>
 
+            <!-- Which release it came from: a wrong one is easy to spot by name. -->
+            <div v-if="ep.release_title && ['done', 'downloading'].includes(ep.status)" class="ep-release" :title="ep.release_title">
+              ↳ {{ ep.release_title }}
+            </div>
             <!-- Why the last attempt did not stick. Screening finishes after the
                  grab request returns, so without this the failure is invisible. -->
             <div v-if="ep.last_error" class="ep-error" :title="ep.last_error">⚠ {{ ep.last_error }}</div>
@@ -230,6 +234,13 @@ function formatDate(d) {
 }
 
 async function redo(ep) {
+  // Downloaded or downloading: Redo replaces that download. Say what goes.
+  if (['done', 'downloading'].includes(ep.status)) {
+    const code = `S${pad(ep.season)}E${pad(ep.episode)}`;
+    const release = ep.release_title ? `\n\n${ep.release_title}` : '';
+    if (!window.confirm(`Replace ${code}?${release}\n\nThe downloaded file, its subtitles and web version are deleted, `
+      + 'this release is never picked for it again, and another is looked for.')) return;
+  }
   busy.value = ep.id;
   try { emit('redo-episode', ep); } finally { busy.value = null; }
 }
@@ -402,6 +413,10 @@ async function submitAddEpisode() {
   font-size: 11px; color: var(--red);
   padding: 0 0 2px 18px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ep-release {
+  flex-basis: 100%; font-size: 11px; color: var(--muted); padding: 0 0 2px 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace;
 }
 
 .ep-status-badge {

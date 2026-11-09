@@ -215,6 +215,22 @@ const migrations = [
   'ALTER TABLE media_files ADD COLUMN web_codec TEXT',
   // When a web version was last opened, for dropping repackaged copies nobody watches.
   'ALTER TABLE media_files ADD COLUMN web_last_used TEXT',
+  // Counts up each time a web version is made again. It is part of the
+  // playback URL, so a browser that cached the pieces of the old one (they are
+  // served as immutable) can never mix them into the new one.
+  'ALTER TABLE media_files ADD COLUMN web_gen INTEGER DEFAULT 0',
+  // The release a download came from (shown, so a wrong one is easy to spot),
+  // and releases someone marked as the wrong video: never picked again for
+  // that item, whatever else Redo resets.
+  'ALTER TABLE movies   ADD COLUMN release_title TEXT',
+  'ALTER TABLE episodes ADD COLUMN release_title TEXT',
+  'ALTER TABLE movies   ADD COLUMN rejected_releases TEXT',
+  'ALTER TABLE episodes ADD COLUMN rejected_releases TEXT',
+  // For telling a show from another of the same name: "Ghosts" (US, 2021) is
+  // not "Ghosts UK" (2019).
+  'ALTER TABLE shows    ADD COLUMN first_air_year INTEGER',
+  'ALTER TABLE shows    ADD COLUMN origin_country TEXT',
+  'ALTER TABLE shows    ADD COLUMN original_title TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (_) {}

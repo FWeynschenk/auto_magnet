@@ -128,18 +128,22 @@ async function gather({ type, title, year, imdbId, tmdbId, season, episode, qual
 async function findCandidates({
   type, title, year = null, imdbId = null, tmdbId = null,
   season = null, episode = null,
-  quality = '1080p', exclude = [], limit = 20, refresh = false,
+  quality = '1080p', exclude = [], wrong = [], limit = 20, refresh = false,
   query = null, allowPacks = false, pack = false, seasons = null, episodeCount = 1,
+  // A show's identity beyond its title, to tell it from another of that name.
+  firstAirYear = null, countries = [], originalTitle = null,
 }) {
   const raw = await gather({ type, title, year, imdbId, tmdbId, season, episode, quality, query, pack, refresh });
 
   // A typed query replaces the title check rather than stacking on top of it:
   // the user said what they wanted, so second-guessing the words is exactly the
   // behaviour the manual box exists to escape. Safety and quality filters stay.
-  const want    = query ? null : { title, year, season, episode, seasons, episodeCount, imdbId, tmdbId };
+  const want    = query ? null : {
+    title, year, season, episode, seasons, episodeCount, imdbId, tmdbId, firstAirYear, countries, originalTitle,
+  };
   const packsOk = allowPacks || pack || !!query;
   const { accepted, rejected } = evaluate(raw, {
-    preferredQuality: quality, type, want, exclude,
+    preferredQuality: quality, type, want, exclude, wrong,
     allowPacks: packsOk,
   });
 

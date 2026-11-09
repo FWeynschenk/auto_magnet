@@ -392,6 +392,35 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<String?>(null) }   // "web" | "all"
+    var wrongReason by remember { mutableStateOf<String?>(null) }   // set: the Wrong video dialog is open
+
+    // Admin: the wrong video (another show or episode, a bad copy).
+    wrongReason?.let { reason ->
+        AlertDialog(
+            onDismissRequest = { wrongReason = null },
+            title = { Text("Wrong video?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("It's deleted (file, subtitles, web version), " +
+                        (detail?.release?.let { "\"$it\" " } ?: "this release ") +
+                        "is never picked for it again, and another is looked for.")
+                    OutlinedTextField(reason, { wrongReason = it }, label = { Text("What's wrong") }, singleLine = true)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val why = reason.trim().ifEmpty { "the wrong video" }
+                    wrongReason = null
+                    scope.launch {
+                        runCatching { Api.wrongVideo(kind, id, why) }
+                            .onSuccess { Toast.makeText(ctx, "Deleted — looking for another release", Toast.LENGTH_LONG).show(); back() }
+                            .onFailure { Toast.makeText(ctx, it.message, Toast.LENGTH_LONG).show() }
+                    }
+                }) { Text("Replace") }
+            },
+            dismissButton = { TextButton(onClick = { wrongReason = null }) { Text("Cancel") } },
+        )
+    }
 
     // Admin: free space from here, as in the web player. Asks first.
     confirm?.let { what ->
@@ -432,6 +461,10 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
                     Box {
                         IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "More") }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            detail.release?.let {
+                                DropdownMenuItem(text = { Text("From $it", color = Muted, fontSize = 12.sp, maxLines = 2) }, onClick = {}, enabled = false)
+                            }
+                            DropdownMenuItem(text = { Text("Wrong video — find another") }, onClick = { menuOpen = false; wrongReason = "another show" })
                             val pb = detail.playback
                             if (pb.plan != null && pb.plan != "direct" && detail.original != null) {
                                 DropdownMenuItem(text = { Text("Delete web version") }, onClick = { menuOpen = false; confirm = "web" })

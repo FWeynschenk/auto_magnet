@@ -138,7 +138,9 @@ function playback(kind, id, m) {
   if (m.plan === 'unplayable') return { mode: 'unavailable', error: m.plan_reason };
   const file = { url: `${base(kind, id)}/file`, size: m.size };
   if (m.plan === 'direct') return { mode: 'file', url: file.url, download: { type: 'file', ...file }, reason: m.plan_reason };
-  const hls = `${base(kind, id)}/hls/${media.hlsEntry(kind, id)}`;
+  // g<n>: this web version's generation. Its pieces are cached as immutable,
+  // so a remade one (after Redo, say) must never share their addresses.
+  const hls = `${base(kind, id)}/hls/g${Number(m.web_gen) || 0}/${media.hlsEntry(kind, id)}`;
   const info = { plan: m.plan, reason: m.plan_reason, state: m.web_state, progress: m.web_progress, encoder: m.web_encoder,
     original: !m.original_removed_at, codec: m.web_codec || 'h264' };
   if (m.web_state === 'ready') return { mode: 'hls', url: hls, complete: true, download: { type: 'hls', url: hls }, ...info };
@@ -198,6 +200,8 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     audio_langs: tracks.audio,
     remembered: tracks.remembered,
     intro: require('../intro').introOf(kind, id),
+    // The release it came from: shown to admins, so a wrong one is easy to spot.
+    release: req.user.role === 'admin' ? (item.row.release_title || null) : undefined,
     original: m ? originalInfo(kind, id, m) : null,
     next,
   };
@@ -244,6 +248,18 @@ function originalInfo(kind, id, m) {
   };
 }
 
+/**
+ * Admin: this isn't the right video (another show, another episode, a bad
+ * copy). The download is removed and another release found; this one is
+ * never picked for the item again. { reason? }
+ */
+router.post('/items/:kind/:id/wrong', requireAdmin, wrap(async (req) => {
+  const { kind, id } = params(req);
+  const reason = String(req.body?.reason || 'the wrong video').slice(0, 200);
+  const r = await require('../replace').replaceDownload(kind, id, { reason, wrong: true, by: req.user.username });
+  return { ok: true, ...r };
+}));
+
 /** Lightweight poll for the "preparing" screen. */
 // Polled by a player that is waiting. Being polled is what keeps a request
 // alive: it starts the conversion if it hasn't (older apps open the item
@@ -289,14 +305,18 @@ const HLS_DIR = /^(v|a\d{1,2})$/;
 
 const sendHls = wrap(async (req, res) => {
   const { kind, id } = params(req);
-  const { dir, name } = req.params;
+  const { dir, name, gen } = req.params;
   if (!HLS_NAME.test(name) || (dir !== undefined && !HLS_DIR.test(dir))) throw bad('Not found', 404);
+  // An address from before the web version was made again: never serve the
+  // new one's pieces under it.
+  const row = media.rows.get(kind, id);
+  if (gen !== undefined && gen !== `g${Number(row?.web_gen) || 0}`) throw bad('This web version was made again — open it anew', 410);
   const file = path.join(media.webDir(kind, id), ...(dir ? [dir] : []), name);
   if (!fs.existsSync(file)) throw bad('Not ready', 404);
   if (name.endsWith('.m3u8')) {
     // A player reloads the playlist while the encode is still growing it:
     // someone is watching, so the request stays alive.
-    const m = media.rows.get(kind, id);
+    const m = row;
     if (m?.web_state === 'encoding') wantNow(kind, id, m);
     // Watched: a repackaged copy's clock restarts.
     if (name === 'master.m3u8' || (!dir && name === 'index.m3u8')) media.touchWeb(kind, id);
@@ -304,10 +324,14 @@ const sendHls = wrap(async (req, res) => {
     res.set('Cache-Control', 'no-cache');
   } else {
     res.type('video/mp4');
-    res.set('Cache-Control', 'private, max-age=31536000, immutable');
+    // Immutable only under a generation address; the old unversioned ones
+    // (older app versions) are checked every time.
+    res.set('Cache-Control', gen !== undefined ? 'private, max-age=31536000, immutable' : 'no-cache');
   }
   await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));
 });
+router.get('/items/:kind/:id/hls/:gen(g\\d+)/:name', sendHls);
+router.get('/items/:kind/:id/hls/:gen(g\\d+)/:dir/:name', sendHls);
 router.get('/items/:kind/:id/hls/:name', sendHls);
 router.get('/items/:kind/:id/hls/:dir/:name', sendHls);
 
@@ -320,7 +344,8 @@ router.get('/items/:kind/:id/hls/:dir/:name', sendHls);
 router.get('/items/:kind/:id/thumbs.json', wrap(async (req) => {
   const { kind, id } = params(req);
   const ix = thumbs.index(kind, id);
-  if (ix) return { ...ix, url: `${base(kind, id)}/thumbs/` };
+  // The sheets are cached for a day: ?v= changes when they are made again.
+  if (ix) return { ...ix, url: `${base(kind, id)}/thumbs/`, v: thumbs.madeAt(kind, id) };
   if (media.rows.get(kind, id)) thumbs.ensure(kind, id);
   return { pending: true };
 }));

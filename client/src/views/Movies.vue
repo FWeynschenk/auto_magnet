@@ -220,6 +220,16 @@ function openPreview(movie) {
 }
 
 async function redo(movie) {
+  // Downloaded or downloading: Redo replaces that download. Say what goes.
+  if (['done', 'downloading'].includes(movie.status)) {
+    const release = movie.release_title ? `
+
+${movie.release_title}` : '';
+    if (!window.confirm(`Replace "${movie.title}"?${release}
+
+The downloaded file, its subtitles and web version are deleted, `
+      + 'this release is never picked for it again, and another is looked for.')) return;
+  }
   const updated = await guard(() => api.redo(movie.id), 'Redo failed');
   if (!updated) return;
   const idx = list.value.findIndex(m => m.id === movie.id);

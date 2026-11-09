@@ -69,7 +69,7 @@ const thumb = computed(() => {
   const cell = i % per;
   return {
     width: `${ix.w}px`, height: `${ix.h}px`,
-    backgroundImage: `url(${ix.url}${sheet}.jpg)`,
+    backgroundImage: `url(${ix.url}${sheet}.jpg${ix.v ? `?v=${ix.v}` : ''})`,
     backgroundPosition: `-${(cell % ix.cols) * ix.w}px -${Math.floor(cell / ix.cols) * ix.h}px`,
     backgroundSize: `${ix.cols * ix.w}px ${ix.rows * ix.h}px`,
   };

@@ -159,6 +159,10 @@ object Api {
     /** Admin: the web version only (the original stays and keeps seeding), or everything. */
     suspend fun deleteWebVersion(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id/web") }
     suspend fun deleteFromDisk(kind: String, id: Int) { call("DELETE", "/api/watch/items/$kind/$id") }
+    /** Admin: not the right video. Deleted, never picked again for it, another looked for. */
+    suspend fun wrongVideo(kind: String, id: Int, reason: String) {
+        call("POST", "/api/watch/items/$kind/$id/wrong", obj("reason" to reason))
+    }
 
     suspend fun setWatched(kind: String, id: Int, watched: Boolean): Progress =
         json.decodeFromString(call("POST", "/api/watch/progress/$kind/$id/watched", """{"watched":$watched}"""))

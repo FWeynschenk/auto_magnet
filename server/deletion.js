@@ -101,6 +101,30 @@ async function deleteEverything(kind, id, { tx = require('./transmission'), by =
       ? 'Still downloading — remove it from the dashboard instead'
       : 'Nothing has been downloaded for this yet', 409);
   }
+  const r = await removeDownload(kind, id, { tx });
+  (kind === 'movie' ? movies : episodes).update(id, { status: 'deleted' });
+  log.info(`deleted from disk${by ? ` by ${by}` : ''} (${r.original}) — ${gb(r.freed)} freed`, { type: kind, id });
+  return r;
+}
+
+/**
+ * Everything one item's download left behind: its torrent (or its file in a
+ * pack), the file, subtitles beside it, the web version, seek thumbnails, the
+ * intro and audio prints, and the record of the file. The item's own status is
+ * the caller's business. Works for a download still running too.
+ * Returns { freed, original }.
+ */
+async function removeDownload(kind, id, { tx = require('./transmission') } = {}) {
+  const item = media.itemFor(kind, id);
+  if (!item) throw fail('Not found', 404);
+
+  // Still downloading: the torrent goes (or this file is dropped from a pack);
+  // there is no finished file or web version yet.
+  if (item.status === 'downloading' && item.row.torrent_id) {
+    const original = await dropRunningTorrent(item, tx);
+    const freedWeb = forgetFile(kind, id);
+    return { freed: freedWeb, original };
+  }
 
   let row = media.rows.get(kind, id);
   if (!row && item.status === 'done') {
@@ -158,17 +182,48 @@ async function deleteEverything(kind, id, { tx = require('./transmission'), by =
     original = 'already removed after seeding';
   }
 
-  const freedWeb = webBytes(kind, id);
+  const freedWeb = forgetFile(kind, id);
+  setImmediate(media.pump);
+  return { freed: freedOriginal + freedWeb, original };
+}
+
+/** The web version, thumbnails, intro, prints and the record of the file. Returns bytes freed. */
+function forgetFile(kind, id) {
+  const freed = webBytes(kind, id);
   media.removeWebVersion(kind, id);
   require('./thumbs').remove(kind, id);
   require('./intro').forget(kind, id);
-  if (row) media.rows.remove(kind, id);
-  (kind === 'movie' ? movies : episodes).update(id, { status: 'deleted' });
-
-  const freed = freedOriginal + freedWeb;
-  log.info(`deleted from disk${by ? ` by ${by}` : ''} (${original}) — ${gb(freed)} freed`, { type: kind, id });
-  setImmediate(media.pump);
-  return { freed, original };
+  if (media.rows.get(kind, id)) media.rows.remove(kind, id);
+  return freed;
 }
 
-module.exports = { deleteWebVersion, deleteEverything, insideLibrary };
+/**
+ * A download that hasn't finished: remove the torrent with its data when it is
+ * only this item's, else drop this item's file from it. A torrent that was in
+ * Transmission before auto_magnet asked for it is someone else's: left alone.
+ */
+async function dropRunningTorrent(item, tx) {
+  const torrentId = item.row.torrent_id;
+  const target = item.kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
+  if (item.row.torrent_origin === 'duplicate') return 'torrent was already in Transmission — left as it was';
+  let info = null;
+  try { info = await tx.getTorrentInfo(torrentId, tx.resolveTarget(target)); } catch (err) {
+    throw fail(`Transmission can't be reached to remove the torrent first (${err.message}) — try again once it is`, 503);
+  }
+  if (!info) return 'torrent no longer in Transmission';
+  if (sharers(item, torrentId, target).length === 0) {
+    await tx.purgeTorrent(torrentId, tx.resolveTarget(target));
+    return 'torrent removed with its files';
+  }
+  const f = media.pickFile(info.files, item);
+  const index = f ? info.files.indexOf(f) : -1;
+  if (index >= 0) {
+    await tx.setFilesUnwanted(torrentId, [index], tx.resolveTarget(target));
+    const p = mapPath(path.join(info.downloadDir, f.name));
+    if (insideLibrary(p)) fs.rmSync(p, { force: true });
+    return 'file dropped from its pack; the rest keeps downloading';
+  }
+  return 'shared torrent left as it was';
+}
+
+module.exports = { deleteWebVersion, deleteEverything, removeDownload, insideLibrary };

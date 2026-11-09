@@ -54,11 +54,21 @@ router.delete('/:id', (req, res) => {
 });
 
 // Reset a movie so it can be re-grabbed
-router.post('/:id/redo', (req, res) => {
+router.post('/:id/redo', async (req, res) => {
   const movie = movies.byId(req.params.id);
   if (!movie) return res.status(404).json({ error: 'Movie not found' });
-  // tried_magnets must be cleared too — otherwise the selector still excludes every
-  // previously attempted torrent and the redo fails instantly with no candidates.
+  // Downloaded (or downloading): the download is replaced — its files, web
+  // version and the rest removed, the release never picked again for it.
+  if (['done', 'downloading'].includes(movie.status)) {
+    try {
+      await require('../replace').replaceDownload('movie', movie.id, {
+        reason: req.body?.reason || 'redone by hand', wrong: req.body?.wrong !== false, by: req.user?.username,
+      });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+    return res.json(movies.byId(req.params.id));
+  }
+  // Nothing downloaded: start over. tried_magnets is cleared so a failed item
+  // (every candidate tried) gets a fresh look; releases marked wrong stay out.
   movies.update(req.params.id, {
     status: 'pending', magnet: null, torrent_id: null,
     results_cache: null, results_cached_at: null, last_error: null,

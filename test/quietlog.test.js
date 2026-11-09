@@ -7,7 +7,9 @@ const assert = require('node:assert/strict');
 const { freshDb } = require('./helpers');
 
 freshDb();
-process.env.AMAGNET_NO_SCHEDULER = '1';
+// The scheduler runs for real here, against stand-ins: Transmission at a
+// closed port, and no indexers.
+delete process.env.AMAGNET_NO_SCHEDULER;
 const { db, settings } = require('../server/db');
 // No indexers: every search finds nothing. Stubbed before the scheduler loads it.
 const pipeline = require('../server/pipeline');

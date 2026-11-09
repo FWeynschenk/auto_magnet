@@ -123,7 +123,7 @@ test('playback', { skip }, async (t) => {
         if (b.state === 'failed') throw new Error(b.error);
         return b.mode === 'hls' && b.complete ? b : null;
       });
-      assert.match(pb.url, /\/hls\/master\.m3u8$/);
+      assert.match(pb.url, /\/hls\/g\d+\/master\.m3u8$/);
       const master = await (await call('GET', pb.url, null, { tok: token, raw: true })).text();
       assert.match(master, /#EXT-X-STREAM-INF:BANDWIDTH=\d+,AUDIO="aud"\nv\/index\.m3u8/);
       for (const rel of ['v/index.m3u8', 'a0/index.m3u8']) {
@@ -173,6 +173,17 @@ test('playback', { skip }, async (t) => {
       const r = await call('GET', `/api/watch/items/episode/1/hls/${p}`, null, { tok: token, raw: true });
       assert.equal(r.status, 404, p);
     }
+  });
+  await t.test('a web version address carries its generation; an old one is refused, never served the new pieces', async () => {
+    const pb = (await call('GET', '/api/watch/items/movie/2/playback', null, { tok: token })).body;
+    const m = /\/hls\/g(\d+)\/master\.m3u8$/.exec(pb.url);
+    assert.ok(m, pb.url);
+    const gen = Number(m[1]);
+    assert.ok(gen >= 1);
+    const seg = await call('GET', pb.url.replace('master.m3u8', 'v/index.m3u8'), null, { tok: token, raw: true });
+    assert.equal(seg.status, 200);
+    const old = await call('GET', pb.url.replace(`/g${gen}/`, `/g${gen - 1}/`), null, { tok: token, raw: true });
+    assert.equal(old.status, 410, 'a stale address');
   });
   await t.test('the original stays untouched', async () => {
     assert.ok(fs.existsSync(path.join(dir, 'media', 'Movies', 'Remux.Film.2021', 'Remux.Film.2021.mkv')));

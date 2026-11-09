@@ -35,6 +35,10 @@
       <div v-if="movie.last_error" class="last-error" :title="movie.last_error">
         ⚠ {{ movie.last_error }}
       </div>
+      <!-- Which release it came from: a wrong one is easy to spot by name. -->
+      <div v-if="movie.release_title && ['done', 'downloading'].includes(movie.status)" class="release" :title="movie.release_title">
+        ↳ {{ movie.release_title }}
+      </div>
     </div>
 
     <div class="actions">
@@ -139,6 +143,10 @@ function toggleMode() {
 .preview-hint { margin-top: 6px; font-size: 12px; color: var(--yellow); }
 .last-error {
   margin-top: 6px; font-size: 11px; color: var(--red);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.release {
+  margin-top: 4px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 

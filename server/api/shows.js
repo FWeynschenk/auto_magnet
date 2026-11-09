@@ -129,10 +129,20 @@ router.post('/:id/episodes/manual', (req, res) => {
 });
 
 // Reset an episode so it can be re-grabbed
-router.post('/:id/episodes/:epId/redo', (req, res) => {
+router.post('/:id/episodes/:epId/redo', async (req, res) => {
   const ep = episodes.byId(req.params.epId);
   if (!ep || String(ep.show_id) !== String(req.params.id)) {
     return res.status(404).json({ error: 'Episode not found' });
+  }
+  // Downloaded (or downloading): the download is replaced — its files, web
+  // version and the rest removed, the release never picked again for it.
+  if (['done', 'downloading'].includes(ep.status)) {
+    try {
+      await require('../replace').replaceDownload('episode', ep.id, {
+        reason: req.body?.reason || 'redone by hand', wrong: req.body?.wrong !== false, by: req.user?.username,
+      });
+    } catch (err) { return res.status(err.status || 500).json({ error: err.message }); }
+    return res.json(episodes.byId(ep.id));
   }
   // tried_magnets must be cleared too — otherwise the selector still excludes every
   // previously attempted torrent and the redo fails instantly with no candidates.

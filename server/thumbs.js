@@ -117,8 +117,13 @@ async function make(kind, id) {
   fs.writeFileSync(indexFile(kind, id), JSON.stringify({ version: VERSION, interval: INTERVAL, cols: COLS, rows: ROWS, w: W, h, count, sheets }));
 }
 
+/** When the set was made, as a number: part of the sheets' URL, so a new set is never served from cache. */
+function madeAt(kind, id) {
+  try { return Math.floor(fs.statSync(indexFile(kind, id)).mtimeMs); } catch (_) { return 0; }
+}
+
 function remove(kind, id) {
   fs.rmSync(dirFor(kind, id), { recursive: true, force: true });
 }
 
-module.exports = { ensure, index, sheetFile, remove, dirFor, INTERVAL, _make: make };
+module.exports = { ensure, index, sheetFile, remove, dirFor, madeAt, INTERVAL, _make: make };

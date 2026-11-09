@@ -55,6 +55,9 @@ async function getTvDetails(tmdbId) {
     overview:         r.overview,
     number_of_seasons: r.number_of_seasons,
     show_status:      r.status, // 'Ended', 'Returning Series', etc.
+    first_air_year:   r.first_air_date ? Number(String(r.first_air_date).slice(0, 4)) || null : null,
+    origin_country:   Array.isArray(r.origin_country) ? r.origin_country.join(',') : null,
+    original_title:   r.original_name && r.original_name !== r.name ? r.original_name : null,
     seasons:          (r.seasons || []).map(s => ({
       season_number: s.season_number,
       episode_count: s.episode_count,

@@ -197,6 +197,8 @@ function firstBonus(list, title) {
 
 function normalizeTitle(s) {
   return String(s || '')
+    // "Shōgun" → "shogun", not "sh gun".
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/['’`]/g, '')
@@ -211,6 +213,35 @@ function titleMatchRatio(releaseTitle, wantedTitle) {
   const have = new Set(normalizeTitle(releaseTitle).split(' ').filter(Boolean));
   const hits = want.filter(t => have.has(t)).length;
   return hits / want.length;
+}
+
+// Where the show's name ends in a release name: the episode or season marker.
+const SHOW_END_RE = /\b(?:S\d{1,2}(?:[\s._-]?E\d{1,3})?|\d{1,2}x\d{2,3}|Season[\s._-]*\d{1,2}|Complete)\b/i;
+const COUNTRY_WORDS = { us: ['us', 'usa'], gb: ['uk', 'gb'], au: ['au', 'aus'], nz: ['nz'], ca: ['ca'], ie: ['ie'] };
+const ALL_COUNTRY_WORDS = new Set(Object.values(COUNTRY_WORDS).flat());
+const SMALL_WORDS = new Set(['the', 'a', 'an', 'and', 'of']);
+
+/**
+ * Words a release puts in the show's name that this show doesn't have. Only
+ * the part before the episode or season marker counts: "Silo.Stories.S02E01"
+ * against "Silo" has "stories". A year or country tag is fine when it is this
+ * show's own (Ghosts 2021, Ghosts US) and gives it away when it isn't (Ghosts
+ * UK, Doctor Who 1963). Empty means the name fits.
+ */
+function extraShowWords(releaseTitle, want) {
+  const title = String(releaseTitle || '')
+    .replace(/^\s*(?:\[[^\]]*\]|\([^)]*\)|www\.[^\s]+\s*-?)\s*/i, '');   // [group], (tag), www.site -
+  const end = SHOW_END_RE.exec(title);
+  if (!end || end.index === 0) return [];
+  const part = normalizeTitle(title.slice(0, end.index)).split(' ').filter(Boolean);
+  const own = new Set([...normalizeTitle(want.title).split(' '), ...normalizeTitle(want.originalTitle).split(' ')].filter(Boolean));
+  const countries = (want.countries || []).flatMap(c => COUNTRY_WORDS[String(c).toLowerCase()] || [String(c).toLowerCase()]);
+  return part.filter((w) => {
+    if (own.has(w) || SMALL_WORDS.has(w)) return false;
+    if (/^(?:19|20)\d{2}$/.test(w)) return want.firstAirYear ? Math.abs(Number(w) - want.firstAirYear) > 1 : false;
+    if (ALL_COUNTRY_WORDS.has(w)) return countries.length ? !countries.includes(w) : false;
+    return true;
+  });
 }
 
 /** 4-digit year-like tokens in a release title, excluding ones from the title itself. */
@@ -284,6 +315,14 @@ function mismatchReason(result, { type, want }) {
   const ratio    = titleMatchRatio(result.title, want.title);
   if (!result._idMatch && ratio < minRatio) {
     return `title match ${Math.round(ratio * 100)}% — looks like a different release`;
+  }
+
+  // A show of the same name, or one whose name starts the same way: "Silo
+  // Stories", "Ghosts UK", "9-1-1 Lone Star". The words before the episode
+  // marker must all be this show's own.
+  if (type === 'show' && !result._idMatch) {
+    const extra = extraShowWords(result.title, want);
+    if (extra.length) return `names another show — "${extra.join(' ')}" isn't part of "${want.title}"`;
   }
 
   if (type === 'movie' && want.year && !result._idMatch) {
@@ -541,10 +580,20 @@ function dedupe(results) {
  * @param {Array}  opts.exclude           magnets/URLs already tried
  * @returns {{ accepted: Array, rejected: Array }}  both sorted best-first
  */
+/** A magnet's info hash, lower-case hex or base32 as given; null for anything else. */
+function btihOf(url) {
+  const m = /xt=urn:btih:([a-z0-9]+)/i.exec(String(url || ''));
+  return m ? m[1].toLowerCase() : null;
+}
+
 function evaluate(results, {
   preferredQuality = '1080p', type = 'movie', want = null,
-  exclude = [], allowPacks = false,
+  exclude = [], wrong = [], allowPacks = false,
 } = {}) {
+  // The same release comes back with other trackers in its magnet: match on
+  // the info hash as well as the whole link.
+  const tried = new Set(exclude), triedHash = new Set(exclude.map(btihOf).filter(Boolean));
+  const bad = new Set(wrong), badHash = new Set(wrong.map(btihOf).filter(Boolean));
   const minSeeds = parseInt(settings.get('min_seeds') || '10');
   const strict   = settings.get('quality_strict') === '1';
 
@@ -553,7 +602,12 @@ function evaluate(results, {
 
   for (const raw of dedupe(results)) {
     const url = raw.magnet || raw.download_url || '';
-    if (exclude.length > 0 && url && exclude.includes(url)) {
+    const hash = btihOf(url) || (raw.info_hash ? String(raw.info_hash).toLowerCase() : null);
+    if (url && (bad.has(url) || (hash && badHash.has(hash)))) {
+      rejected.push({ ...raw, _reason: 'marked as the wrong video for this item' });
+      continue;
+    }
+    if (url && (tried.has(url) || (hash && triedHash.has(hash)))) {
       rejected.push({ ...raw, _reason: 'already tried for this item' });
       continue;
     }
@@ -583,6 +637,6 @@ module.exports = {
   evaluate,
   // Exported for inspection and testing rather than for production callers —
   // these are the rules most likely to need checking against a real title.
-  dedupe, detectQuality, normalizeTitle, titleMatchRatio,
+  dedupe, detectQuality, normalizeTitle, titleMatchRatio, extraShowWords, btihOf,
   isSeasonPack, isSeriesPack, claimedSeasons,
 };

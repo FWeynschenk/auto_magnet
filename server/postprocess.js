@@ -349,6 +349,29 @@ function postProcessCompleted(opts = {}) {
   return passInFlight;
 }
 
+// Someone opened an item that has no subtitles yet: look again now, rather than
+// at the next scheduled retry. Subtitles for a new episode often appear within
+// hours of it airing — after the first search, before the next. At most once
+// per ASK_AGAIN_MS per item; searches are free, only downloads count against
+// the day's quota.
+const ASK_AGAIN_MS = 15 * 60_000;
+const askedNow = new Set();
+
+/** Returns true when a search was started. */
+function searchSubsNow(kind, id, row) {
+  if (!row || row.subs_state !== 'unavailable' || !row.post_processed_at) return false;
+  if (!subtitles.configured() || subtitles.quotaExhausted()) return false;
+  const last = Date.parse(row.subs_checked_at || row.post_processed_at);
+  if (Number.isFinite(last) && Date.now() - last < ASK_AGAIN_MS) return false;
+  askedNow.add(`${kind}:${id}`);
+  // A pass already running didn't pick this one up: run another after it.
+  (passInFlight || Promise.resolve()).catch(() => {})
+    .then(() => postProcessCompleted())
+    .catch(err => log.warn(`subtitle search on open failed: ${err.message}`, { type: kind, id }))
+    .finally(() => askedNow.delete(`${kind}:${id}`));
+  return true;
+}
+
 async function postProcessPass({ limit = 25 } = {}) {
   if (settings.get('postprocess_enabled') === '0') return;
   const wanted = wantedLanguages();
@@ -358,7 +381,9 @@ async function postProcessPass({ limit = 25 } = {}) {
   const due = [
     ...movies.needingPostProcess().map(r => ({ kind: 'movie',   id: r.id, row: r, target: r.transmission_target || DEFAULT })),
     ...episodes.needingPostProcess().map(r => ({ kind: 'episode', id: r.id, row: r, target: r.show_target || DEFAULT })),
-  ].filter(d => d.row.subs_state !== 'unavailable' || !d.row.post_processed_at || subsRetryDue(d.row, now0, hours))
+  ].filter(d => d.row.subs_state !== 'unavailable' || !d.row.post_processed_at
+      || askedNow.has(`${d.kind}:${d.id}`) || subsRetryDue(d.row, now0, hours))
+    .sort((a, b) => askedNow.has(`${b.kind}:${b.id}`) - askedNow.has(`${a.kind}:${a.id}`))   // asked for first
     .slice(0, limit);
   if (due.length === 0) return;
 
@@ -430,6 +455,7 @@ async function postProcessPass({ limit = 25 } = {}) {
         continue;
       }
       const retry = entry.row.subs_state === 'unavailable';
+      const onOpen = askedNow.has(`${entry.kind}:${entry.id}`);
       const state = await fetchSubtitles(entry, local, info, wanted);
       const update = { subs_state: state, subs_checked_at: new Date().toISOString() };
       const next = state === 'unavailable' ? nextRetryIn(entry.row) : null;
@@ -438,7 +464,8 @@ async function postProcessPass({ limit = 25 } = {}) {
           + (next ? ` — trying again ${next}` : '');
       }
       store.update(entry.id, update);
-      if (retry && state === 'fetched') log.info('subtitles found on a later try', { type: entry.kind, id: entry.id });
+      if (retry && state === 'fetched') log.info(`subtitles found on a later try${onOpen ? ' (looked again when it was opened)' : ''}`, { type: entry.kind, id: entry.id });
+      else if (onOpen && state === 'unavailable') { /* looked again on opening: nothing yet, nothing to say */ }
       else if (retry && state === 'unavailable') {
         log.info(`subtitle retry: still none${next ? `, trying again ${next}` : ' — no more retries'}`, { type: entry.kind, id: entry.id });
       }
@@ -448,5 +475,5 @@ async function postProcessPass({ limit = 25 } = {}) {
 
 module.exports = {
   postProcessCompleted, assess, probe, pickFile, hasSidecarSubs, mapPath,
-  subsRetryDue, subsRetryPending, nextRetryIn, retryHours,
+  subsRetryDue, subsRetryPending, nextRetryIn, retryHours, searchSubsNow,
 };

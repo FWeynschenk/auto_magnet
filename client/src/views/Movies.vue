@@ -107,6 +107,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, computed, onMounted, watch } from 'vue';
 import { movies as api } from '../api.js';
 import { guard, notifySuccess } from '../toast.js';
@@ -222,13 +223,11 @@ function openPreview(movie) {
 async function redo(movie) {
   // Downloaded or downloading: Redo replaces that download. Say what goes.
   if (['done', 'downloading'].includes(movie.status)) {
-    const release = movie.release_title ? `
-
-${movie.release_title}` : '';
-    if (!window.confirm(`Replace "${movie.title}"?${release}
-
-The downloaded file, its subtitles and web version are deleted, `
-      + 'this release is never picked for it again, and another is looked for.')) return;
+    if (!(await ask({
+      title: `Replace "${movie.title}"?`, confirmLabel: 'Replace', details: movie.release_title ? [movie.release_title] : [],
+      message: 'The downloaded file, its subtitles and web version are deleted, '
+        + 'this release is never picked for it again, and another is looked for.',
+    }))) return;
   }
   const updated = await guard(() => api.redo(movie.id), 'Redo failed');
   if (!updated) return;

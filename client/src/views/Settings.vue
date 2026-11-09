@@ -443,6 +443,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { settings as api, scheduler, library, getToken, setToken } from '../api.js';
@@ -504,7 +505,9 @@ function touch(e) {
 }
 const leaveMessage = 'There are unsaved settings. Leave without saving them?';
 function onBeforeUnload(e) { if (dirty.value.size) { e.preventDefault(); e.returnValue = leaveMessage; } }
-onBeforeRouteLeave(() => (dirty.value.size ? window.confirm(leaveMessage) : true));
+onBeforeRouteLeave(async () => (dirty.value.size
+  ? !!(await ask({ title: 'Leave without saving?', message: 'Your changes on this page are lost.', confirmLabel: 'Leave', cancelLabel: 'Stay' }))
+  : true));
 onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload));
 
 // ─── Finding a setting ───────────────────────────────────────────────────────

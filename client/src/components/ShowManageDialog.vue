@@ -163,6 +163,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, computed, onMounted } from 'vue';
 import { useDialog } from '../composables/useDialog.js';
 import { settings as settingsApi } from '../api.js';
@@ -237,9 +238,11 @@ async function redo(ep) {
   // Downloaded or downloading: Redo replaces that download. Say what goes.
   if (['done', 'downloading'].includes(ep.status)) {
     const code = `S${pad(ep.season)}E${pad(ep.episode)}`;
-    const release = ep.release_title ? `\n\n${ep.release_title}` : '';
-    if (!window.confirm(`Replace ${code}?${release}\n\nThe downloaded file, its subtitles and web version are deleted, `
-      + 'this release is never picked for it again, and another is looked for.')) return;
+    if (!(await ask({
+      title: `Replace ${code}?`, confirmLabel: 'Replace', details: ep.release_title ? [ep.release_title] : [],
+      message: 'The downloaded file, its subtitles and web version are deleted, '
+        + 'this release is never picked for it again, and another is looked for.',
+    }))) return;
   }
   busy.value = ep.id;
   try { emit('redo-episode', ep); } finally { busy.value = null; }

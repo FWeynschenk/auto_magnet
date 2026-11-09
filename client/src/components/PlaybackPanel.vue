@@ -78,6 +78,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, onMounted, onUnmounted } from 'vue';
 import { watch } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
@@ -105,17 +106,20 @@ async function scan() {
 }
 
 async function clear() {
-  if (!window.confirm('Delete every web version? They are rebuilt the next time each item is played (or straight away, if preparing on completion).')) return;
+  if (!(await ask({ title: 'Delete every web version?', confirmLabel: 'Delete all',
+    message: 'They are made again the next time each item is played (or straight away, if preparing on completion).' }))) return;
   busy.value = 'clear';
   try { await watch.clear(); await refresh(); } catch (err) { notifyError(err.message); }
   finally { busy.value = ''; }
 }
 
 async function remove(w) {
-  const msg = w.onlyCopy
-    ? `"${w.title}" has no original any more — deleting its web version deletes it from disk, and it won't be downloaded again. Delete it?`
-    : `Delete the web version of "${w.title}"? The original stays; it's made again the next time it's played.`;
-  if (!window.confirm(msg)) return;
+  const ok = await ask(w.onlyCopy
+    ? { title: `Delete "${w.title}"?`, confirmLabel: 'Delete from disk',
+      message: "It has no original any more — deleting its web version deletes it from disk, and it won't be downloaded again." }
+    : { title: `Delete the web version of "${w.title}"?`, confirmLabel: 'Delete',
+      message: "The original stays; it's made again the next time it's played." });
+  if (!ok) return;
   busy.value = 'delete';
   try {
     const r = w.onlyCopy ? await watch.deleteAll(w.kind, w.id) : await watch.deleteWeb(w.kind, w.id);

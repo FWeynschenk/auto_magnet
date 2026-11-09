@@ -54,6 +54,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, computed, onMounted } from 'vue';
 import { watch } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
@@ -95,7 +96,8 @@ const deletingId = ref(null);
 
 async function removeEp(e) {
   const code = `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`;
-  if (!window.confirm(`Delete ${code} "${e.title}" from disk?\n\nThe file, its subtitles and its web version are removed, and it won't be downloaded again. (Redo in Shows brings it back.)`)) return;
+  if (!(await ask({ title: `Delete ${code} "${e.title}" from disk?`, confirmLabel: 'Delete from disk',
+    message: "The file, its subtitles and its web version are removed, and it won't be downloaded again. (Redo in Shows brings it back.)" }))) return;
   deletingId.value = e.id;
   try {
     const r = await watch.deleteAll('episode', e.id);

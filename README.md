@@ -251,6 +251,8 @@ The scheduler runs automatically on the configured interval. You can also trigge
 - Grabs all aired, not-yet-downloaded episodes in a single pass (up to 15 per show)
 - Uses smarter air date inference: if episode 5 has a confirmed past air date, episodes 1–4 are treated as aired even if TMDB hasn't populated their individual dates
 - An episode without a date is assumed to air weekly after the nearest dated one before it (or the season premiere). A new season whose later episodes are listed but not yet dated stays *upcoming* instead of being searched every run; a gap in an old season's dates still counts as aired
+- An episode's own date always wins, and once one episode hasn't aired, nothing after it counts as aired: not later in its season, not in a later season
+- An episode with no date of its own (and nothing dated after it in its season) is only searched for once the episode before it has been found. If S02E01 can't be found, S02E02 isn't searched; the episode says what it is waiting for
 - Populates a 60-day upcoming timeline so future episodes appear in the Timeline view before they air
 - Monitors active downloads in Transmission and marks them done on completion
 - Automatically retries stale downloads (stuck for more than 24 hours) with the next best result
@@ -397,6 +399,10 @@ the server was down is made once when it is back, not once per missed point, and
 last try passed more than two days ago — the back catalogue, on the first run after upgrading —
 aren't retried. Remove originals after seeding waits for these tries, so a subtitle found late
 still has a video to sit beside.
+
+**Opening it looks again.** Playing something whose subtitles weren't found searches once more
+straight away (at most every 15 minutes per item; searching costs none of the day's
+downloads). If they turn up while it plays, the player shows them and says *Subtitles found*.
 
 The free consumer tier also allows **5 requests per second**. auto_magnet paces
 itself to 4, waits out any `429`, logs in once a day, and — once the day's

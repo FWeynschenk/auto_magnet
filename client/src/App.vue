@@ -27,6 +27,7 @@
 
     <TimelineStrip v-if="showTimeline && isAdmin" />
     <ToastHost />
+    <DialogHost />
   </div>
 </template>
 
@@ -38,6 +39,7 @@ import { user, isAdmin, signOut } from './session.js';
 import { usePolling } from './composables/usePolling.js';
 import TimelineStrip from './components/TimelineStrip.vue';
 import ToastHost     from './components/ToastHost.vue';
+import DialogHost    from './components/DialogHost.vue';
 
 const txStatus = ref({ connected: false });
 

@@ -890,3 +890,29 @@ name or original name is stored as `other`, otherwise as `variant`. `shows.name_
 `extraShowWords()` returns nothing for those parts. A hand grab for an episode calls
 `learnPicked()`; Wrong video calls `unlearn()`, which marks the part `other` so it isn't
 learned back.
+
+## Implementation notes (2026-11-09): unreleased episodes, native dialogs, subtitles on open
+
+**Searching for what isn't out.** Two holes: with nothing dated in a season (and no season
+date), every episode counted as aired, and each was searched on its own; and a later
+episode's past date made an earlier episode with its own future date count as aired.
+`effectivelyAired()` now lets an episode's own date decide. `syncEpisodes()` walks seasons in
+order and, once an episode (season > 0) hasn't aired, marks everything after it upcoming,
+unless it is already downloading or done. In the grab phase, `waitingOn()`: a pending episode
+not confirmed aired (no own past date, nothing later in its season dated in the past) waits
+until the episode before it is done, downloading, skipped or deleted; its `last_error` says
+which. `packableSeasons()` and manual mode (`searchablePending()`) follow the same rule.
+
+**No browser dialogs.** Every `window.confirm` / `window.prompt` (13) is now `ask()` from
+`client/src/dialog.js`, drawn by `DialogHost.vue`: confirm, text input (`input`) or several
+answers (`choices`), returning a promise. It leaves fullscreen first (nothing shows over a
+fullscreen video), and `useDialog` keeps a stack, so Escape closes only the innermost dialog.
+The player ignores its shortcuts while one is open. The only browser dialog left is the
+*leave site?* on closing a tab with unsaved settings, which a page can't draw itself.
+
+**Subtitles on open.** They were searched once when a download completed, then 12 h later.
+A fresh episode often gets subtitles in between. `postprocess.searchSubsNow()` runs when an
+item is opened to play (`?play=1`) with `subs_state = 'unavailable'`, at most every 15 minutes:
+it marks the item and starts a pass (after one in flight). The item says `subs_searching`, and
+the player re-reads the subtitle list after 20, 60 and 120 s, showing new ones unless the
+viewer picked or switched off subtitles.

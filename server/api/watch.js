@@ -175,6 +175,8 @@ router.get('/items/:kind/:id', wrap(async (req) => {
   } catch (err) {
     error = err.message;
   }
+  // Being played and no subtitles found yet: look again now.
+  const subsSearching = !!req.query.play && require('../postprocess').searchSubsNow(kind, id, item.row);
 
   let next = null;
   if (kind === 'episode') {
@@ -206,6 +208,7 @@ router.get('/items/:kind/:id', wrap(async (req) => {
     // Admins: how many items came in the same torrent (a pack), for Wrong pack.
     pack_size: req.user.role === 'admin' ? require('../replace').packOf(kind, id).length : undefined,
     original: m ? originalInfo(kind, id, m) : null,
+    subs_searching: subsSearching,
     next,
   };
 }));

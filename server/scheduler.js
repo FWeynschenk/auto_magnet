@@ -72,6 +72,7 @@ const DAY_MS = 24 * 3600 * 1000;
 /**
  * Smarter aired check, for one episode of a season:
  *
+ * - Its own date, when it has one, decides.
  * - If a later episode has a confirmed past air date, this one has aired too,
  *   even if TMDB hasn't filled in its own date.
  * - An episode without a date of its own is assumed to follow the nearest dated
@@ -84,13 +85,13 @@ const DAY_MS = 24 * 3600 * 1000;
  */
 function effectivelyAired(epNumber, seasonEpisodes, seasonAirDate = null) {
   const eps = seasonEpisodes || [];
+  const own = eps.find(e => e.episode_number === epNumber);
+  if (own?.air_date) return hasAired(own.air_date);   // its own date always wins
   const latestConfirmed = eps
     .filter(e => e.air_date && hasAired(e.air_date))
     .reduce((max, e) => Math.max(max, e.episode_number), 0);
   if (epNumber <= latestConfirmed) return true;
 
-  const ep = eps.find(e => e.episode_number === epNumber);
-  if (ep?.air_date) return hasAired(ep.air_date);
   return hasAired(estimatedAirDate(epNumber, eps, seasonAirDate));
 }
 
@@ -130,6 +131,9 @@ async function syncEpisodes(show, fetchSeason) {
   );
 
   let added = 0, updated = 0, seasonsSeen = 0;
+  // Once one episode hasn't aired, nothing after it has either — not later in
+  // its season, not in a later season — whatever TMDB says about those.
+  let blocked = false;
 
   // Walk seasons until one doesn't exist. Look one past the last real season so a
   // freshly announced next season is picked up; negative lookups are cached.
@@ -149,13 +153,16 @@ async function syncEpisodes(show, fetchSeason) {
     }
     seasonsSeen++;
 
-    for (const ep of season.episodes) {
+    const inOrder = [...season.episodes].sort((a, b) => a.episode_number - b.episode_number);
+    for (const ep of inOrder) {
       if (s === startSeason && ep.episode_number < startEpisode) continue;
 
       const key  = `${s}x${ep.episode_number}`;
       const row  = existing.get(key);
       const airs = ep.air_date || null;
-      const aired = effectivelyAired(ep.episode_number, season.episodes, season.season_air_date);
+      const here = row && ['done', 'downloading'].includes(row.status);   // it plainly exists
+      const aired = here || (!(blocked && s > 0) && effectivelyAired(ep.episode_number, season.episodes, season.season_air_date));
+      if (!aired && s > 0) blocked = true;
 
       if (!row) {
         episodes.insert({
@@ -486,6 +493,8 @@ async function processShow(show, deadline = Infinity) {
   }
 
   for (const ep of episodes.pending(current.id)) {
+    const waitFor = waitingOn(current, ep);
+    if (waitFor) { noteWaiting(ep, waitFor); continue; }
     if (grabbed >= MAX_EPISODES_PER_RUN) {
       log.info(`"${current.title}": hit the per-run cap of ${MAX_EPISODES_PER_RUN}, continuing next run`, { type: 'show', id: current.id });
       break;
@@ -500,6 +509,40 @@ async function processShow(show, deadline = Infinity) {
   }
 }
 
+const FOUND = new Set(['done', 'downloading', 'skipped', 'deleted']);
+
+/** Aired for certain: its own date has passed, or a later episode of its season has aired. */
+function confirmedAired(ep, rows) {
+  if (ep.air_date) return hasAired(ep.air_date);
+  return rows.some(r => r.season === ep.season && r.episode > ep.episode && r.air_date && hasAired(r.air_date));
+}
+
+/**
+ * An episode only thought to have aired (no date of its own, nothing later in
+ * its season dated) is searched for only once the one before it was found: if
+ * S02E01 can't be found, S02E02 surely can't be either. Returns the episode it
+ * waits on, or null when it may be searched now.
+ */
+function waitingOn(show, ep) {
+  if (ep.season === 0) return null;
+  const rows = episodes.forShow(show.id).filter(r => r.season > 0)
+    .sort((a, b) => a.season - b.season || a.episode - b.episode);
+  if (confirmedAired(ep, rows)) return null;
+  const i = rows.findIndex(r => r.id === ep.id);
+  const prev = i > 0 ? rows[i - 1] : null;
+  return prev && !FOUND.has(prev.status) ? prev : null;
+}
+
+function noteWaiting(ep, prev) {
+  const msg = `No air date known — searched for once ${epLabel(prev.season, prev.episode)} is found`;
+  if (ep.last_error !== msg) episodes.update(ep.id, { last_error: msg });
+}
+
+/** Pending episodes the scheduler may search for now. */
+function searchablePending(show) {
+  return episodes.pending(show.id).filter(ep => !waitingOn(show, ep));
+}
+
 function epLabel(season, episode) {
   return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
 }
@@ -509,7 +552,7 @@ function epLabel(season, episode) {
  * stop. Exactly one episode is ever awaiting approval — the queue can't run away.
  */
 async function cacheManualPreview(show) {
-  const ep = episodes.firstPending(show.id);
+  const ep = searchablePending(show)[0];
   if (!ep || ep.results_cache) return;
 
   const label = epLabel(ep.season, ep.episode);
@@ -574,7 +617,9 @@ function showIdentity(show) {
 const PACKABLE_STATUSES = new Set(['pending', 'skipped', 'failed']);
 
 function packableSeasons(show) {
-  const pending = episodes.pending(show.id);
+  // A season with an episode still waiting on the one before it isn't known to be out.
+  const waiting = new Set(episodes.pending(show.id).filter(ep => waitingOn(show, ep)).map(ep => ep.season));
+  const pending = episodes.pending(show.id).filter(ep => !waiting.has(ep.season));
   const seasons = [...new Set(pending.map(e => e.season))].sort((a, b) => a - b);
 
   return seasons.filter(season => {
@@ -866,5 +911,5 @@ function start() {
 
 module.exports = {
   start, run, runInfo, quickSync, hasAired, effectivelyAired, wrongReleases, showIdentity,
-  syncEpisodes, syncShowMeta, makeSeasonFetcher,
+  syncEpisodes, syncShowMeta, makeSeasonFetcher, waitingOn, searchablePending,
 };

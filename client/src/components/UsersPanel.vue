@@ -47,6 +47,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, onMounted } from 'vue';
 import { auth } from '../api.js';
 import { user } from '../session.js';
@@ -78,14 +79,16 @@ async function setRole(u, role) {
 }
 
 async function resetPassword(u) {
-  const p = window.prompt(`New password for ${u.username} (8+ characters). They will be signed out everywhere.`);
+  const p = await ask({ title: `New password for ${u.username}`, confirmLabel: 'Change password', danger: false,
+    message: 'At least 8 characters. They will be signed out everywhere.',
+    input: { type: 'password', minLength: 8, placeholder: 'New password' } });
   if (!p) return;
   try { await auth.updateUser(u.id, { password: p }); notifySuccess('Password changed'); }
   catch (err) { notifyError(err.message); }
 }
 
 async function remove(u) {
-  if (!window.confirm(`Delete ${u.username}? Their watch progress is deleted with them.`)) return;
+  if (!(await ask({ title: `Delete ${u.username}?`, confirmLabel: 'Delete', message: 'Their watch progress is deleted with them.' }))) return;
   try { await auth.removeUser(u.id); await load(); }
   catch (err) { notifyError(err.message); }
 }

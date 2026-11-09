@@ -149,6 +149,7 @@
 </template>
 
 <script setup>
+import { ask, current as asking } from '../dialog.js';
 import { ref, computed, onMounted, onBeforeUnmount, watch as watchRef, nextTick } from 'vue';
 import ScrubBar from '../components/ScrubBar.vue';
 import { useRouter } from 'vue-router';
@@ -283,6 +284,29 @@ async function load() {
   await nextTick();
   if (pb.value.mode === 'preparing') startPolling();
   else attach();
+  if (item.value.subs_searching) watchForSubs();
+}
+
+// The server is looking for subtitles again (none were found before): pick
+// them up if they arrive while this plays.
+let subsTimers = [];
+let subTouched = false;   // picked or switched off in this player: leave it be
+function watchForSubs() {
+  subTouched = false;
+  const had = new Set(item.value.subtitles.filter(s => s.available).map(s => s.id));
+  const forId = `${props.kind}:${props.id}`;
+  subsTimers = [20, 60, 120].map(secs => setTimeout(async () => {
+    if (`${props.kind}:${props.id}` !== forId || !item.value) return;
+    let fresh;
+    try { fresh = await watch.item(props.kind, props.id); } catch (_) { return; }
+    if (!fresh.subtitles.some(s => s.available && !had.has(s.id))) return;
+    subsTimers.forEach(clearTimeout);
+    item.value.subtitles = fresh.subtitles;
+    // Nothing on yet and not switched off for this show: show the new ones.
+    if (!subId.value && !subTouched && !item.value.remembered?.sub_off) subId.value = fresh.subtitles.find(s => s.default)?.id || '';
+    if (video.value) buildTracks();
+    notifySuccess('Subtitles found');
+  }, secs * 1000));
 }
 
 function startPolling() {
@@ -381,6 +405,8 @@ function canPlayHevc(tenBit, v) {
 
 function teardown() {
   report(true);
+  subsTimers.forEach(clearTimeout);
+  subsTimers = [];
   clearInterval(pollTimer);
   clearInterval(nextTimer);
   if (hls) { hls.destroy(); hls = null; }
@@ -531,6 +557,7 @@ function onSubMenu() {
 
 /** Remember the subtitle language picked (or Off) for this show. */
 function rememberSub() {
+  subTouched = true;
   const s = currentSub.value;
   if (!subId.value) watch.choice(props.kind, props.id, { sub_off: true }).catch(() => {});
   else if (s?.lang) watch.choice(props.kind, props.id, { sub_lang: s.lang }).catch(() => {});
@@ -722,13 +749,25 @@ async function toggleWatched() {
 async function wrongVideo() {
   delMenu.value = false;
   const name = item.value.kind === 'episode' ? `${item.value.show_title} ${epCode(item.value)}` : item.value.title;
-  const reason = window.prompt(`What's wrong with "${name}"?\n\n`
-    + `It is deleted (file, subtitles, web version), ${item.value.release ? `"${item.value.release}" ` : 'this release '}`
-    + 'is never picked for it again, and another is looked for.', 'another show');
+  const reason = await ask({
+    title: `What's wrong with "${name}"?`, confirmLabel: 'Find another',
+    message: 'It is deleted (file, subtitles, web version), this release is never picked for it again, and another is looked for.',
+    details: item.value.release ? [item.value.release] : [],
+    input: { value: 'another show', placeholder: 'e.g. another show, wrong episode, bad quality' },
+  });
   if (reason === null) return;
   // It came in a pack: the whole pack is likely wrong too.
-  const pack = item.value.pack_size > 1 && window.confirm(`This came in a pack of ${item.value.pack_size} episodes `
-    + `(${item.value.release || 'one torrent'}).\n\nOK: replace the whole pack — every episode in it.\nCancel: only this one.`);
+  let pack = false;
+  if (item.value.pack_size > 1) {
+    const which = await ask({
+      title: `It came in a pack of ${item.value.pack_size} episodes`,
+      message: 'Replace the whole pack — every episode in it — or only this one?',
+      details: item.value.release ? [item.value.release] : [],
+      choices: [{ label: 'Only this one', value: 'one' }, { label: 'The whole pack', value: 'pack', danger: true }],
+    });
+    if (which === null) return;
+    pack = which === 'pack';
+  }
   deleting.value = true;
   try {
     const r = await watch.wrong(props.kind, props.id, reason.trim() || 'the wrong video', pack);
@@ -741,7 +780,8 @@ async function wrongVideo() {
 
 async function deleteWeb() {
   delMenu.value = false;
-  if (!window.confirm('Delete the web version? The original stays and keeps seeding; the web version is made again the next time this is played.')) return;
+  if (!(await ask({ title: 'Delete the web version?', confirmLabel: 'Delete',
+    message: 'The original stays and keeps seeding; the web version is made again the next time this is played.' }))) return;
   deleting.value = true;
   try {
     const r = await watch.deleteWeb(props.kind, props.id);
@@ -754,7 +794,8 @@ async function deleteWeb() {
 async function deleteAll() {
   delMenu.value = false;
   const name = item.value.kind === 'episode' ? `${item.value.show_title} ${epCode(item.value)}` : item.value.title;
-  if (!window.confirm(`Delete "${name}" from disk?\n\nThe original file, its subtitles and the web version are removed, and it won't be downloaded again. (Redo in Movies or Shows brings it back.)`)) return;
+  if (!(await ask({ title: `Delete "${name}" from disk?`, confirmLabel: 'Delete from disk',
+    message: "The original file, its subtitles and the web version are removed, and it won't be downloaded again. (Redo in Movies or Shows brings it back.)" }))) return;
   deleting.value = true;
   try {
     const r = await watch.deleteAll(props.kind, props.id);
@@ -781,7 +822,7 @@ function back() {
 
 function onKey(e) {
   if (e.key === 'Escape' && delMenu.value) { delMenu.value = false; return; }
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+  if (asking.value || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
   const v = video.value;
   if (!v) return;
   const k = e.key;

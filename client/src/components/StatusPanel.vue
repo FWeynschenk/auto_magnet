@@ -90,6 +90,7 @@
 </template>
 
 <script setup>
+import { ask } from '../dialog.js';
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { health } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
@@ -116,7 +117,8 @@ async function checkLibrary() {
 
 async function fixLibrary(g) {
   const n = lib.value[g.key].length;
-  if (!window.confirm(`${g.fix}: ${g.label.toLowerCase()} (${n})?`)) return;
+  if (!(await ask({ title: `${g.fix}?`, confirmLabel: g.fix, danger: g.key === 'orphans',
+    message: `${g.label} (${n}): ${g.what}.`, details: lib.value[g.key].slice(0, 8).map(x => x.title || x.dir) }))) return;
   libBusy.value = g.key;
   try {
     const out = await health.fixLibrary(g.key);

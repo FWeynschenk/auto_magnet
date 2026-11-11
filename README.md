@@ -888,12 +888,20 @@ was made, so progress uploaded late from a phone never overwrites newer progress
 
 ### Keyboard (player)
 
-`Space`/`K` play/pause · `←`/`→` 10 s · `F` fullscreen · `Z`/`X` subtitles earlier/later · `A` next audio track · `S` skip intro or credits · `N` next episode
+`Space`/`K` play/pause · `←`/`→` 10 s · `↑`/`↓` volume · `M` mute · `C` subtitles on/off · `F` full screen · `Z`/`X` subtitles earlier/later · `A` next audio track · `S` skip intro or credits · `N` next episode
+
+The player has its own controls rather than the browser's:
+- **The bar:** the thumbnail scrub bar, play/pause, ±10 s, volume, time, next episode,
+  subtitles, picture-in-picture and full screen.
+- **Clicking the picture** plays or pauses; double-clicking goes full screen. On a touch screen,
+  the first tap brings the controls back.
+- **While playing,** the controls fade after a moment without movement, and subtitles move up
+  above the bar while it shows.
+- **Volume and mute** are remembered per browser.
 
 ### Android app
 
-The app is in `android/`. Every CI run builds it — download `auto_magnet-android` from the run's
-artifacts — or build it yourself with the Android SDK and JDK 17 or newer (Android Studio's bundled
+The app is in `android/`. Build it with the Android SDK and JDK 17 or newer (Android Studio's bundled
 JBR works; the build uses Gradle 9.7 and AGP 9.4):
 
 ```bash

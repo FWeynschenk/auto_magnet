@@ -1,5 +1,5 @@
 <template>
-  <div class="player-page" @keydown="onKey" tabindex="-1" ref="page">
+  <div class="player-page" tabindex="-1" ref="page">
     <header class="bar">
       <button class="btn-ghost btn-sm" @click="back">← Back</button>
       <div v-if="item" class="heading">
@@ -54,36 +54,72 @@
         <div v-if="pollTrouble" class="small warn">Can't reach the server — still trying…</div>
       </div>
 
-      <div v-if="notice" class="notice" role="status">{{ notice }}</div>
-
-      <video
+      <!-- The video and everything drawn over it. This is what goes full
+           screen, so the controls and overlays come along. -->
+      <div
         v-show="pb && !fatal && (playing || pb.mode === 'file' || pb.mode === 'hls')"
-        ref="video"
-        class="video"
-        controls
-        playsinline
-        preload="metadata"
-        :poster="item?.still_url || undefined"
-        @timeupdate="onTime"
-        @pause="report(true)"
-        @ended="onEnded"
-        @loadedmetadata="onMeta"
-      />
-      <button v-if="showSkip" class="skip-intro" @click="skipIntro">Skip intro ▸</button>
-      <button v-else-if="showSkipCredits" class="skip-intro" @click="skipCredits">Skip credits ▸</button>
-      <ScrubBar v-if="playing" :video="video" :thumbs-url="`/api/watch/items/${props.kind}/${props.id}/thumbs.json`" :marks="introMarks" />
+        ref="screen"
+        class="screen"
+        :class="{ idle: !controlsShown, fs: isFullscreen }"
+        @pointermove="poke"
+        @pointerdown="onScreenDown"
+      >
+        <div v-if="notice" class="notice" role="status">{{ notice }}</div>
 
-      <div v-if="resumedAt" class="toast-resume">
-        Resumed at {{ fmt(resumedAt) }}
-        <button class="btn-ghost btn-sm" @click="startOver">Start over</button>
-      </div>
+        <video
+          ref="video"
+          class="video"
+          playsinline
+          preload="metadata"
+          :poster="item?.still_url || undefined"
+          @timeupdate="onTime"
+          @play="onPlayState"
+          @pause="onPlayState(); report(true)"
+          @ended="onEnded"
+          @loadedmetadata="onMeta"
+          @waiting="buffering = true"
+          @playing="buffering = false"
+          @canplay="buffering = false"
+          @volumechange="saveVolume"
+          @pointerup="onVideoTap"
+          @dblclick="toggleFullscreen"
+        />
+        <div v-if="playing && buffering" class="spinner" role="status" aria-label="Loading" />
+        <button v-else-if="playing && isPaused" class="big-play" aria-label="Play" @mousedown.prevent @click="togglePlay">
+          <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+        </button>
 
-      <div v-if="upNext" class="upnext">
-        <div class="small">Up next{{ countdown > 0 ? ` in ${countdown}s` : '' }}</div>
-        <div class="t">{{ epCode(item.next) }} · {{ item.next.title }}</div>
-        <div class="row">
-          <button class="btn-primary btn-sm" @click="playNext">Play now</button>
-          <button class="btn-ghost btn-sm" @click="cancelNext">Cancel</button>
+        <button v-if="showSkip" class="skip-intro" @mousedown.prevent @click="skipIntro">Skip intro ▸</button>
+        <button v-else-if="showSkipCredits" class="skip-intro" @mousedown.prevent @click="skipCredits">Skip credits ▸</button>
+
+        <PlayerControls
+          v-if="playing"
+          ref="controls"
+          :class="{ hidden: !controlsShown }"
+          :video="video"
+          :thumbs-url="`/api/watch/items/${props.kind}/${props.id}/thumbs.json`"
+          :marks="introMarks"
+          :fullscreen="isFullscreen"
+          :subs-available="!!item?.subtitles?.some(s => s.available)"
+          :subs-on="!!subId"
+          :has-next="!!item?.next"
+          @fullscreen="toggleFullscreen"
+          @subs="toggleSubs"
+          @next="playNext"
+        />
+
+        <div v-if="resumedAt" class="toast-resume">
+          Resumed at {{ fmt(resumedAt) }}
+          <button class="btn-ghost btn-sm" @mousedown.prevent @click="startOver">Start over</button>
+        </div>
+
+        <div v-if="upNext" class="upnext">
+          <div class="small">Up next{{ countdown > 0 ? ` in ${countdown}s` : '' }}</div>
+          <div class="t">{{ epCode(item.next) }} · {{ item.next.title }}</div>
+          <div class="row">
+            <button class="btn-primary btn-sm" @mousedown.prevent @click="playNext">Play now</button>
+            <button class="btn-ghost btn-sm" @mousedown.prevent @click="cancelNext">Cancel</button>
+          </div>
         </div>
       </div>
     </div>
@@ -151,7 +187,7 @@
 <script setup>
 import { ask, current as asking } from '../dialog.js';
 import { ref, computed, onMounted, onBeforeUnmount, watch as watchRef, nextTick } from 'vue';
-import ScrubBar from '../components/ScrubBar.vue';
+import PlayerControls from '../components/PlayerControls.vue';
 import { useRouter } from 'vue-router';
 import Hls from 'hls.js';
 import { watch } from '../api.js';
@@ -820,16 +856,29 @@ function back() {
 
 // ─── Keys ────────────────────────────────────────────────────────────────────
 
+/**
+ * The one keyboard handler, on the document so it works wherever focus is.
+ * The video has no browser controls any more (they handled Space too, so one
+ * press toggled twice), and a focused button keeps its own Space/Enter.
+ */
 function onKey(e) {
   if (e.key === 'Escape' && delMenu.value) { delMenu.value = false; return; }
-  if (asking.value || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (asking.value || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.target.isContentEditable) return;
+  if ((e.key === ' ' || e.key === 'Enter') && e.target.closest?.('button, a, [role="menuitem"]')) return;
   const v = video.value;
-  if (!v) return;
+  if (!v || !playing.value) return;
   const k = e.key;
-  if (k === ' ' || k === 'k') { v.paused ? v.play() : v.pause(); }
+  // Holding Space must not flicker between play and pause.
+  if ((k === ' ' || k === 'k') && e.repeat) { e.preventDefault(); return; }
+  if (k === ' ' || k === 'k') togglePlay();
   else if (k === 'ArrowLeft' || k === 'j') v.currentTime = Math.max(0, v.currentTime - 10);
   else if (k === 'ArrowRight' || k === 'l') v.currentTime += 10;
-  else if (k === 'f') (document.fullscreenElement ? document.exitFullscreen() : v.requestFullscreen?.());
+  else if (k === 'ArrowUp') { v.muted = false; v.volume = Math.min(1, v.volume + 0.1); }
+  else if (k === 'ArrowDown') v.volume = Math.max(0, v.volume - 0.1);
+  else if (k === 'm') v.muted = !v.muted;
+  else if (k === 'c') toggleSubs();
+  else if (k === 'f') toggleFullscreen();
   else if (k === 'z') nudge(-250);
   else if (k === 'x') nudge(250);
   else if (k === 'n') playNext();
@@ -842,6 +891,92 @@ function onKey(e) {
   }
   else return;
   e.preventDefault();
+  poke();
+}
+
+// ─── The screen: controls, full screen, volume ──────────────────────────────
+
+const screen = ref(null);
+const controlsShown = ref(true);
+const isPaused = ref(true);
+const isFullscreen = ref(false);
+const buffering = ref(false);
+let hideTimer = null;
+let downWhileHidden = false;
+let lastSubId = '';
+
+/** Show the controls; while playing, they fade after a moment without movement. */
+function poke() {
+  controlsShown.value = true;
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    const v = video.value;
+    if (!v || v.paused) return;
+    // Not while the pointer is on them (choosing a point on the bar).
+    if (screen.value?.querySelector('.controls:hover')) { poke(); return; }
+    controlsShown.value = false;
+  }, 2500);
+}
+
+function onPlayState() {
+  isPaused.value = !!video.value?.paused;
+  poke();
+}
+
+function togglePlay() {
+  const v = video.value;
+  if (!v) return;
+  if (v.paused) v.play().catch(() => {}); else v.pause();
+}
+
+function onScreenDown() {
+  downWhileHidden = !controlsShown.value;
+  poke();
+}
+
+/** A click on the picture plays or pauses; on a touch screen the first tap only brings the controls back. */
+function onVideoTap(e) {
+  if (e.button > 0) return;
+  if (e.pointerType === 'touch' && downWhileHidden) return;
+  togglePlay();
+}
+
+async function toggleFullscreen() {
+  const el = screen.value, v = video.value;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (el?.requestFullscreen) await el.requestFullscreen();
+    else if (v?.webkitEnterFullscreen) v.webkitEnterFullscreen();   // iPhone: only the video itself can
+  } catch (_) { /* refused, e.g. not from a user gesture */ }
+}
+const onFullscreenChange = () => { isFullscreen.value = !!screen.value && document.fullscreenElement === screen.value; poke(); };
+
+/** Subtitles on or off from the controls (C): back to the last ones shown, else the default. */
+function toggleSubs() {
+  const subs = item.value?.subtitles || [];
+  if (subId.value) { lastSubId = subId.value; subId.value = ''; }
+  else {
+    const s = subs.find(x => x.id === lastSubId && x.available) || subs.find(x => x.default && x.available) || subs.find(x => x.available);
+    if (!s) return;
+    subId.value = s.id;
+  }
+  onSubMenu();
+}
+
+// Volume and mute, per browser.
+const VOLUME_KEY = 'amagnet_volume';
+function saveVolume() {
+  const v = video.value;
+  if (!v) return;
+  try { localStorage.setItem(VOLUME_KEY, JSON.stringify({ volume: v.volume, muted: v.muted })); } catch (_) {}
+}
+function restoreVolume() {
+  const v = video.value;
+  if (!v) return;
+  try {
+    const s = JSON.parse(localStorage.getItem(VOLUME_KEY) || 'null');
+    if (s && Number.isFinite(s.volume)) { v.volume = Math.max(0, Math.min(1, s.volume)); v.muted = !!s.muted; }
+  } catch (_) {}
 }
 
 const onHide = () => report(true, { beacon: true });
@@ -854,12 +989,19 @@ const onDocClick = (e) => {
 onMounted(() => {
   window.addEventListener('pagehide', onHide);
   document.addEventListener('click', onDocClick);
+  document.addEventListener('keydown', onKey);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  restoreVolume();
   video.value?.textTracks.addEventListener('change', onTextTracksChange);
   load();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onHide);
   document.removeEventListener('click', onDocClick);
+  document.removeEventListener('keydown', onKey);
+  document.removeEventListener('fullscreenchange', onFullscreenChange);
+  clearTimeout(hideTimer);
+  if (document.fullscreenElement && document.fullscreenElement === screen.value) document.exitFullscreen().catch(() => {});
   video.value?.textTracks.removeEventListener('change', onTextTracksChange);
   clearInterval(busyTimer);
   cueStyleEl?.remove();
@@ -875,9 +1017,30 @@ watchRef(() => [props.kind, props.id], load);
 .heading .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .heading .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stage { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
-.video { width: 100%; max-height: calc(100vh - 150px); background: #000; }
+.screen { position: relative; width: 100%; display: flex; align-items: center; justify-content: center; background: #000; user-select: none; }
+.screen.idle { cursor: none; }
+.video { width: 100%; max-height: calc(100vh - 150px); background: #000; display: block; }
+.screen.fs .video, .screen:fullscreen .video { max-height: 100vh; height: 100vh; }
+.screen .controls.hidden { opacity: 0; pointer-events: none; }
+/* Subtitles sit above the control bar while it shows, as they did with the
+   browser's own controls, and drop back down when it fades. (Chrome, Edge,
+   Safari; Firefox keeps them where they are.) */
+.screen .video::-webkit-media-text-track-container { transition: transform .2s; }
+.screen:not(.idle) .video::-webkit-media-text-track-container { transform: translateY(-72px); }
+.big-play {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2;
+  width: 72px; height: 72px; border-radius: 50%; border: 0; padding: 0;
+  background: rgba(0, 0, 0, .55); color: #fff; display: flex; align-items: center; justify-content: center;
+}
+.big-play:hover { background: var(--accent); opacity: 1; }
+.big-play svg { width: 38px; height: 38px; fill: currentColor; margin-left: 4px; }
+.spinner {
+  position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; z-index: 2; pointer-events: none;
+  border: 4px solid rgba(255, 255, 255, .25); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .skip-intro {
-  position: absolute; right: 24px; bottom: 120px; z-index: 3;
+  position: absolute; right: 24px; bottom: 96px; z-index: 4;
   background: rgba(20, 20, 20, .85); color: #fff; border: 1px solid rgba(255, 255, 255, .5);
   padding: 10px 18px; font-size: 14px; font-weight: 600; border-radius: 6px; cursor: pointer;
 }
@@ -915,7 +1078,7 @@ watchRef(() => [props.kind, props.id], load);
   border-radius: var(--radius); padding: 6px 10px; font-size: 13px; display: flex; gap: 10px; align-items: center;
 }
 .upnext {
-  position: absolute; right: 18px; bottom: 70px; background: rgba(17, 24, 39, .95); border: 1px solid var(--border);
+  position: absolute; right: 18px; bottom: 96px; z-index: 4; background: rgba(17, 24, 39, .95); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; max-width: 320px;
 }
 .upnext .t { font-weight: 600; }

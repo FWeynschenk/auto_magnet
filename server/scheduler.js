@@ -262,7 +262,7 @@ async function progressFor(kind, row, target, progressMap, relinkCache) {
     return t;
   }
   await require('./relink').relinkItem(kind, row.id, {
-    cache: relinkCache, reason: `torrent ${row.torrent_id} is now "${info.name}" (Transmission renumbered its torrents)`,
+    cache: relinkCache, reason: `torrent ${row.torrent_id} is now "${info.name}"`,
   });
   return null;
 }
@@ -440,7 +440,7 @@ async function processMovie(movie) {
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),
   });
-  log.info(`added "${movie.title}" — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'movie', id: movie.id });
+  log.info(`added "${movie.title}" — ${winner.title} (${winner._quality}, ${winner.seeders} seeds${winner._idMatch ? ', matched by ID' : ''})`, { type: 'movie', id: movie.id });
 }
 
 // --- Shows ---
@@ -868,7 +868,7 @@ async function grabEpisode(show, ep) {
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),
   });
-  log.info(`added "${show.title}" ${label} — ${winner.title} (${winner._quality}, ${winner.seeders} seeds)`, { type: 'episode', id: ep.id });
+  log.info(`added "${show.title}" ${label} — ${winner.title} (${winner._quality}, ${winner.seeders} seeds${winner._idMatch ? ', matched by ID' : ''})`, { type: 'episode', id: ep.id });
   if (loose) {
     episodes.update(ep.id, {
       last_error: `Found under a name learned from TMDB ("${require('./selector').showPartOf(winner.title)}") — check it is "${show.title}"; Wrong video un-learns that name`,

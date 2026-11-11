@@ -125,6 +125,40 @@ async function gather({ type, title, year, imdbId, tmdbId, season, episode, qual
  * @returns {{ accepted: Array, rejected: Array, searched_at: string }}
  *   Every accepted row has `.magnet`. Rejected rows carry `._reason`.
  */
+const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+
+/** A magnet's info hash as 40 hex characters (magnets may carry base32). */
+function magnetHash(magnet) {
+  const m = /xt=urn:btih:([a-z0-9]+)/i.exec(String(magnet || ''));
+  if (!m) return null;
+  const v = m[1].toLowerCase();
+  if (/^[0-9a-f]{40}$/.test(v)) return v;
+  if (!/^[a-z2-7]{32}$/.test(v)) return null;
+  let bits = '';
+  for (const c of v) bits += B32.indexOf(c).toString(2).padStart(5, '0');
+  return bits.match(/.{4}/g).map(b => parseInt(b, 2).toString(16)).join('');
+}
+
+/**
+ * The library item — of another show, or another film — that already has this
+ * release, as a label; null when none does. Episodes of the same show may
+ * share one (a season pack).
+ */
+function otherOwner(magnet, { type, tmdbId }) {
+  const hash = magnetHash(magnet);
+  if (!hash || !tmdbId) return null;
+  const { db } = require('./db');
+  const ep = db.prepare(`
+    SELECT s.title, e.season, e.episode FROM episodes e JOIN shows s ON s.id = e.show_id
+    WHERE e.torrent_hash = ? AND e.status IN ('done', 'downloading') AND (? = 'movie' OR s.tmdb_id IS NOT ?)
+    LIMIT 1`).get(hash, type, tmdbId);
+  if (ep) return `${ep.title} S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')}`;
+  const mv = db.prepare(`
+    SELECT title, year FROM movies WHERE torrent_hash = ? AND status IN ('done', 'downloading')
+      AND (? = 'show' OR tmdb_id IS NOT ?) LIMIT 1`).get(hash, type, tmdbId);
+  return mv ? `${mv.title}${mv.year ? ` (${mv.year})` : ''}` : null;
+}
+
 async function findCandidates({
   type, title, year = null, imdbId = null, tmdbId = null,
   season = null, episode = null,
@@ -192,6 +226,14 @@ async function findCandidates({
           continue;
         }
       }
+      // Already downloaded for another show or film: the release is that
+      // one's, whatever it is called or tagged with. Grabbing it again is how
+      // an episode ends up "finished" in seconds and playing someone else.
+      const owner = want && otherOwner(r.magnet, { type, tmdbId });
+      if (owner) {
+        unusable.push({ ...r, _reason: `already downloaded for ${owner} — it is that one's release` });
+        continue;
+      }
       ready.push(r);
     }
   }
@@ -207,4 +249,4 @@ async function findCandidates({
   };
 }
 
-module.exports = { findCandidates, epLabel };
+module.exports = { findCandidates, epLabel, magnetHash, otherOwner };

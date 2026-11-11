@@ -2,12 +2,12 @@
 
 // Is this file really this item's?
 //
-// Every link from a library item to a file on disk passes through here. The
-// link used to be taken on trust — "torrent 57's only video is this episode" —
-// and torrent 57 is only a number Transmission hands out for the session: it
-// renumbers its torrents on every restart, so after a reboot 57 can be another
-// show altogether. The episode was then recorded as that show's file, and
-// played it ever after.
+// Every link from a library item to a file on disk passes through here. Links
+// used to be taken on trust — "the only video in this item's torrent is its
+// file" — and the torrent was not always the item's: an indexer that tags
+// every result with the ID it was searched for got Dexter: New Blood's S01E03
+// grabbed for Smoke S01E03, so Smoke played Dexter. A torrent number that
+// later named another download would do the same.
 //
 // The answer here comes from the names, the same way a person would check:
 //
@@ -93,6 +93,38 @@ function folders(filePath, roots) {
   return out;
 }
 
+let libraryCache = { at: 0, shows: [] };
+function libraryShows() {
+  if (Date.now() - libraryCache.at > 5000) {
+    try { libraryCache = { at: Date.now(), shows: require('./db').shows.all() }; } catch (_) { libraryCache = { at: Date.now(), shows: [] }; }
+  }
+  return libraryCache.shows;
+}
+
+/**
+ * The title of another show in the library that one of these names is —
+ * where the name isn't also this show's ("Ghosts.S01E02" is both Ghosts US
+ * and Ghosts UK, so it settles nothing). null when none.
+ */
+function otherShowNamed(item, names) {
+  const mine = wantFor(item.show);
+  for (const name of names) {
+    if (!showPartOf(name)) continue;
+    if (nameSaysShow(name, item.show, mine) === 'yes') continue;
+    for (const other of libraryShows()) {
+      if (other.id === item.show.id || (item.show.tmdb_id && other.tmdb_id === item.show.tmdb_id)) continue;
+      if (nameSaysShow(name, other) === 'yes') return other.title;
+    }
+  }
+  return null;
+}
+
+/** For a file of an episode: the other library show its name is, or null. */
+function namedOtherShow(item, filePath, roots = []) {
+  if (!item || item.kind !== 'episode' || !filePath) return null;
+  return otherShowNamed(item, [stripExt(path.basename(filePath)), ...folders(filePath, roots)]);
+}
+
 function episodeBelongs(item, filePath, roots) {
   const base = stripExt(path.basename(filePath));
   const dirs = folders(filePath, roots);
@@ -103,10 +135,13 @@ function episodeBelongs(item, filePath, roots) {
     if (ANY_EP_RE.test(base)) return 'no';
     if (!dirs[0] || !namesEpisode(dirs[0], season, episode)) return 'unknown';
   }
-  // Inside this show's own folder — where auto_magnet files its downloads —
-  // it is this show's, however the release spelled the name (a hand-picked
-  // anime or foreign title). The mix-ups this guards against had the file in
-  // the *other* show's folder.
+  // A name that is another show in the library — and not this one — is
+  // that show's, wherever it was saved: Smoke's folder held
+  // "Dexter.New.Blood.S01E03.Smoke.Signals", grabbed for Smoke by mistake.
+  if (otherShowNamed(item, [base, ...dirs])) return 'no';
+  // Otherwise, inside this show's own folder — where auto_magnet files its
+  // downloads — it is this show's, however the release spelled the name (a
+  // hand-picked anime or foreign title).
   const showFolder = sanitizeFolderName(item.show.title).toLowerCase();
   if (dirs.some(d => sanitizeFolderName(d).toLowerCase() === showFolder)) return 'yes';
   const want = wantFor(item.show);
@@ -169,4 +204,4 @@ function itemKey(item) {
   return `movie:${item.row.tmdb_id ? `tmdb${item.row.tmdb_id}` : `${normalizeTitle(item.title)}:${item.year || ''}`}`;
 }
 
-module.exports = { fileBelongsTo, itemKey, nameSaysShow, namesEpisode, EP_RE };
+module.exports = { fileBelongsTo, itemKey, nameSaysShow, namesEpisode, namedOtherShow, EP_RE };

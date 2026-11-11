@@ -317,24 +317,38 @@ function mismatchReason(result, { type, want }) {
   }
   if (id === 'match') result._idMatch = true;
 
-  // The ID pins the title, so the fuzzy title and year comparison has nothing
-  // left to add. It does *not* pin the episode or season — those checks below
-  // still run either way.
+  // An ID only counts where the name doesn't contradict it. Some indexers
+  // attach the *searched* ID to every result they return — including ones
+  // that ignored the ID and sent back whatever was popular for "S01E03". Taken
+  // on trust, that grabbed Dexter.New.Blood.S01E03 for Smoke S01E03, and the
+  // same for nearly every episode. So for shows the name rules always apply
+  // (an odd but genuine spelling is learned as a variant, see shownames), and
+  // for films an ID can stand in for the title but not against a release whose
+  // name shares none of it.
   const minRatio = parseFloat(settings.get('title_match_min') || '0.7');
   const ratio    = titleMatchRatio(result.title, want.title);
-  if (!result._idMatch && ratio < minRatio) {
+  const trustId  = result._idMatch && type === 'movie' && ratio > 0;
+  if (!trustId && ratio < minRatio) {
+    if (result._idMatch) {
+      result._idMatch = false;
+      return `carries this ${type === 'movie' ? 'film' : 'show'}'s ID, but its name is another's — the indexer's ID can't be trusted here`;
+    }
     return `title match ${Math.round(ratio * 100)}% — looks like a different release`;
   }
 
   // A show of the same name, or one whose name starts the same way: "Silo
   // Stories", "Ghosts UK", "9-1-1 Lone Star". The words before the episode
   // marker must all be this show's own.
-  if (type === 'show' && !result._idMatch) {
+  if (type === 'show') {
     const extra = extraShowWords(result.title, want);
-    if (extra.length) return `names another show — "${extra.join(' ')}" isn't part of "${want.title}"`;
+    if (extra.length) {
+      const idNote = result._idMatch ? ' (it carries this show\'s ID, but the indexer attaches that to whatever it returns)' : '';
+      result._idMatch = false;
+      return `names another show — "${extra.join(' ')}" isn't part of "${want.title}"${idNote}`;
+    }
   }
 
-  if (type === 'movie' && want.year && !result._idMatch) {
+  if (type === 'movie' && want.year && !trustId) {
     const years = releaseYears(result.title, want.title);
     // Only judge when the release actually states a year; many do not.
     if (years.length > 0 && !years.some(y => Math.abs(y - want.year) <= 1)) {

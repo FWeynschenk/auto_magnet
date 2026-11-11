@@ -53,8 +53,8 @@ These shipped but can only be confirmed on the real box.
 - **Web version disk use.** Roughly the size of what gets converted. Watch `WEB_ROOT` for a
   week; switch to *Only when someone presses play* if it grows too fast.
 - **Multi-track web versions on the real ffmpeg.** Every audio track is now an HLS rendition
-  (`-var_stream_map`, `master.m3u8` written by us). Tested here with ffmpeg 4.4; CI runs the same tests on
-  6.1 once pushed; the Docker image's Debian ffmpeg is 5.1. After the deploy, play a file with two languages
+  (`-var_stream_map`, `master.m3u8` written by us). Tested here with ffmpeg 4.4 (there is no CI any
+  more); the Docker image's Debian ffmpeg is 5.1. After the deploy, play a file with two languages
   in the browser and in the app and switch between them (app: the gear → Audio).
 - **Removing originals after seeding.** Off by default. Tested here against a stand-in for
   Transmission only, so the first real removal is its first run against `torrent-get`'s

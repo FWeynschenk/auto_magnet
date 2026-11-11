@@ -61,7 +61,7 @@
         ref="screen"
         class="screen"
         :class="{ idle: !controlsShown, fs: isFullscreen }"
-        @pointermove="poke"
+        @pointermove="onScreenMove"
         @pointerdown="onScreenDown"
       >
         <div v-if="notice" class="notice" role="status">{{ notice }}</div>
@@ -903,19 +903,39 @@ const isFullscreen = ref(false);
 const buffering = ref(false);
 let hideTimer = null;
 let downWhileHidden = false;
+let downNearBar = false;
+let pointer = null;   // last { x, y } of the mouse over the screen
 let lastSubId = '';
 
-/** Show the controls; while playing, they fade after a moment without movement. */
+/**
+ * Whether a point is on, or just above, the control bar. Worked out from the
+ * pointer's own position rather than the browser's :hover — a bar that had
+ * faded (and so let the pointer through) only counts as hovered again after
+ * the mouse moves once more, so resting on a button could still fade it and
+ * the click then landed on the video.
+ */
+function nearBar(pt) {
+  const c = screen.value?.querySelector('.controls');
+  if (!pt || !c) return false;
+  const r = c.getBoundingClientRect();
+  return pt.y >= r.top - 24 && pt.x >= r.left && pt.x <= r.right;
+}
+
+/** Show the controls; while playing, they fade after a moment without movement — never while the mouse is at the bar. */
 function poke() {
   controlsShown.value = true;
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
     const v = video.value;
     if (!v || v.paused) return;
-    // Not while the pointer is on them (choosing a point on the bar).
-    if (screen.value?.querySelector('.controls:hover')) { poke(); return; }
+    if (nearBar(pointer) || screen.value?.querySelector('.controls:focus-within')) { poke(); return; }
     controlsShown.value = false;
-  }, 2500);
+  }, 3000);
+}
+
+function onScreenMove(e) {
+  pointer = { x: e.clientX, y: e.clientY };
+  poke();
 }
 
 function onPlayState() {
@@ -929,15 +949,19 @@ function togglePlay() {
   if (v.paused) v.play().catch(() => {}); else v.pause();
 }
 
-function onScreenDown() {
+function onScreenDown(e) {
+  pointer = { x: e.clientX, y: e.clientY };
   downWhileHidden = !controlsShown.value;
+  downNearBar = nearBar(pointer);
   poke();
 }
 
 /** A click on the picture plays or pauses; on a touch screen the first tap only brings the controls back. */
 function onVideoTap(e) {
   if (e.button > 0) return;
-  if (e.pointerType === 'touch' && downWhileHidden) return;
+  // A tap on a touch screen, or a click where the faded bar was: bring the
+  // controls back, don't pause — that click was meant for a button.
+  if (downWhileHidden && (e.pointerType === 'touch' || downNearBar)) return;
   togglePlay();
 }
 

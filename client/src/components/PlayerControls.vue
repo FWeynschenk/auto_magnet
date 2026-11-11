@@ -2,7 +2,7 @@
   <!-- The player's own controls, over the bottom of the video. They replace
        the browser's: with both, Space reached the video twice — the browser
        toggled play and the page's shortcut toggled it back. -->
-  <div class="controls" @click.stop @dblclick.stop>
+  <div class="controls" :class="{ big: fullscreen }" @click.stop @dblclick.stop>
     <ScrubBar :video="video" :thumbs-url="thumbsUrl" :marks="marks" />
     <div class="row">
       <button class="ic" :aria-label="paused ? 'Play (Space)' : 'Pause (Space)'" :title="paused ? 'Play (Space)' : 'Pause (Space)'"
@@ -146,6 +146,14 @@ defineExpose({ toggle, skip, toggleMute, setVolume });
 .time { color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; margin-left: 8px; white-space: nowrap; }
 .dim { color: rgba(255, 255, 255, .65); }
 .spacer { flex: 1; }
+/* Full screen is usually a big screen seen from further away: bigger targets. */
+.big { padding: 36px 16px 12px; }
+.big .row { gap: 6px; }
+.big .ic { padding: 9px; }
+.big .ic svg { width: 32px; height: 32px; }
+.big .time { font-size: 16px; margin-left: 12px; }
+.big :deep(.track) { height: 7px; }
+.big :deep(.scrub:hover .track) { height: 11px; }
 @media (max-width: 640px) {
   .ic { padding: 5px; }
   .ic svg { width: 22px; height: 22px; }

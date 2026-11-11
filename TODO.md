@@ -11,6 +11,13 @@ Last reviewed: 2026-11-05
 
 These shipped but can only be confirmed on the real box.
 
+- **The mixed-up show.** About 20 seconds after the first start, the Activity log has a
+  `library repair:` line (how many wrong links were dropped and relinked), and one line per
+  episode that `found its own torrent again` or `found its own file on disk`. Play a few of the
+  show's episodes. Anything still unplayable says why on its card; **Redo** fixes it.
+- **Phones.** Episodes downloaded to the Android app *while* they were mixed up are the other
+  show's video under this episode's name. The app can't know; delete and download those again.
+
 - **HEVC on the GPU.** `hevc_vaapi` (Settings → Playback → Web version video → HEVC) never ran
   here: no GPU. The RX 6600 encodes HEVC Main; a failure falls back to x265 on the CPU, which
   is slow. Try one conversion and check the Activity log line. Copies of HEVC sources need no

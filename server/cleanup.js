@@ -109,11 +109,11 @@ function decide(torrent, rows, pol, { toLocal = mapPath, check = webIssue, subsP
 /** Finished items with a torrent, with their media rows, grouped per torrent. */
 function torrentGroups() {
   const items = db.prepare(`
-    SELECT 'movie' AS kind, m.id, m.torrent_id, m.torrent_origin, m.transmission_target AS target,
+    SELECT 'movie' AS kind, m.id, m.torrent_id, m.torrent_hash, m.torrent_origin, m.transmission_target AS target,
            m.completed_at, m.post_processed_at, m.subs_state, m.subs_checked_at
       FROM movies m WHERE m.status = 'done' AND m.torrent_id IS NOT NULL
     UNION ALL
-    SELECT 'episode' AS kind, e.id, e.torrent_id, e.torrent_origin, s.transmission_target AS target,
+    SELECT 'episode' AS kind, e.id, e.torrent_id, e.torrent_hash, e.torrent_origin, s.transmission_target AS target,
            e.completed_at, e.post_processed_at, e.subs_state, e.subs_checked_at
       FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.status = 'done' AND e.torrent_id IS NOT NULL
   `).all();
@@ -121,8 +121,11 @@ function torrentGroups() {
   for (const it of items) {
     const row = media.rows.get(it.kind, it.id);
     if (!row) continue;
-    const k = `${it.target || ''}:${it.torrent_id}`;
-    if (!groups.has(k)) groups.set(k, { target: it.target || null, torrentId: it.torrent_id, rows: [] });
+    // By hash where known: after a Transmission restart an id can be another
+    // torrent, and this decides what gets removed.
+    const ref = it.torrent_hash || it.torrent_id;
+    const k = `${it.target || ''}:${ref}`;
+    if (!groups.has(k)) groups.set(k, { target: it.target || null, torrentId: ref, rows: [] });
     groups.get(k).rows.push({
       ...row, torrent_origin: it.torrent_origin, completed_at: it.completed_at,
       post_processed_at: it.post_processed_at, subs_state: it.subs_state, subs_checked_at: it.subs_checked_at,

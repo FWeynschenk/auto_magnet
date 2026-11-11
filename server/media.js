@@ -1,5 +1,7 @@
 'use strict';
 
+const { torrentRef, lowerHash } = require('./torrentref');
+
 // The watchable library: where each finished item is on disk, what a browser
 // needs done to it before it can play, and the queue that does it.
 //
@@ -407,16 +409,29 @@ function videoFilesIn(files) {
 
 const EP_RE = (s, e) => new RegExp(`(?:S0*${s}[\\s._-]?E0*${e}(?!\\d))|(?:(?<!\\d)${s}x0*${e}(?!\\d))`, 'i');
 
-/** The video file in a torrent that is this row's. */
-function pickFile(files, item) {
-  const videos = videoFilesIn(files);
+/** The movie and show folders, as Transmission names them and as this process does. */
+function libraryRoots() {
+  const raw = ['shows_path', 'movie_path'].map(k => String(settings.get(k) || '').replace(/\/+$/, '')).filter(Boolean);
+  return [...new Set([...raw, ...raw.map(mapPath)])];
+}
+
+/**
+ * The video file in a torrent that is this item's — or null. Never just "the
+ * only video in it": the torrent may not be the item's at all (a session id
+ * reused after Transmission restarted), and then its only video is another
+ * show's. Each candidate must name this item (identity.fileBelongsTo); when
+ * the torrent is known by its hash — certainly the item's — a name that says
+ * nothing either way is accepted too.
+ *
+ * @param dir      the torrent's download folder, so folder names count
+ * @param trusted  the torrent was found by hash
+ */
+function pickFile(files, item, { dir = '', trusted = false } = {}) {
+  const { fileBelongsTo } = require('./identity');
+  const roots = libraryRoots();
+  const ok = trusted ? ['yes', 'unknown'] : ['yes'];
+  const videos = videoFilesIn(files).filter(f => ok.includes(fileBelongsTo(item, path.join(dir, f.name), roots)));
   if (videos.length === 0) return null;
-  if (item.kind === 'episode' && videos.length > 1) {
-    const re = EP_RE(item.row.season, item.row.episode);
-    const hit = videos.filter(f => re.test(path.basename(f.name)));
-    if (hit.length) return hit.reduce((a, b) => (b.length > a.length ? b : a));
-    return null; // a pack without this episode in it — the largest file would be wrong
-  }
   return videos.reduce((a, b) => (b.length > a.length ? b : a));
 }
 
@@ -475,12 +490,13 @@ function searchDisk(item) {
 
 async function findPath(item) {
   const row = item.row;
-  if (row.torrent_id) {
+  const tx = require('./transmission');
+  const ref = torrentRef(row);
+  if (ref) {
     try {
-      const tx = require('./transmission');
       const target = item.kind === 'movie' ? row.transmission_target : item.show.transmission_target;
-      const info = await tx.getTorrentInfo(row.torrent_id, tx.resolveTarget(target));
-      const f = info && pickFile(info.files, item);
+      const info = await tx.getTorrentInfo(ref, tx.resolveTarget(target));
+      const f = info && pickFile(info.files, item, { dir: info.downloadDir, trusted: !!row.torrent_hash });
       if (f) {
         const p = mapPath(path.join(info.downloadDir, f.name));
         if (fs.existsSync(p)) return p;
@@ -506,6 +522,7 @@ async function record(kind, id, file, { probed = null } = {}) {
   const duration = Number(info.format?.duration) || null;
   if (existing) removeWebVersion(kind, id); // the file changed, so its web version is stale
   const row = rows.upsert(kind, id, {
+    item_key: require('./identity').itemKey(itemFor(kind, id)),
     path: file, size: st.size, mtime: Math.floor(st.mtimeMs), duration,
     probe: JSON.stringify({ streams: info.streams, format: { format_name: info.format?.format_name, duration: info.format?.duration } }),
     plan, plan_reason: reason,
@@ -517,6 +534,28 @@ async function record(kind, id, file, { probed = null } = {}) {
 }
 
 /**
+ * Whether a recorded file is this item's: its item key matches (rows recorded
+ * since keys were kept), and its name doesn't point at something else.
+ */
+function recordedFor(row, item) {
+  const { itemKey, fileBelongsTo } = require('./identity');
+  // Recorded since keys were kept: the file was checked when it was recorded,
+  // so the key alone says whose it is — no second guessing on every play.
+  if (row.item_key) return row.item_key === itemKey(item);
+  // Recorded before: judged by its name, once (a pass sets the key).
+  return fileBelongsTo(item, row.path, libraryRoots()) !== 'no';
+}
+
+/** Drop a recorded file that turned out to be another item's, and say so. */
+function forgetMismatch(kind, id, row, item) {
+  const label = item.kind === 'episode'
+    ? `${item.show_title} S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')}` : item.title;
+  log.warn(`${label} was linked to a file that isn't it (${path.basename(row.path)}); the link is dropped and the right file looked for`,
+    { type: kind, id });
+  try { require('./deletion').forgetFile(kind, id); } catch (_) { removeWebVersion(kind, id); rows.remove(kind, id); }
+}
+
+/**
  * The media row for an item, making one if needed and checking the file is
  * still where it was. Throws with a reason the player can show.
  */
@@ -524,7 +563,16 @@ async function locate(kind, id) {
   if (!KINDS.has(kind)) throw Object.assign(new Error('Unknown kind'), { status: 400 });
   const item = itemFor(kind, id);
   if (!item) throw Object.assign(new Error('Not found'), { status: 404 });
-  const existing = rows.get(kind, id);
+  let existing = rows.get(kind, id);
+  // A file recorded for something else — another item that once had this id,
+  // or another show's file taken from a renumbered torrent — is dropped and
+  // looked for again, never played.
+  if (existing && !recordedFor(existing, item)) {
+    forgetMismatch(kind, id, existing, item);
+    existing = null;
+  } else if (existing && !existing.item_key) {
+    rows.update(kind, id, { item_key: require('./identity').itemKey(item) });
+  }
   if (existing?.original_removed_at) {
     if (existing.web_state === 'ready' && hlsPlayable(kind, id)) return existing;
     throw Object.assign(new Error('The original was removed after seeding, and its web version is missing'), { status: 410 });
@@ -1562,6 +1610,6 @@ module.exports = {
   SOON_PRIORITY, DEMAND_TTL_MS, SOON_TTL_MS, touch, estimateBytes, roomFor, learnEstimate, expireRequests,
   dirBytes, largestWebVersions, webUsage, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, touchWeb, dropUnwatched, preparesAhead, spaceStatus, spaceOk, freeBytes,
   hlsPlayable, hlsEntry, hlsComplete, webHasAllAudio, audioRenditions, masterPlaylist, webBandwidth, cacheSize, clearWebVersions, removeWebVersion, listSubtitles, vttFor, prewarmSubtitles, cachedVtt,
-  videoFilesIn, subsDir, mp4Boxes, repairInitSegments,
+  videoFilesIn, subsDir, libraryRoots, recordedFor, forgetMismatch, mp4Boxes, repairInitSegments,
   normLang, langFromName, playsAsIs, replanStored, isExtraAudio, wantedLanguages, searchDisk, queue: () => rows.queue(),
 };

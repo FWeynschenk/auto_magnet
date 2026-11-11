@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const { movies, publicRow } = require('../db');
+const { db, movies, publicRow } = require('../db');
 const { getMovieDetails, getMovieReleaseDates } = require('../tmdb');
 const { run: runScheduler } = require('../scheduler');
 
@@ -49,6 +49,11 @@ router.put('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
+  // Its file record, web version, thumbnails and progress go with it, so a
+  // movie added later under the same (reused) id can't inherit them. The
+  // video file itself stays where it is.
+  try { require('../deletion').forgetFile('movie', Number(req.params.id)); } catch (_) {}
+  db.prepare("DELETE FROM playback_progress WHERE kind = 'movie' AND item_id = ?").run(Number(req.params.id));
   movies.remove(req.params.id);
   res.sendStatus(204);
 });
@@ -70,7 +75,7 @@ router.post('/:id/redo', async (req, res) => {
   // Nothing downloaded: start over. tried_magnets is cleared so a failed item
   // (every candidate tried) gets a fresh look; releases marked wrong stay out.
   movies.update(req.params.id, {
-    status: 'pending', magnet: null, torrent_id: null,
+    status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
     results_cache: null, results_cached_at: null, last_error: null,
     progress: 0, tried_magnets: null, download_started_at: null,
   });
@@ -83,7 +88,7 @@ router.post('/retry-failed', (req, res) => {
   const failed = movies.all().filter(m => m.status === 'failed');
   for (const m of failed) {
     movies.update(m.id, {
-      status: 'pending', magnet: null, torrent_id: null,
+      status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
       results_cache: null, results_cached_at: null, last_error: null,
       progress: 0, tried_magnets: null, download_started_at: null,
     });

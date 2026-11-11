@@ -1,5 +1,7 @@
 'use strict';
 
+const { torrentRef, lowerHash } = require('./torrentref');
+
 // After a download completes: check what is actually inside the file, and
 // make sure it has subtitles in the language you want.
 //
@@ -21,6 +23,7 @@ const tx  = require('./transmission');
 const subtitles = require('./sources/opensubtitles');
 const { recordVerdict } = require('./quarantine');
 const log = require('./log');
+const media = require('./media');
 const { mapPath } = require('./paths');
 
 const FFPROBE   = process.env.FFPROBE_PATH || 'ffprobe';
@@ -218,7 +221,7 @@ async function handleUnusable(group, entry, reason, target) {
                   && entry.row.torrent_origin === 'added';
 
   if (canReplace) {
-    try { await tx.purgeTorrent(entry.row.torrent_id, target); } catch (_) {}
+    try { await tx.purgeTorrent(torrentRef(entry.row), target); } catch (_) {}
     recordVerdict([entry], { ok: false, reason }, { label: 'Replaced after the file check' });
     return;
   }
@@ -389,8 +392,11 @@ async function postProcessPass({ limit = 25 } = {}) {
 
   const groups = new Map();
   for (const d of due) {
-    const key = `${d.target}:${d.row.torrent_id}`;
-    if (!groups.has(key)) groups.set(key, { target: d.target, torrentId: d.row.torrent_id, rows: [] });
+    // By hash where known: an id may have been handed to another torrent
+    // since (Transmission renumbers its torrents when it restarts).
+    const ref = torrentRef(d.row);
+    const key = `${d.target}:${ref}`;
+    if (!groups.has(key)) groups.set(key, { target: d.target, torrentId: ref, rows: [] });
     groups.get(key).rows.push(d);
   }
 
@@ -410,11 +416,22 @@ async function postProcessPass({ limit = 25 } = {}) {
         continue;
       }
 
-      const file = pickFile(info.files, entry.row, entry.kind);
+      const item = media.itemFor(entry.kind, entry.id);
+      const file = item && media.pickFile(info.files, item, { dir: info.downloadDir, trusted: !!entry.row.torrent_hash });
       if (!file) {
-        await handleUnusable(group, entry, 'the torrent contains no video file', target);
+        if (media.videoFilesIn(info.files).length === 0) {
+          await handleUnusable(group, entry, 'the torrent contains no video file', target);
+          continue;
+        }
+        // Videos, but none of them this item's: this isn't its torrent — an
+        // id Transmission gave to another torrent after a restart. Never
+        // judge (or delete) that torrent; find the item's own.
+        await require('./relink').relinkItem(entry.kind, entry.id, { reason: `torrent ${group.torrentId} turned out to be "${info.name}"` });
         continue;
       }
+      // Recorded before hashes were kept, and its torrent's files name it:
+      // follow it by hash from now on.
+      if (!entry.row.torrent_hash && info.hash) store.update(entry.id, { torrent_hash: info.hash, torrent_id: info.id });
 
       const local = mapPath(path.join(info.downloadDir, file.name));
       if (!fs.existsSync(local)) {

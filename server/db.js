@@ -209,6 +209,16 @@ const migrations = [
   // Bytes a web version is expected to take: estimated before it starts,
   // replaced by what it actually wrote if it ever ran out of room.
   'ALTER TABLE media_files ADD COLUMN web_estimate INTEGER',
+  // Transmission's torrent id is only valid until it restarts: it renumbers
+  // its torrents in load order. The info hash never changes, and Transmission
+  // accepts it wherever it takes an id, so it is what a torrent is followed by.
+  'ALTER TABLE movies   ADD COLUMN torrent_hash TEXT',
+  'ALTER TABLE episodes ADD COLUMN torrent_hash TEXT',
+  'CREATE INDEX IF NOT EXISTS idx_movies_torrent_hash   ON movies(torrent_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_episodes_torrent_hash ON episodes(torrent_hash)',
+  // Which item a file was recorded for, by name rather than row id — ids are
+  // handed out again after a show is removed. See identity.itemKey.
+  'ALTER TABLE media_files ADD COLUMN item_key TEXT',
   'ALTER TABLE media_files ADD COLUMN subs_snapshot TEXT',
   // 'h264', 'hevc' or 'hevc10': what a web version's video is, for players
   // that must check they can play it.
@@ -378,6 +388,9 @@ function p(obj) {
   return Object.fromEntries(Object.entries(obj).map(([k, v]) => [`$${k}`, v]));
 }
 
+/** A 40-hex BitTorrent info hash (as opposed to Transmission's session id). */
+const isHash = (v) => typeof v === 'string' && /^[0-9a-f]{40}$/i.test(v);
+
 // --- Query helpers ---
 
 const movies = {
@@ -402,8 +415,11 @@ const movies = {
 
   remove: (id) => db.prepare('DELETE FROM movies WHERE id = ?').run(id),
 
-  byTorrent: (torrentId) =>
-    db.prepare("SELECT * FROM movies WHERE torrent_id = ? AND status = 'downloading'").all(torrentId),
+  // A torrent by its hash, or — for a row recorded before hashes were kept —
+  // by the id it had then.
+  byTorrent: (ref) => (isHash(ref)
+    ? db.prepare("SELECT * FROM movies WHERE torrent_hash = ? AND status = 'downloading'").all(String(ref).toLowerCase())
+    : db.prepare("SELECT * FROM movies WHERE torrent_id = ? AND torrent_hash IS NULL AND status = 'downloading'").all(ref)),
 
   unscreened: () =>
     db.prepare("SELECT * FROM movies WHERE status = 'downloading' AND torrent_id IS NOT NULL AND screened_at IS NULL").all(),
@@ -489,11 +505,11 @@ const episodes = {
       .all(showId, season),
 
   // Joined to the show, because an episode's Transmission instance is its show's.
-  byTorrent: (torrentId) => db.prepare(`
+  byTorrent: (ref) => db.prepare(`
     SELECT e.*, s.transmission_target AS show_target FROM episodes e
     JOIN shows s ON s.id = e.show_id
-    WHERE e.torrent_id = ? AND e.status = 'downloading'
-  `).all(torrentId),
+    WHERE ${isHash(ref) ? 'e.torrent_hash = ?' : 'e.torrent_id = ? AND e.torrent_hash IS NULL'} AND e.status = 'downloading'
+  `).all(isHash(ref) ? String(ref).toLowerCase() : ref),
 
   unscreened: () => db.prepare(`
     SELECT e.*, s.transmission_target AS show_target FROM episodes e
@@ -606,4 +622,4 @@ const settings = {
   },
 };
 
-module.exports = { db, movies, shows, episodes, settings, seasonCache, logs, publicRow, DB_PATH };
+module.exports = { db, movies, shows, episodes, settings, seasonCache, logs, publicRow, DB_PATH, isHash };

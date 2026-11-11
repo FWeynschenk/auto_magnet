@@ -19,6 +19,14 @@ settings.set('min_seeds', '1');
 const tx = require('../server/transmission');
 let progress = new Map();
 tx.getTorrentProgress = async () => progress;
+// What Transmission says is behind each id (for rows known only by an id),
+// and the full listing the repair searches.
+let torrents = [];
+tx.getTorrentInfo = async (ref) => {
+  const t = torrents.find(x => x.id === ref || x.hashString === ref);
+  return t ? { id: t.id, hash: t.hashString, name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone, files: t.files } : null;
+};
+tx.listTorrents = async () => torrents;
 const selector = require('../server/selector');
 const media = require('../server/media');
 const scheduler = require('../server/scheduler');
@@ -101,13 +109,56 @@ test('replacing a wrong download removes everything it left and never picks it a
 });
 
 test('progress is synced every minute, not only in the hourly run', async () => {
-  db.prepare("INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, progress) VALUES (2, 1, 1, 3, 'downloading', 12, 0)").run();
-  progress = new Map([[tx.progressKey(null, 12), { progress: 100, done: true }]]);
+  const hash = 'a1'.repeat(20);
+  db.prepare("INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, torrent_hash, progress) VALUES (2, 1, 1, 3, 'downloading', 12, ?, 0)").run(hash);
+  progress = new Map([[tx.progressKey(null, hash), { progress: 100, done: true, id: 12, hash }]]);
   await scheduler.quickSync();
   const ep = episodes.byId(2);
   assert.equal(ep.status, 'done');
   assert.equal(ep.progress, 100);
   void dir;
+});
+
+test('after Transmission renumbers its torrents, an old id naming another show is never taken for the episode', async () => {
+  const lib = settings.get('shows_path');
+  // Grabbed before hashes were kept: only id 13 is known. Since then
+  // Transmission restarted, and 13 is now another show's finished download.
+  db.prepare("INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, progress) VALUES (4, 1, 1, 4, 'downloading', 13, 0)").run();
+  torrents = [
+    { id: 13, hashString: 'b2'.repeat(20), name: 'The.Bear.S03E01.1080p', downloadDir: path.join(lib, 'The Bear'), percentDone: 1,
+      files: [{ name: 'The.Bear.S03E01.1080p.mkv', length: 1e9 }] },
+    { id: 7, hashString: 'c3'.repeat(20), name: 'Ghosts.US.S01E04.1080p', downloadDir: path.join(lib, 'Ghosts'), percentDone: 0.5,
+      files: [{ name: 'Ghosts.US.S01E04.1080p.mkv', length: 1e9 }] },
+  ];
+  progress = new Map([
+    [tx.progressKey(null, 13), { progress: 100, done: true, id: 13, hash: 'b2'.repeat(20) }],
+    [tx.progressKey(null, 7), { progress: 50, done: false, id: 7, hash: 'c3'.repeat(20) }],
+  ]);
+  await scheduler.quickSync();
+  let ep = episodes.byId(4);
+  assert.equal(ep.status, 'downloading', 'not marked done by The Bear finishing');
+  assert.equal(ep.torrent_hash, 'c3'.repeat(20), 'found its own torrent by its files, and follows it by hash');
+  assert.equal(ep.torrent_id, 7);
+  assert.equal(ep.progress, 50);
+  // Its own torrent finishes: now it is done.
+  progress.set(tx.progressKey(null, 'c3'.repeat(20)), { progress: 100, done: true, id: 7, hash: 'c3'.repeat(20) });
+  await scheduler.quickSync();
+  ep = episodes.byId(4);
+  assert.equal(ep.status, 'done');
+  torrents = [];
+});
+
+test('an old id that still names the episode\'s own torrent is kept, and its hash learned', async () => {
+  const lib = settings.get('shows_path');
+  db.prepare("INSERT INTO episodes (id, show_id, season, episode, status, torrent_id, progress) VALUES (5, 1, 1, 5, 'downloading', 14, 0)").run();
+  torrents = [{ id: 14, hashString: 'd4'.repeat(20), name: 'Ghosts.S01E05', downloadDir: path.join(lib, 'Ghosts'), percentDone: 1,
+    files: [{ name: 'Ghosts.S01E05.1080p.mkv', length: 1e9 }] }];
+  progress = new Map([[tx.progressKey(null, 14), { progress: 100, done: true, id: 14, hash: 'd4'.repeat(20) }]]);
+  await scheduler.quickSync();
+  const ep = episodes.byId(5);
+  assert.equal(ep.status, 'done');
+  assert.equal(ep.torrent_hash, 'd4'.repeat(20));
+  torrents = [];
 });
 
 test('a wrong pack is replaced at once: every episode it brought, one torrent removal', async () => {
@@ -121,8 +172,8 @@ test('a wrong pack is replaced at once: every episode it brought, one torrent re
     const f = path.join(packDir, `Ghosts.UK.S02E0${n}.mkv`);
     fs.writeFileSync(f, 'x');
     fs.writeFileSync(f.replace(/\.mkv$/, '.en.srt'), '1\n00:00:01,000 --> 00:00:02,000\nhi\n');
-    db.prepare(`INSERT INTO episodes (id, show_id, season, episode, status, magnet, torrent_id, torrent_origin, release_title)
-      VALUES (?, 1, 2, ?, 'done', ?, 30, 'added', 'Ghosts.UK.S02.1080p')`).run(20 + n, n, magnet);
+    db.prepare(`INSERT INTO episodes (id, show_id, season, episode, status, magnet, torrent_id, torrent_hash, torrent_origin, release_title)
+      VALUES (?, 1, 2, ?, 'done', ?, 30, ?, 'added', 'Ghosts.UK.S02.1080p')`).run(20 + n, n, magnet, 'e'.repeat(40));
     media.rows.upsert('episode', 20 + n, { path: f, size: 1, plan: 'direct', plan_reason: 'x', probe });
   }
   assert.equal(packOf('episode', 22).length, 3);
@@ -133,7 +184,7 @@ test('a wrong pack is replaced at once: every episode it brought, one torrent re
   };
   const r = await replacePack('episode', 22, { reason: 'the UK show', tx: fakeTx });
   assert.equal(r.count, 3);
-  assert.deepEqual(purged, [30], 'one removal for the whole pack');
+  assert.deepEqual(purged, ['e'.repeat(40)], 'one removal for the whole pack, by its hash');
   assert.equal(fs.existsSync(packDir), false, 'subtitles gone, so the emptied release folder goes too');
   for (const n of [1, 2, 3]) {
     const ep = episodes.byId(20 + n);

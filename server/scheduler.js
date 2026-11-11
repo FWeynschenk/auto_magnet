@@ -1,7 +1,7 @@
 'use strict';
 
 const { movies, shows, episodes, settings } = require('./db');
-const { addTorrent, getTorrentProgress, removeTorrent, progressKey } = require('./transmission');
+const { addTorrent, getTorrentProgress, removeTorrent, progressKey, torrentRef, lowerHash, getTorrentInfo, resolveTarget } = require('./transmission');
 const { getSeasonDetails, getTvDetails } = require('./tmdb');
 const { findCandidates } = require('./pipeline');
 const { afterAdd, verdictHandler, sweepQuarantine, sweepUnscreened } = require('./quarantine');
@@ -236,6 +236,37 @@ function isStale(startedAt) {
   return Date.now() - new Date(startedAt).getTime() > STALE_DOWNLOAD_HOURS * 3600 * 1000;
 }
 
+/**
+ * A downloading row's torrent, as Transmission has it now: { progress, done,
+ * id, hash } or null. Followed by hash, it is exact. Followed by an id alone
+ * (grabbed before hashes were kept), the torrent with that id is checked
+ * against the item first: Transmission renumbers its torrents when it
+ * restarts, so the id may now be another download altogether — another
+ * show's, which would be marked as this episode's and its video recorded as
+ * this episode's file. When its files name the item, its hash is kept; when
+ * they don't, the item's own torrent is looked for (relink).
+ */
+async function progressFor(kind, row, target, progressMap, relinkCache) {
+  if (row.torrent_hash) return progressMap.get(progressKey(target, row.torrent_hash)) || null;
+  const t = progressMap.get(progressKey(target, row.torrent_id));
+  if (!t) return null;
+  const media = require('./media');
+  const item = media.itemFor(kind, row.id);
+  let info = null;
+  try { info = await getTorrentInfo(t.id, resolveTarget(target)); } catch (_) { return null; }
+  if (!info || !item) return null;
+  // No file list yet (a magnet still fetching it): nothing to check, and not done.
+  if (media.videoFilesIn(info.files).length === 0) return t.done ? null : t;
+  if (media.pickFile(info.files, item, { dir: info.downloadDir })) {
+    (kind === 'movie' ? movies : episodes).update(row.id, { torrent_hash: info.hash });
+    return t;
+  }
+  await require('./relink').relinkItem(kind, row.id, {
+    cache: relinkCache, reason: `torrent ${row.torrent_id} is now "${info.name}" (Transmission renumbered its torrents)`,
+  });
+  return null;
+}
+
 async function syncDownloading() {
   _showTargetCache.clear();
   let completed = 0;
@@ -243,8 +274,9 @@ async function syncDownloading() {
     const progressMap = await getTorrentProgress();
     if (progressMap.size === 0) return 0;
 
+    const relinkCache = new Map();
     for (const movie of movies.downloading()) {
-      const t = progressMap.get(progressKey(movie.transmission_target, movie.torrent_id));
+      const t = await progressFor('movie', movie, movie.transmission_target, progressMap, relinkCache);
       if (!t) continue;
       if (t.done) {
         // Clear last_error too: a completed download makes the previous
@@ -261,16 +293,16 @@ async function syncDownloading() {
           const tried = JSON.parse(movie.tried_magnets || '[]');
           if (movie.magnet) tried.push(movie.magnet);
           movies.update(movie.id, {
-            status: 'pending', magnet: null, torrent_id: null,
+            status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
             progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
           });
-          try { await removeTorrent(movie.torrent_id, movie.transmission_target); } catch (_) {}
+          try { await removeTorrent(t.hash || torrentRef(movie), movie.transmission_target); } catch (_) {}
         }
       }
     }
 
     for (const ep of episodes.downloading()) {
-      const t = progressMap.get(progressKey(episodeTarget(ep), ep.torrent_id));
+      const t = await progressFor('episode', ep, episodeTarget(ep), progressMap, relinkCache);
       if (!t) continue;
       if (t.done) {
         episodes.update(ep.id, {
@@ -285,10 +317,10 @@ async function syncDownloading() {
           const tried = JSON.parse(ep.tried_magnets || '[]');
           if (ep.magnet) tried.push(ep.magnet);
           episodes.update(ep.id, {
-            status: 'pending', magnet: null, torrent_id: null,
+            status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
             progress: 0, tried_magnets: JSON.stringify(tried), download_started_at: null,
           });
-          try { await removeTorrent(ep.torrent_id, episodeTarget(ep)); } catch (_) {}
+          try { await removeTorrent(t.hash || torrentRef(ep), episodeTarget(ep)); } catch (_) {}
         }
       }
     }
@@ -404,7 +436,7 @@ async function processMovie(movie) {
   }
 
   movies.update(movie.id, {
-    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: winner.title || null,
+    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, torrent_hash: lowerHash(result.hashString), release_title: winner.title || null,
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),
   });
@@ -637,7 +669,7 @@ function claimEpisodesForPack(eps, magnet, result, releaseTitle = null) {
   const startedAt = new Date().toISOString();
   for (const ep of eps) {
     episodes.update(ep.id, {
-      status: 'downloading', magnet, torrent_id: result.id, release_title: releaseTitle,
+      status: 'downloading', magnet, torrent_id: result.id, torrent_hash: lowerHash(result.hashString), release_title: releaseTitle,
       results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
       ...afterAdd(result),
@@ -831,7 +863,7 @@ async function grabEpisode(show, ep) {
   }
 
   episodes.update(ep.id, {
-    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: winner.title || null,
+    status: 'downloading', magnet: torrentUrl, torrent_id: result.id, torrent_hash: lowerHash(result.hashString), release_title: winner.title || null,
     results_cache: null,
     download_started_at: new Date().toISOString(),
     ...afterAdd(result),

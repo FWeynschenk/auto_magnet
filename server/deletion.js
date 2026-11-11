@@ -85,6 +85,42 @@ function sharers(item, ref, target) {
     .filter(r => !(r.kind === item.kind && r.id === item.id));
 }
 
+/**
+ * The item that really owns the file or torrent this item points at, as a
+ * label — or null when nothing else does.
+ *
+ * A file belongs to exactly one show or film. If another item has the same
+ * file recorded, or follows the same torrent while being a different show or
+ * film, then this item's link is the wrong one (a wrong grab), and the file
+ * and torrent are the other item's: never deleted on this item's account.
+ * (Episodes of one show following one torrent is normal: a season pack, each
+ * episode its own file in it.)
+ */
+function ownerElsewhere(item, row) {
+  const other = (k, i) => {
+    if (k === item.kind && Number(i) === Number(item.id)) return false;
+    if (item.kind === 'episode' && k === 'episode') {
+      const e = episodes.byId(i);
+      return e && e.show_id !== item.show.id;
+    }
+    return true;
+  };
+  const label = (k, i) => {
+    const it = media.itemFor(k, i);
+    if (!it) return `${k} #${i}`;
+    return k === 'episode' ? `${it.show_title} S${String(it.season).padStart(2, '0')}E${String(it.episode).padStart(2, '0')}` : it.title;
+  };
+  for (const r of db.prepare('SELECT kind, item_id FROM media_files WHERE path = ?').all(row.path)) {
+    if (r.kind === item.kind && Number(r.item_id) === Number(item.id)) continue;
+    return label(r.kind, r.item_id);   // the same file recorded for another item: it is that one's
+  }
+  const ref = torrentRef(item.row);
+  if (!ref) return null;
+  const target = item.kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
+  const s = sharers(item, ref, target).find(x => other(x.kind, x.id));
+  return s ? label(s.kind, s.id) : null;
+}
+
 /** A release folder of its own, now empty: remove it. Never a show folder or a library root. */
 function removeEmptyReleaseFolder(file) {
   const root = (k) => key(mapPath(String(settings.get(k) || '').replace(/\/+$/, '')));
@@ -143,7 +179,13 @@ async function removeDownload(kind, id, { tx = require('./transmission') } = {})
 
   let original = 'not on disk';
   let freedOriginal = 0;
-  if (row && !row.original_removed_at && fs.existsSync(row.path)) {
+  // A file belongs to one item. When another item has it too, this item's
+  // claim is the mistake — a wrong grab pointing at Smoke S01E03 to Dexter:
+  // New Blood's episode — and undoing the mistake must not delete the owner's.
+  const owner = row && ownerElsewhere(item, row);
+  if (owner) {
+    original = `the file is ${owner}'s — left in place, only this item's wrong link to it removed`;
+  } else if (row && !row.original_removed_at && fs.existsSync(row.path)) {
     const torrentId = torrentRef(item.row);
     const target = kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
     let info = null;
@@ -216,6 +258,8 @@ async function dropRunningTorrent(item, tx) {
   const torrentId = torrentRef(item.row);
   const target = item.kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
   if (item.row.torrent_origin === 'duplicate') return 'torrent was already in Transmission — left as it was';
+  const owner = ownerElsewhere(item, { path: '\0' });
+  if (owner) return `the torrent is ${owner}'s — left as it was, only this item's wrong link to it removed`;
   let info = null;
   try { info = await tx.getTorrentInfo(torrentId, tx.resolveTarget(target)); } catch (err) {
     throw fail(`Transmission can't be reached to remove the torrent first (${err.message}) — try again once it is`, 503);
@@ -242,4 +286,4 @@ async function dropRunningTorrent(item, tx) {
   return 'shared torrent left as it was';
 }
 
-module.exports = { deleteWebVersion, deleteEverything, removeDownload, insideLibrary, sharers, forgetFile, removeEmptyReleaseFolder };
+module.exports = { deleteWebVersion, deleteEverything, removeDownload, insideLibrary, sharers, forgetFile, removeEmptyReleaseFolder, ownerElsewhere };

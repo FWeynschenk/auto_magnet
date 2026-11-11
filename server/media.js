@@ -471,9 +471,11 @@ function searchDisk(item) {
     const key = sanitizeFolderName(item.show.title).toLowerCase();
     let dirs = [];
     try { dirs = fs.readdirSync(root).filter(n => sanitizeFolderName(n).toLowerCase() === key); } catch (_) {}
-    const re = EP_RE(item.row.season, item.row.episode);
+    const { fileBelongsTo } = require('./identity');
     for (const d of dirs) {
-      const hit = videoFilesIn(walk(path.join(root, d))).filter(f => re.test(path.basename(f.name)));
+      // Only files whose names may be this episode's: a wrong download saved
+      // in this show's folder (another show's S01E03) is not.
+      const hit = videoFilesIn(walk(path.join(root, d))).filter(f => fileBelongsTo(item, f.full, libraryRoots()) === 'yes');
       if (hit.length) return hit.reduce((a, b) => (b.length > a.length ? b : a)).full;
     }
     return null;
@@ -485,7 +487,9 @@ function searchDisk(item) {
     const n = ` ${norm(f.name)} `;
     return words.every(w => n.includes(` ${w} `)) && (!item.year || n.includes(` ${item.year} `));
   });
-  return hits.length ? hits.reduce((a, b) => (b.length > a.length ? b : a)).full : null;
+  const { fileBelongsTo } = require('./identity');
+  const mine = hits.filter(f => fileBelongsTo(item, f.full, libraryRoots()) !== 'no');
+  return mine.length ? mine.reduce((a, b) => (b.length > a.length ? b : a)).full : null;
 }
 
 async function findPath(item) {
@@ -539,10 +543,10 @@ async function record(kind, id, file, { probed = null } = {}) {
  */
 function recordedFor(row, item) {
   const { itemKey, fileBelongsTo } = require('./identity');
-  // Recorded since keys were kept: the file was checked when it was recorded,
-  // so the key alone says whose it is — no second guessing on every play.
-  if (row.item_key) return row.item_key === itemKey(item);
-  // Recorded before: judged by its name, once (a pass sets the key).
+  // Another item's key: recorded for whatever had this row id before.
+  if (row.item_key && row.item_key !== itemKey(item)) return false;
+  // And the file's name must not say it is something else — a key only says
+  // whom it was recorded for, not that the right file was.
   return fileBelongsTo(item, row.path, libraryRoots()) !== 'no';
 }
 

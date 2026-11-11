@@ -346,31 +346,43 @@ because those may be partly downloaded or started by hand.
 
 ---
 
-### Following a download
+### Making sure a download is the right show
 
-A download is followed by its torrent's **info hash**, not by Transmission's torrent number.
-Transmission numbers its torrents 1, 2, 3… in load order every time it starts. So once torrents
-have been added and removed, a restart shifts the numbers, and a stored number can name a
-different download. Following numbers made episodes "finish" when another show's torrent
-finished, and that show's video got recorded as the episode's file.
+An ID is never trusted over a name. Prowlarr is asked by IMDb/TMDB id as well as by text, and
+some indexers ignore the id: they send back whatever is popular for "S01E03" and tag every result
+with the id they were asked for. Taken on trust, that grabbed `Dexter.New.Blood.S01E03.Smoke.Signals`
+for *Smoke* S01E03, and the same for nearly every episode. Now:
 
-Every file is also checked against the item before it is used, by the same name rules that pick
-releases:
-- **Episode:** the file (or its folder) has this season and episode, and it is in the show's own
-  folder or named after the show.
-- **Film:** the title, and no other year.
+- **Show releases:** the name rules always apply, ID or not. A genuinely odd spelling (anime,
+  foreign titles) is still found: it is learned as a variant after a few empty runs, or taught by
+  picking it by hand. For films, an ID can stand in for a title, but not for a name that shares
+  none of it.
+- **Already downloaded for another show or film:** never grabbed again for this one.
+  "Filtered out" in the picker says whose it is.
+- **Grab log lines** say `matched by ID` when the ID helped.
 
-A file that fails is never recorded or played, and nothing is deleted on the strength of a
-torrent that turned out to be someone else's.
+**Every file is checked against its item before it is used:**
+- **Episode:** its season and episode (double episodes included), and either this show's folder
+  or this show's name.
+- **Film:** its title, and no other year.
+- **Another show:** a name that is another show in your library is never this one's, whichever
+  folder it is in.
 
-Libraries recorded before this are repaired shortly after startup, and again by every library
-check (Settings → Status):
-- Links to another item's file are dropped, and the item is pointed at its own torrent (found by
-  its files' names) or its file on disk.
-- Subtitles that were fetched for the wrong file are moved aside (`.mixed-up.bak`), and the file's
-  real owner fetches its own.
-- Older downloads get their hash.
-- What can't be found says so on its card. **Redo** downloads it again.
+A file that fails is never recorded or played.
+
+**One file, one owner.** A file belongs to one show or film. If a second item points at it, that
+item's link is the mistake. Fixing the mistake (Redo, Wrong video, the repair below) removes only
+the wrong link and never deletes the real owner's file or torrent.
+
+**Repair**, shortly after startup and with every library check (Settings → Status):
+- **Wrong grabs** (an item whose torrent holds nothing of its own, such as Smoke following a
+  Dexter release) are replaced like Redo. The release is excluded for good, a new search runs,
+  and the stray copy goes if auto_magnet downloaded it for that item alone.
+- **Wrong file links** are dropped. Subtitles that were fetched for the wrong file are moved
+  aside (`.mixed-up.bak`), and the file's real owner fetches its own.
+
+Torrents are followed by their info hash, which identifies a torrent for good, rather than by
+Transmission's number for it. Older downloads get their hash during the repair.
 
 Removing a show or film also clears what the library made from it (file records, web versions,
 thumbnails, progress), so an item added later can't inherit them. The video files stay on disk,

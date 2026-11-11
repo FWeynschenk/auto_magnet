@@ -143,9 +143,52 @@ function moveAsideWrongSubtitles(row, item) {
  */
 async function repairLibrary({ tx = require('./transmission') } = {}) {
   const cache = new Map();
-  const report = { dropped: 0, relinked: 0, lost: 0, hashed: 0 };
+  const report = { dropped: 0, relinked: 0, lost: 0, hashed: 0, replaced: 0 };
+  const wrong = new Map();   // "kind:id" → { item, torrent } — downloads of something else
+  const relinked = new Set(); // "kind:id" already back on its own download
 
-  // 1. Recorded files that aren't their item's.
+  // 1. Every download's torrent, against the item it is for.
+  const items = db.prepare(`
+    SELECT 'movie' AS kind, id FROM movies
+      WHERE status IN ('done', 'downloading') AND (torrent_hash IS NOT NULL OR torrent_id IS NOT NULL)
+    UNION ALL
+    SELECT 'episode' AS kind, id FROM episodes
+      WHERE status IN ('done', 'downloading') AND (torrent_hash IS NOT NULL OR torrent_id IS NOT NULL)
+  `).all();
+  for (const l of items) {
+    const item = media.itemFor(l.kind, l.id);
+    if (!item) continue;
+    let torrents;
+    try { torrents = await listing(tx, targetOf(item), cache); } catch (_) { break; }   // Transmission unreachable: next time
+    const byHash = !!item.row.torrent_hash;
+    const t = byHash ? torrents.find(x => x.hash === item.row.torrent_hash) : torrents.find(x => x.id === item.row.torrent_id);
+    if (!t) {
+      // Gone (removed after seeding, or by hand): its file is what matters,
+      // checked in step 2. Still downloading, it has lost track of it.
+      if (!byHash && item.row.status === 'downloading') {
+        const res = await relinkItem(l.kind, l.id, { tx, cache, reason: 'its torrent id is no longer in Transmission' });
+        if (res.found) report.relinked++; else if (res.how === 'lost') report.lost++;
+      }
+      continue;
+    }
+    const files = t.files.filter(f => f.wanted !== false);
+    if (!media.videoFilesIn(files).length) continue;   // no file list yet
+    if (media.pickFile(files, item, { dir: t.downloadDir, trusted: byHash })) {
+      if (!byHash) { storeFor(l.kind).update(l.id, { torrent_hash: t.hash }); report.hashed++; }
+      continue;
+    }
+    // Nothing in this torrent is the item's. Known only by an id, the id may
+    // have been handed to another torrent since: look for the item's own.
+    if (!byHash) {
+      const res = await relinkItem(l.kind, l.id, { tx, cache,
+        reason: `torrent ${item.row.torrent_id} is "${t.name}", which isn't it` });
+      if (res.found) { report.relinked++; relinked.add(`${l.kind}:${l.id}`); continue; }
+    }
+    // Its own download, and it is something else: a wrong grab.
+    wrong.set(`${l.kind}:${l.id}`, { item, torrent: t });
+  }
+
+  // 2. Recorded files that aren't their item's.
   for (const r of media.rows.all()) {
     const item = media.itemFor(r.kind, r.item_id);
     if (!item) continue;   // orphans: the index pass removes them
@@ -158,39 +201,36 @@ async function repairLibrary({ tx = require('./transmission') } = {}) {
     media.forgetMismatch(r.kind, r.item_id, r, item);
     // Its checks ran on the wrong file: run them again on its own.
     storeFor(r.kind).update(r.item_id, { post_processed_at: null, subs_state: null, subs_checked_at: null });
+    if (wrong.has(`${r.kind}:${r.item_id}`) || relinked.has(`${r.kind}:${r.item_id}`)) continue;   // replaced below / done above
     const res = await relinkItem(r.kind, r.item_id, { tx, cache, reason: 'its recorded file was another item\'s' });
     if (res.found) report.relinked++; else if (res.how === 'lost') report.lost++;
   }
 
-  // 2. Rows followed by an id alone: fill in the hash, or find their torrent.
-  const legacy = db.prepare(`
-    SELECT 'movie' AS kind, id FROM movies WHERE status IN ('done', 'downloading') AND torrent_id IS NOT NULL AND torrent_hash IS NULL
-    UNION ALL
-    SELECT 'episode' AS kind, id FROM episodes WHERE status IN ('done', 'downloading') AND torrent_id IS NOT NULL AND torrent_hash IS NULL
-  `).all();
-  for (const l of legacy) {
-    const item = media.itemFor(l.kind, l.id);
-    if (!item) continue;
-    let torrents;
-    try { torrents = await listing(tx, targetOf(item), cache); } catch (_) { break; }   // Transmission unreachable: next time
-    const same = torrents.find(t => t.id === item.row.torrent_id);
-    if (same && media.pickFile(same.files, item, { dir: same.downloadDir })) {
-      storeFor(l.kind).update(l.id, { torrent_hash: same.hash });
-      report.hashed++;
-      continue;
+  // 3. Wrong grabs: replaced, as Redo would — the release is never picked for
+  // the item again, and a new search runs. The stray download goes too, but
+  // only when auto_magnet added it for this item and nothing else claims it;
+  // a torrent that is really another item's (or was in Transmission already)
+  // stays theirs.
+  for (const [k, { item, torrent }] of wrong) {
+    const [kind, id] = k.split(':');
+    const sharedWith = require('./deletion').sharers(item, torrent.hash || torrent.id, targetOf(item));
+    if (item.row.torrent_origin === 'added' && sharedWith.length === 0) {
+      try { await tx.purgeTorrent(torrent.hash || torrent.id, tx.resolveTarget(targetOf(item))); } catch (_) { /* left for Redo */ }
     }
-    // Finished, and its torrent simply gone (removed after seeding): its file
-    // is what matters, and step 1 has checked that.
-    if (!same && item.row.status === 'done') continue;
-    const res = await relinkItem(l.kind, l.id, { tx, cache, reason: same
-      ? `torrent ${item.row.torrent_id} is now "${same.name}" (Transmission renumbered its torrents)`
-      : 'its torrent id is no longer in Transmission' });
-    if (res.found) report.relinked++; else if (res.how === 'lost') report.lost++;
+    try {
+      await require('./replace').replaceDownload(kind, Number(id), {
+        reason: `it had downloaded "${torrent.name}" — another show's release`, wrong: true, search: false, tx,
+      });
+      report.replaced++;
+    } catch (err) {
+      log.warn(`${label(item)}: couldn't replace its wrong download "${torrent.name}": ${err.message}`, { type: kind, id: Number(id) });
+    }
   }
+  if (report.replaced) setImmediate(() => require('./scheduler').run().catch(() => {}));
 
-  if (report.dropped || report.relinked || report.lost || report.hashed) {
-    log.info(`library repair: ${report.dropped} wrong file link(s) dropped, ${report.relinked} item(s) back on their own download, `
-      + `${report.lost} lost, ${report.hashed} torrent(s) now followed by hash`);
+  if (Object.values(report).some(Boolean)) {
+    log.info(`library repair: ${report.replaced} wrong download(s) replaced, ${report.dropped} wrong file link(s) dropped, `
+      + `${report.relinked} item(s) back on their own download, ${report.lost} lost, ${report.hashed} torrent(s) now followed by hash`);
   }
   return report;
 }

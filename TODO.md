@@ -11,10 +11,12 @@ Last reviewed: 2026-11-05
 
 These shipped but can only be confirmed on the real box.
 
-- **The mixed-up show.** About 20 seconds after the first start, the Activity log has a
-  `library repair:` line (how many wrong links were dropped and relinked), and one line per
-  episode that `found its own torrent again` or `found its own file on disk`. Play a few of the
-  show's episodes. Anything still unplayable says why on its card; **Redo** fixes it.
+- **The mixed-up show (Smoke ↔ Dexter: New Blood).** After the first start, the Activity log has
+  a `library repair:` line with `N wrong download(s) replaced`. Each Smoke episode that had
+  downloaded a Dexter release says `wrong video replaced … another show's release` and is looked
+  for again. Dexter's own episodes must be untouched: play one. New grabs that were helped by an
+  ID say `matched by ID`. If a Smoke search now finds nothing, the picker's *Filtered out* list
+  should show the Dexter releases with "carries this show's ID", which confirms the indexer echo.
 - **Phones.** Episodes downloaded to the Android app *while* they were mixed up are the other
   show's video under this episode's name. The app can't know; delete and download those again.
 

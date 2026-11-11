@@ -1,5 +1,7 @@
 'use strict';
 
+const { torrentRef, lowerHash } = require('./torrentref');
+
 // Putting a wrong download right.
 //
 // A release can be the wrong thing: a show with a similar name, a mislabelled
@@ -28,7 +30,7 @@ function parseList(json) {
 
 /** Everything about a download that the next one must start without. */
 const RESET = {
-  status: 'pending', magnet: null, torrent_id: null, torrent_origin: null, release_title: null,
+  status: 'pending', magnet: null, torrent_id: null, torrent_hash: null, torrent_origin: null, release_title: null,
   progress: 0, results_cache: null, results_cached_at: null, download_started_at: null,
   completed_at: null, post_processed_at: null, screened_at: null,
   subs_state: null, subs_match: null, subs_checked_at: null,
@@ -86,9 +88,10 @@ async function replaceDownload(kind, id, { reason = 'wrong video', wrong = true,
  */
 function packOf(kind, id) {
   const item = media.itemFor(kind, id);
-  if (!item?.row.torrent_id) return item ? [{ kind, id }] : [];
+  const ref = item && (item.row.torrent_hash || item.row.torrent_id);
+  if (!ref) return item ? [{ kind, id }] : [];
   const target = kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
-  return [{ kind, id: Number(id) }, ...deletion.sharers(item, item.row.torrent_id, target)];
+  return [{ kind, id: Number(id) }, ...deletion.sharers(item, ref, target)];
 }
 
 /**
@@ -113,7 +116,19 @@ async function replacePack(kind, id, { reason = 'wrong pack', by = null, tx = re
   });
   const files = members.map(m => media.rows.get(m.kind, m.id)?.path).filter(Boolean);
   if (ours) {
-    try { await tx.purgeTorrent(item.row.torrent_id, tx.resolveTarget(target)); } catch (err) {
+    const ref = torrentRef(item.row);
+    try {
+      // Known only by an id, it must still be this pack: after a Transmission
+      // restart the id can belong to another download.
+      if (!item.row.torrent_hash) {
+        const info = await tx.getTorrentInfo(ref, tx.resolveTarget(target));
+        if (info && !media.pickFile(info.files, item, { dir: info.downloadDir })) {
+          throw fail(`torrent ${ref} is now "${info.name}", not this pack — nothing removed`, 409);
+        }
+      }
+      await tx.purgeTorrent(ref, tx.resolveTarget(target));
+    } catch (err) {
+      if (err.status) throw err;
       throw fail(`Transmission can't be reached to remove the pack (${err.message}) — try again once it is`, 503);
     }
     for (const f of sidecars) {

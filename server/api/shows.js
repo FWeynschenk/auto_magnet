@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const { shows, episodes, seasonCache, publicRow } = require('../db');
+const { db, shows, episodes, seasonCache, publicRow } = require('../db');
 const { getTvDetails } = require('../tmdb');
 const {
   run: runScheduler, syncEpisodes, syncShowMeta, makeSeasonFetcher,
@@ -68,7 +68,17 @@ router.put('/:id', (req, res) => {
   res.json({ ...show, episodes: episodes.forShow(req.params.id).map(publicRow) });
 });
 
+function forgetItem(kind, id) {
+  try { require('../deletion').forgetFile(kind, id); } catch (_) {}
+  db.prepare('DELETE FROM playback_progress WHERE kind = ? AND item_id = ?').run(kind, id);
+}
+
 router.delete('/:id', (req, res) => {
+  // What the library made from its episodes goes with it — the record of each
+  // file, web versions, thumbnails, progress. Database ids are handed out
+  // again once these rows are gone, and an episode added later must not
+  // inherit any of it. The video files themselves stay where they are.
+  for (const e of episodes.forShow(req.params.id)) forgetItem('episode', e.id);
   shows.remove(req.params.id);
   res.sendStatus(204);
 });
@@ -147,7 +157,7 @@ router.post('/:id/episodes/:epId/redo', async (req, res) => {
   // tried_magnets must be cleared too — otherwise the selector still excludes every
   // previously attempted torrent and the redo fails instantly with no candidates.
   episodes.update(ep.id, {
-    status: 'pending', magnet: null, torrent_id: null,
+    status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
     results_cache: null, results_cached_at: null, last_error: null,
     progress: 0, tried_magnets: null, download_started_at: null,
   });
@@ -173,7 +183,7 @@ router.post('/retry-failed', (req, res) => {
     const failed = episodes.failed(show.id);
     for (const ep of failed) {
       episodes.update(ep.id, {
-        status: 'pending', magnet: null, torrent_id: null,
+        status: 'pending', magnet: null, torrent_id: null, torrent_hash: null,
         results_cache: null, results_cached_at: null, last_error: null,
         progress: 0, tried_magnets: null, download_started_at: null,
       });

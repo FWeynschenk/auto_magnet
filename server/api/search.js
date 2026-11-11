@@ -6,7 +6,7 @@ const { searchMulti, getMovieDetails, getTvDetails } = require('../tmdb');
 const { findCandidates } = require('../pipeline');
 const { remember, recall } = require('../search-cache');
 const { settings, movies, shows, episodes } = require('../db');
-const { addTorrent } = require('../transmission');
+const { addTorrent, lowerHash } = require('../transmission');
 const { showDir } = require('../paths');
 const { afterAdd, verdictHandler } = require('../quarantine');
 const log = require('../log');
@@ -271,7 +271,7 @@ router.post('/grab', async (req, res) => {
     });
 
     target.store.update(target.id, {
-      status: 'downloading', magnet: torrentUrl, torrent_id: result.id, release_title: torrent.title || null,
+      status: 'downloading', magnet: torrentUrl, torrent_id: result.id, torrent_hash: lowerHash(result.hashString), release_title: torrent.title || null,
       results_cache: null, results_cached_at: null,
       download_started_at: startedAt,
       ...afterAdd(result),

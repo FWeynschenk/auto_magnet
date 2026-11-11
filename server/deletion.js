@@ -1,5 +1,7 @@
 'use strict';
 
+const { torrentRef, lowerHash } = require('./torrentref');
+
 // Deleting from the library by hand, to free space or because it has been
 // watched. Two levels:
 //
@@ -21,7 +23,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const { db, movies, episodes, settings } = require('./db');
+const { db, movies, episodes, settings, isHash } = require('./db');
 const media = require('./media');
 const { mapPath } = require('./paths');
 const log = require('./log');
@@ -63,15 +65,23 @@ function deleteWebVersion(kind, id, { by = null } = {}) {
   return { freed };
 }
 
-/** Other library items downloaded by the same torrent. */
-function sharers(item, torrentId, target) {
+/**
+ * Other library items downloaded by the same torrent: by hash, or — for a
+ * torrent known only by the id it had when it was grabbed — by that id among
+ * rows that have no hash either.
+ */
+function sharers(item, ref, target) {
+  const byHash = isHash(ref);
+  const m = byHash ? 'torrent_hash = ?' : 'torrent_id = ? AND torrent_hash IS NULL';
+  const e = byHash ? 'e.torrent_hash = ?' : 'e.torrent_id = ? AND e.torrent_hash IS NULL';
+  const v = byHash ? String(ref).toLowerCase() : ref;
   return db.prepare(`
     SELECT 'movie' AS kind, id FROM movies
-      WHERE torrent_id = ? AND COALESCE(transmission_target, '') = ? AND status IN ('done', 'downloading')
+      WHERE ${m} AND COALESCE(transmission_target, '') = ? AND status IN ('done', 'downloading')
     UNION ALL
     SELECT 'episode' AS kind, e.id FROM episodes e JOIN shows s ON s.id = e.show_id
-      WHERE e.torrent_id = ? AND COALESCE(s.transmission_target, '') = ? AND e.status IN ('done', 'downloading')
-  `).all(torrentId, target || '', torrentId, target || '')
+      WHERE ${e} AND COALESCE(s.transmission_target, '') = ? AND e.status IN ('done', 'downloading')
+  `).all(v, target || '', v, target || '')
     .filter(r => !(r.kind === item.kind && r.id === item.id));
 }
 
@@ -120,7 +130,7 @@ async function removeDownload(kind, id, { tx = require('./transmission') } = {})
 
   // Still downloading: the torrent goes (or this file is dropped from a pack);
   // there is no finished file or web version yet.
-  if (item.status === 'downloading' && item.row.torrent_id) {
+  if (item.status === 'downloading' && (item.row.torrent_hash || item.row.torrent_id)) {
     const original = await dropRunningTorrent(item, tx);
     const freedWeb = forgetFile(kind, id);
     return { freed: freedWeb, original };
@@ -134,7 +144,7 @@ async function removeDownload(kind, id, { tx = require('./transmission') } = {})
   let original = 'not on disk';
   let freedOriginal = 0;
   if (row && !row.original_removed_at && fs.existsSync(row.path)) {
-    const torrentId = item.row.torrent_id;
+    const torrentId = torrentRef(item.row);
     const target = kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
     let info = null;
     if (torrentId) {
@@ -203,7 +213,7 @@ function forgetFile(kind, id) {
  * Transmission before auto_magnet asked for it is someone else's: left alone.
  */
 async function dropRunningTorrent(item, tx) {
-  const torrentId = item.row.torrent_id;
+  const torrentId = torrentRef(item.row);
   const target = item.kind === 'movie' ? item.row.transmission_target : item.show.transmission_target;
   if (item.row.torrent_origin === 'duplicate') return 'torrent was already in Transmission — left as it was';
   let info = null;
@@ -211,11 +221,17 @@ async function dropRunningTorrent(item, tx) {
     throw fail(`Transmission can't be reached to remove the torrent first (${err.message}) — try again once it is`, 503);
   }
   if (!info) return 'torrent no longer in Transmission';
+  // Known only by an id: after a Transmission restart that id can be another
+  // download entirely. Only touch it when its files name this item.
+  if (!item.row.torrent_hash && media.videoFilesIn(info.files).length
+      && !media.pickFile(info.files, item, { dir: info.downloadDir })) {
+    return `torrent ${torrentId} is now "${info.name}", not this item's — left as it was`;
+  }
   if (sharers(item, torrentId, target).length === 0) {
     await tx.purgeTorrent(torrentId, tx.resolveTarget(target));
     return 'torrent removed with its files';
   }
-  const f = media.pickFile(info.files, item);
+  const f = media.pickFile(info.files, item, { dir: info.downloadDir, trusted: !!item.row.torrent_hash });
   const index = f ? info.files.indexOf(f) : -1;
   if (index >= 0) {
     await tx.setFilesUnwanted(torrentId, [index], tx.resolveTarget(target));

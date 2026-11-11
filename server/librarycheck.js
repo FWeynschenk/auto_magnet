@@ -1,5 +1,7 @@
 'use strict';
 
+const { torrentRef, lowerHash } = require('./torrentref');
+
 // A look over the whole library, once a week (and on request), for what has
 // drifted out of step with the disk and Transmission:
 //
@@ -34,17 +36,23 @@ function label(kind, id) {
     : `${it.title}${it.row.year ? ` (${it.row.year})` : ''}`;
 }
 
-/** Torrent ids per Transmission instance, or null for an instance that couldn't be asked. */
+/** Torrent ids and hashes per Transmission instance, or null for an instance that couldn't be asked. */
 async function torrentIds(tx) {
   const out = new Map();
   for (const t of tx.listTargets()) {
-    try { out.set(t.name, new Set((await tx.listTorrents([], t)).map(x => x.id))); } catch (_) { out.set(t.name, null); }
+    try {
+      const list = await tx.listTorrents(['hashString'], t);
+      out.set(t.name, new Set([...list.map(x => x.id), ...list.map(x => lowerHash(x.hashString)).filter(Boolean)]));
+    } catch (_) { out.set(t.name, null); }
   }
   return out;
 }
 
 async function run({ tx = require('./transmission') } = {}) {
   const started = Date.now();
+  // First put back anything linked to the wrong file or torrent.
+  let repaired = null;
+  try { repaired = await require('./relink').repairLibrary({ tx }); } catch (err) { log.warn(`library repair failed: ${err.message}`); }
   const ids = await torrentIds(tx);
   const has = (target, id) => {
     const set = ids.get(tx.resolveTarget(target).name);
@@ -52,10 +60,10 @@ async function run({ tx = require('./transmission') } = {}) {
   };
 
   const items = db.prepare(`
-    SELECT 'movie' AS kind, id, status, torrent_id, torrent_origin, transmission_target AS target FROM movies
+    SELECT 'movie' AS kind, id, status, COALESCE(torrent_hash, torrent_id) AS torrent_id, torrent_origin, transmission_target AS target FROM movies
       WHERE status IN ('done', 'downloading')
     UNION ALL
-    SELECT 'episode' AS kind, e.id, e.status, e.torrent_id, e.torrent_origin, s.transmission_target AS target
+    SELECT 'episode' AS kind, e.id, e.status, COALESCE(e.torrent_hash, e.torrent_id) AS torrent_id, e.torrent_origin, s.transmission_target AS target
       FROM episodes e JOIN shows s ON s.id = e.show_id WHERE e.status IN ('done', 'downloading')
   `).all();
 
@@ -99,6 +107,7 @@ async function run({ tx = require('./transmission') } = {}) {
     unreachable: [...ids.entries()].filter(([, v]) => v === null).map(([k]) => k),
     missing, stuck, notSeeding, brokenWeb,
     orphans, orphanBytes: orphans.reduce((a, o) => a + o.bytes, 0),
+    repaired,   // { dropped, relinked, lost, hashed } — see relink.js
   };
   settings.set(KEY, JSON.stringify(report));
   const problems = missing.length + stuck.length + brokenWeb.length + orphans.length;

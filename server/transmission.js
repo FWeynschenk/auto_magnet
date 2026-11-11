@@ -143,12 +143,12 @@ function filesOf(t) {
 /** Where a torrent lives and what is in it, or null if Transmission no longer has it. */
 async function getTorrentInfo(id, target = null) {
   const args = await rpc('torrent-get', {
-    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'wanted'],
+    ids: [id], fields: ['id', 'hashString', 'name', 'downloadDir', 'files', 'percentDone', 'wanted'],
   }, target);
   const t = args?.torrents?.[0];
   if (!t) return null;
   return {
-    id: t.id, name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
+    id: t.id, hash: lowerHash(t.hashString), name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
     files: filesOf(t),
   };
 }
@@ -156,12 +156,12 @@ async function getTorrentInfo(id, target = null) {
 /** How much a torrent has seeded: its upload ratio and time spent seeding. */
 async function getSeedInfo(id, target = null) {
   const args = await rpc('torrent-get', {
-    ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'percentDone', 'uploadRatio', 'secondsSeeding', 'doneDate', 'wanted'],
+    ids: [id], fields: ['id', 'hashString', 'name', 'downloadDir', 'files', 'percentDone', 'uploadRatio', 'secondsSeeding', 'doneDate', 'wanted'],
   }, target);
   const t = args?.torrents?.[0];
   if (!t) return null;
   return {
-    id: t.id, name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
+    id: t.id, hash: lowerHash(t.hashString), name: t.name, downloadDir: t.downloadDir, percentDone: t.percentDone,
     // Transmission reports -1 (no data) and -2 (infinite: nothing downloaded) as ratios.
     uploadRatio: t.uploadRatio === -2 ? Infinity : Math.max(0, Number(t.uploadRatio) || 0),
     secondsSeeding: Number(t.secondsSeeding) || 0,
@@ -316,11 +316,11 @@ async function listQuarantined() {
   await Promise.all(listTargets().map(async (target) => {
     try {
       const args = await withTimeout(
-        rpc('torrent-get', { fields: ['id', 'name', 'labels', 'addedDate', 'metadataPercentComplete'] }, target),
+        rpc('torrent-get', { fields: ['id', 'hashString', 'name', 'labels', 'addedDate', 'metadataPercentComplete'] }, target),
         PROBE_TIMEOUT_MS * 3, null,
       );
       for (const t of args?.torrents || []) {
-        if ((t.labels || []).includes(QUARANTINE_LABEL)) out.push({ ...t, target: target.name });
+        if ((t.labels || []).includes(QUARANTINE_LABEL)) out.push({ ...t, hash: lowerHash(t.hashString), target: target.name });
       }
     } catch (err) {
       console.warn(`[transmission] "${target.name}" unreachable during quarantine sweep: ${err.message}`);
@@ -512,18 +512,19 @@ async function getTorrentProgress() {
   const map = new Map();
   await Promise.all(listTargets().map(async (target) => {
     try {
-      const torrents = await withTimeout(getTorrents(target), PROBE_TIMEOUT_MS * 3, null);
-      if (torrents === null) {
+      const args = await withTimeout(
+        rpc('torrent-get', { fields: ['id', 'hashString', 'percentDone'] }, target), PROBE_TIMEOUT_MS * 3, null);
+      if (args === null) {
         console.warn(`[transmission] "${target.name}" timed out while listing torrents`);
         return;
       }
-      for (const t of torrents) {
-        // Keyed by instance as well as id: ids restart at 1 on every box, so an
-        // id alone would read another machine's torrent as this one's progress.
-        map.set(progressKey(target.name, t.id), {
-          progress: Math.round((t.percentDone || 0) * 100),
-          done:     (t.percentDone || 0) >= 1,
-        });
+      for (const t of args.torrents || []) {
+        const p = { progress: Math.round((t.percentDone || 0) * 100), done: (t.percentDone || 0) >= 1, id: t.id, hash: lowerHash(t.hashString) };
+        // By hash — what rows are followed by — and, for rows recorded before
+        // hashes were kept, by this session's id. Both per instance: ids
+        // restart at 1 on every box.
+        if (p.hash) map.set(progressKey(target.name, p.hash), p);
+        map.set(progressKey(target.name, t.id), p);
       }
     } catch (err) {
       console.warn(`[transmission] "${target.name}" unreachable: ${err.message}`);
@@ -531,6 +532,8 @@ async function getTorrentProgress() {
   }));
   return map;
 }
+
+const { lowerHash, torrentRef } = require('./torrentref');
 
 /** Map key for getTorrentProgress(). */
 function progressKey(targetName, torrentId) {
@@ -552,5 +555,5 @@ module.exports = {
   getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent, setFilesUnwanted,
   listTorrents, setTorrentLocation, freeSpace, activeDownloads, stopTorrents, startTorrents,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
-  listTargets, resolveTarget, progressKey,
+  listTargets, resolveTarget, progressKey, torrentRef, lowerHash,
 };

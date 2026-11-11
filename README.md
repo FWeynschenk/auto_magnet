@@ -346,6 +346,36 @@ because those may be partly downloaded or started by hand.
 
 ---
 
+### Following a download
+
+A download is followed by its torrent's **info hash**, not by Transmission's torrent number.
+Transmission numbers its torrents 1, 2, 3… in load order every time it starts. So once torrents
+have been added and removed, a restart shifts the numbers, and a stored number can name a
+different download. Following numbers made episodes "finish" when another show's torrent
+finished, and that show's video got recorded as the episode's file.
+
+Every file is also checked against the item before it is used, by the same name rules that pick
+releases:
+- **Episode:** the file (or its folder) has this season and episode, and it is in the show's own
+  folder or named after the show.
+- **Film:** the title, and no other year.
+
+A file that fails is never recorded or played, and nothing is deleted on the strength of a
+torrent that turned out to be someone else's.
+
+Libraries recorded before this are repaired shortly after startup, and again by every library
+check (Settings → Status):
+- Links to another item's file are dropped, and the item is pointed at its own torrent (found by
+  its files' names) or its file on disk.
+- Subtitles that were fetched for the wrong file are moved aside (`.mixed-up.bak`), and the file's
+  real owner fetches its own.
+- Older downloads get their hash.
+- What can't be found says so on its card. **Redo** downloads it again.
+
+Removing a show or film also clears what the library made from it (file records, web versions,
+thumbnails, progress), so an item added later can't inherit them. The video files stay on disk,
+as before.
+
 ## After a download finishes
 
 Screening reads file *names*. Once a download completes, auto_magnet opens the

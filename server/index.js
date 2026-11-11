@@ -161,4 +161,10 @@ app.listen(PORT, HOST, () => {
   // reaching Transmission too.
   step('download disk guard', () => require('./diskguard').start());
   step('library check', () => require('./librarycheck').start());
+  // Items linked to the wrong file or torrent — Transmission renumbers its
+  // torrents when it restarts, and old rows followed those numbers — are put
+  // back on their own shortly after startup. Reads Transmission, never changes it.
+  step('library repair', () => setTimeout(() => {
+    require('./relink').repairLibrary().catch(err => console.error('[relink] repair failed:', err.message));
+  }, 20_000).unref());
 });

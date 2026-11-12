@@ -16,13 +16,17 @@
       <button class="ic" aria-label="Forward 10 seconds (→)" title="Forward 10 s (→)" @mousedown.prevent @click="skip(10)">
         <svg viewBox="0 0 24 24"><path d="M12 5V2l5 4-5 4V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z" /><text x="12" y="16.5" text-anchor="middle">10</text></svg>
       </button>
-      <div class="vol" @mousedown.prevent>
-        <button class="ic" :aria-label="muted ? 'Unmute (M)' : 'Mute (M)'" :title="muted ? 'Unmute (M)' : 'Mute (M)'" @click="toggleMute">
+      <div class="vol">
+        <button class="ic" :aria-label="muted ? 'Unmute (M)' : 'Mute (M)'" :title="muted ? 'Unmute (M)' : 'Mute (M)'" @mousedown.prevent @click="toggleMute">
           <svg v-if="muted || volume === 0" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.6 3 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4z" /></svg>
           <svg v-else viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z" /></svg>
         </button>
         <input class="vol-slider" type="range" min="0" max="1" step="0.05" :value="muted ? 0 : volume" aria-label="Volume"
-          @input="setVolume(Number($event.target.value))" @keydown.stop />
+          @input="setVolume(Number($event.target.value))" @keydown.stop @pointerup="$event.target.blur()" />
+        <!-- The slider takes the mouse as it is (a held-back mousedown, as the
+             buttons have, is a slider that can't be dragged), and lets go of
+             focus once the mouse is up, so Space and the arrows are the
+             player's again. -->
       </div>
       <span class="time">{{ fmt(current) }} <span class="dim">/ {{ fmt(duration) }}</span></span>
 

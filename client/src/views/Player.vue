@@ -1053,14 +1053,19 @@ watchRef(() => [props.kind, props.id], load);
 .stage { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
 .screen { position: relative; width: 100%; display: flex; align-items: center; justify-content: center; background: #000; user-select: none; }
 .screen.idle { cursor: none; }
-.video { width: 100%; max-height: calc(100vh - 150px); background: #000; display: block; }
+/* Just under full opacity, so Chrome never hands the video to the graphics
+   card as a plane of its own. On Windows it does that in full screen, and the
+   page drawn over it — the control bar — then only showed while the mouse was
+   on it. 0.999 is not a visible change: at most a quarter of one shade of 255. */
+.video { width: 100%; max-height: calc(100vh - 150px); background: #000; display: block; opacity: .999; }
 .screen.fs .video, .screen:fullscreen .video { max-height: 100vh; height: 100vh; }
 .screen .controls.hidden { opacity: 0; pointer-events: none; }
-/* Subtitles sit above the control bar while it shows, as they did with the
-   browser's own controls, and drop back down when it fades. (Chrome, Edge,
+/* Subtitles keep a little room from the bottom edge, sit above the control
+   bar while it shows, and drop back down when it fades. (Chrome, Edge,
    Safari; Firefox keeps them where they are.) */
-.screen .video::-webkit-media-text-track-container { transition: transform .2s; }
+.screen .video::-webkit-media-text-track-container { transition: transform .2s; transform: translateY(-5%); }
 .screen:not(.idle) .video::-webkit-media-text-track-container { transform: translateY(-72px); }
+.screen.fs:not(.idle) .video::-webkit-media-text-track-container { transform: translateY(-104px); }
 .big-play {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2;
   width: 72px; height: 72px; border-radius: 50%; border: 0; padding: 0;

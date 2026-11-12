@@ -928,12 +928,22 @@ function poke() {
   hideTimer = setTimeout(() => {
     const v = video.value;
     if (!v || v.paused) return;
-    if (nearBar(pointer) || screen.value?.querySelector('.controls:focus-within')) { poke(); return; }
+    // Kept while the mouse is at the bar, or the keyboard is in it (a click
+    // also leaves focus behind — on the timeline after a seek — and that
+    // shouldn't pin the bar up for good).
+    if (nearBar(pointer) || screen.value?.querySelector('.controls :focus-visible')) { poke(); return; }
     controlsShown.value = false;
   }, 3000);
 }
 
+/**
+ * The mouse moved over the screen. Only a real move counts: Chrome also sends
+ * a "move" to a mouse that is resting when the page changes under it — as it
+ * does when the bar fades (the cursor hides, the subtitles drop) — and each one
+ * brought the bar straight back, to fade again a moment later, over and over.
+ */
 function onScreenMove(e) {
+  if (pointer && e.clientX === pointer.x && e.clientY === pointer.y) return;
   pointer = { x: e.clientX, y: e.clientY };
   poke();
 }

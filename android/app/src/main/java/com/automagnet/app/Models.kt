@@ -34,6 +34,8 @@ data class Item(
     val season: Int? = null,
     val episode: Int? = null,
     @SerialName("still_url") val stillUrl: String? = null,
+    // A frame from the episode itself, from the server: for when TMDB has no picture.
+    @SerialName("frame_url") val frameUrl: String? = null,
     val overview: String? = null,
     val status: String? = null,
     @SerialName("air_date") val airDate: String? = null,
@@ -165,6 +167,8 @@ data class ItemDetail(
     val season: Int? = null,
     val episode: Int? = null,
     @SerialName("still_url") val stillUrl: String? = null,
+    // A frame from the episode itself, from the server: for when TMDB has no picture.
+    @SerialName("frame_url") val frameUrl: String? = null,
     val overview: String? = null,
     val playback: Playback,
     val subtitles: List<Subtitle> = emptyList(),

@@ -28,7 +28,8 @@
         <li v-for="e in current.episodes" :key="e.id" :class="{ off: e.status !== 'done' }">
           <component :is="e.status === 'done' ? 'RouterLink' : 'div'" :to="`/play/episode/${e.id}`" class="ep">
             <div class="still">
-              <img v-if="e.still_url" :src="e.still_url" alt="" loading="lazy" />
+              <!-- TMDB's picture of the episode, else a frame from it (or when TMDB's won't load). -->
+              <img v-if="stillOf(e)" :key="stillOf(e)" :src="stillOf(e)" alt="" loading="lazy" @error="noStill[e.id] = (noStill[e.id] || 0) + 1" />
               <div v-if="pct(e) > 0 && !e.progress?.watched" class="bar"><div :style="{ width: pct(e) + '%' }" /></div>
             </div>
             <div class="ep-meta">
@@ -67,6 +68,9 @@ const loading = ref(true);
 const error = ref('');
 const season = ref(null);
 
+// How many of an episode's pictures failed to load, so the next one is tried.
+const noStill = ref({});
+const stillOf = (e) => [e.still_url, e.frame_url].filter(Boolean)[noStill.value[e.id] || 0] || null;
 const ep = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`;
 const pct = (e) => (e.progress && (e.progress.duration || e.duration) ? (e.progress.position / (e.progress.duration || e.duration)) * 100 : 0);
 const statusText = (e) => ({ downloading: 'Downloading…', upcoming: e.air_date ? `Airs ${e.air_date}` : 'Upcoming', pending: 'Waiting for a release', deleted: 'Deleted from disk' }[e.status] || e.status);

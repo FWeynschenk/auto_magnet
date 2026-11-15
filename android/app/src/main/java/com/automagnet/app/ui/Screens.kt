@@ -313,7 +313,7 @@ fun ShowScreen(id: Int, back: () -> Unit, openItem: (Item) -> Unit, onAuth: () -
                                     Modifier.fillMaxWidth().clickable(enabled = playable) { openItem(e) },
                                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 ) {
-                                    Artwork(e.stillUrl, e.title, true, progressOf(e), e.progress?.watched == true, modifier = Modifier.width(130.dp))
+                                    Artwork(e.stillUrl ?: e.frameUrl, e.title, true, progressOf(e), e.progress?.watched == true, modifier = Modifier.width(130.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text("${e.episode}. ${e.title}", fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                             color = if (playable) androidx.compose.ui.graphics.Color.White else Muted)
@@ -492,8 +492,9 @@ fun DetailScreen(kind: String, id: Int, back: () -> Unit, onAuth: () -> Unit) {
                 return@Box
             }
             Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val wide = kind == "episode" && item.stillUrl != null
-                Artwork(if (wide) item.stillUrl else item.posterUrl, item.heading, wide, progressOf(item), item.progress?.watched == true,
+                val still = item.stillUrl ?: item.frameUrl
+                val wide = kind == "episode" && still != null
+                Artwork(if (wide) still else item.posterUrl, item.heading, wide, progressOf(item), item.progress?.watched == true,
                     modifier = if (wide) Modifier.fillMaxWidth() else Modifier.width(180.dp))
                 Text(item.heading, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Text(listOfNotNull(item.subheading.ifEmpty { null }, item.duration?.let { "${(it / 60).toInt()} min" }).joinToString(" · "), color = Muted)

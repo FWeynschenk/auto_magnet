@@ -524,7 +524,11 @@ async function record(kind, id, file, { probed = null } = {}) {
   const info = probed?.format ? probed : await probe(file);
   const { plan, reason } = planFor(info, wantedLanguages());
   const duration = Number(info.format?.duration) || null;
-  if (existing) removeWebVersion(kind, id); // the file changed, so its web version is stale
+  if (existing) {
+    // The file changed: its web version, seek thumbnails and picture are of the old one.
+    removeWebVersion(kind, id);
+    require('./thumbs').remove(kind, id);
+  }
   const row = rows.upsert(kind, id, {
     item_key: require('./identity').itemKey(itemFor(kind, id)),
     path: file, size: st.size, mtime: Math.floor(st.mtimeMs), duration,
@@ -1609,7 +1613,7 @@ async function prewarmSubtitles(media) {
 }
 
 module.exports = {
-  WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, pickFile,
+  WEB_ROOT, KINDS, rows, itemFor, episodeMeta, probe, planFor, chooseAudio, mainVideo, isHdr, pickFile,
   record, locate, indexPass, enqueue, startWorker, waitingFor, DEMAND_PRIORITY, MAX_DEMAND, reserveBytes, pump,
   SOON_PRIORITY, DEMAND_TTL_MS, SOON_TTL_MS, touch, estimateBytes, roomFor, learnEstimate, expireRequests,
   dirBytes, largestWebVersions, webUsage, buildEncodeArgs, pickEncoder, webDir, gpuDecodable, touchWeb, dropUnwatched, preparesAhead, spaceStatus, spaceOk, freeBytes,

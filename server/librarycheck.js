@@ -100,6 +100,7 @@ async function run({ tx = require('./transmission') } = {}) {
   };
   scan(media.WEB_ROOT, 'web version');
   scan(path.join(media.WEB_ROOT, 'thumbs'), 'thumbnails');
+  scan(path.join(media.WEB_ROOT, 'stills'), 'episode pictures');
   scan(path.join(media.WEB_ROOT, 'subs'), 'subtitles');
 
   const report = {

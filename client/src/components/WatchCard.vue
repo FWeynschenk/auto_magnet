@@ -1,7 +1,7 @@
 <template>
   <RouterLink :to="to" class="wcard" :class="{ wide }">
     <div class="art">
-      <img v-if="image" :src="image" :alt="''" loading="lazy" />
+      <img v-if="image" :key="image" :src="image" :alt="''" loading="lazy" @error="failed++" />
       <div v-else class="art-fallback">{{ initials }}</div>
       <span v-if="item.progress?.watched" class="badge watched" title="Watched">✓</span>
       <span v-else-if="badge" class="badge">{{ badge }}</span>
@@ -15,7 +15,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 const props = defineProps({
   item: { type: Object, required: true },
@@ -28,7 +28,13 @@ const props = defineProps({
 const ep = (i) => `S${String(i.season).padStart(2, '0')}E${String(i.episode).padStart(2, '0')}`;
 
 const to = computed(() => (props.show ? `/watch/show/${props.item.id}` : `/play/${props.item.kind}/${props.item.id}`));
-const image = computed(() => (props.wide && props.item.still_url) || props.item.poster_url || null);
+// What to show, best first: an episode's TMDB picture, then a frame from the
+// episode itself, then the show's poster. One that won't load gives way to
+// the next.
+const images = computed(() => [...(props.wide ? [props.item.still_url, props.item.frame_url] : []), props.item.poster_url].filter(Boolean));
+const failed = ref(0);
+watch(images, () => { failed.value = 0; });
+const image = computed(() => images.value[failed.value] || null);
 const title = computed(() => (props.show || props.item.kind === 'movie') ? props.item.title : props.item.show_title);
 const sub = computed(() => {
   const i = props.item;

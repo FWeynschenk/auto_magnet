@@ -131,37 +131,50 @@ function remove(kind, id) {
 // A picture of an episode for its card, for episodes TMDB has none for: one
 // frame from about a third of the way in (past the opening, before the end),
 // the most typical of the keyframes around it so a black cut or a blur isn't
-// what's shown. HDR is tone-mapped, or it comes out grey. Made the first time
-// a card asks, a couple at a time, and kept beside the seek thumbnails.
+// what's shown. HDR is tone-mapped, or it comes out grey.
+//
+// Made in the background, one at a time and at low priority, never while a
+// request waits: a season's page asks for a dozen at once, and the browser
+// has only six connections to the server — waiting on ffmpeg, they held up
+// everything else on the page. Asking for one that isn't made yet queues it
+// and answers "not yet" straight away; the next visit has it.
 
 const STILL_W = 480;
 const stillDir = (kind, id) => path.join(root(), 'stills', `${kind}-${id}`);
 const stillFile = (kind, id) => path.join(stillDir(kind, id), 'still.jpg');
-const stillJobs = new Map();       // key → promise, while being made
-const stillFailed = new Map();     // key → when it last failed: not tried again for an hour
-const STILL_PARALLEL = 2;
-let stillRunning = 0;
-const stillWaiting = [];
+const stillQueue = [];             // keys, oldest first
+const stillFailed = new Map();     // key → when it last failed: not tried again for a day
+let stillBusy = false;
 
-function runFfmpeg(args) {
+function runFfmpeg(args, { nice = false } = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    if (nice) { try { require('os').setPriority(p.pid, 15); } catch (_) {} }
     let err = '';
     p.stderr.on('data', (d) => { err = (err + d).slice(-2000); });
     p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').pop() || `ffmpeg exited ${code}`))));
+    p.on('close', (code) => (code === 0 ? resolve(err) : reject(new Error(err.trim().split('\n').pop() || `ffmpeg exited ${code}`))));
   });
 }
 
-/** The ffmpeg arguments for a still of `src`. Pure, for tests. */
-function stillArgs(src, out, { duration = 0, hdr = false } = {}) {
+/**
+ * The ffmpeg arguments for a still of `src`, in the order to try them: the
+ * typical keyframe a third of the way in; then any frame there, decoded the
+ * plain way; then the first frame. Pure, for tests.
+ */
+function stillArgs(src, out, { duration = 0, hdr = false, stream = null } = {}) {
   const at = duration > 0 ? Math.floor(duration / 3) : 60;
   const tone = hdr ? ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709',
     'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv'] : [];
-  return ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-ss', String(at), '-skip_frame', 'nokey', '-i', src,
-    '-map', '0:v:0', '-an', '-sn', '-dn',
-    '-vf', [...tone, 'thumbnail=8', `scale=${STILL_W}:-2`, 'format=yuvj420p'].join(','),
-    '-frames:v', '1', '-q:v', '4', out];
+  const map = ['-map', stream === null ? '0:v:0' : `0:${stream}`];
+  const tail = (filters) => ['-an', '-sn', '-dn', '-vf', [...tone, ...filters, `scale=${STILL_W}:-2`, 'format=yuvj420p'].join(','),
+    '-vsync', 'vfr', '-frames:v', '1', '-update', '1', '-q:v', '4', out];
+  const head = ['-nostdin', '-y', '-hide_banner', '-loglevel', 'warning'];
+  return [
+    [...head, '-ss', String(at), '-skip_frame', 'nokey', '-i', src, ...map, ...tail(['thumbnail=8'])],
+    [...head, '-ss', String(at), '-i', src, ...map, ...tail([])],
+    [...head, '-i', src, ...map, ...tail([])],
+  ];
 }
 
 async function makeStill(kind, id) {
@@ -175,53 +188,57 @@ async function makeStill(kind, id) {
   let info = null;
   try { info = JSON.parse(row.probe); } catch (_) {}
   const v = info && media.mainVideo(info.streams || []);
-  // From the web version the video is already SDR.
-  const hdr = src === row.path && media.isHdr(v);
+  const original = src === row.path;
+  // From the web version the video is already SDR, and its only video stream.
+  const hdr = original && media.isHdr(v);
+  const stream = original && v && Number.isInteger(v.index) ? v.index : null;
   const duration = row.duration || Number(info?.format?.duration) || 0;
   fs.mkdirSync(stillDir(kind, id), { recursive: true });
   const tmp = path.join(stillDir(kind, id), 'still.tmp.jpg');
-  try {
-    await runFfmpeg(stillArgs(src, tmp, { duration, hdr }));
-  } catch (err) {
-    // Shorter than a third in? Start at the beginning instead.
-    if (!fs.existsSync(tmp) || !fs.statSync(tmp).size) await runFfmpeg(stillArgs(src, tmp, { duration: 0.1, hdr }));
+  const made = () => fs.existsSync(tmp) && fs.statSync(tmp).size > 0;
+  let why = '';
+  for (const args of stillArgs(src, tmp, { duration, hdr, stream })) {
+    fs.rmSync(tmp, { force: true });
+    try { why = (await runFfmpeg(args, { nice: true })).trim().split('\n').pop() || 'no frame came out'; } catch (err) { why = err.message; }
+    if (made()) break;
   }
-  if (!fs.existsSync(tmp) || !fs.statSync(tmp).size) throw new Error('no frame came out');
+  if (!made()) throw new Error(why || 'no frame came out');
   fs.renameSync(tmp, stillFile(kind, id));
   return stillFile(kind, id);
 }
 
-/**
- * The still's path, making it first if need be (waits for that, a second or
- * two). null when there is no file to take one from, or it can't be made.
- */
-async function still(kind, id) {
+async function pumpStills() {
+  if (stillBusy) return;
+  stillBusy = true;
+  try {
+    while (stillQueue.length) {
+      const key = stillQueue[0];
+      const [kind, id] = [key.split(':')[0], Number(key.split(':')[1])];
+      try { await makeStill(kind, id); } catch (err) {
+        stillFailed.set(key, Date.now());
+        log.warn(`episode picture failed: ${err.message}`, { type: kind, id });
+      }
+      stillQueue.shift();
+    }
+  } finally { stillBusy = false; }
+}
+
+/** Its path if made; otherwise null, and it is queued to be made (unless it failed lately). */
+function still(kind, id) {
   const file = stillFile(kind, id);
   if (fs.existsSync(file)) return file;
   const key = `${kind}:${id}`;
-  if (Date.now() - (stillFailed.get(key) || 0) < 3600e3) return null;
-  if (!stillJobs.has(key)) {
-    const job = (async () => {
-      if (stillRunning >= STILL_PARALLEL) await new Promise(r => stillWaiting.push(r));
-      stillRunning++;
-      try { return await makeStill(kind, id); } catch (err) {
-        stillFailed.set(key, Date.now());
-        log.warn(`episode picture failed: ${err.message}`, { type: kind, id });
-        return null;
-      } finally {
-        stillRunning--;
-        stillWaiting.shift()?.();
-        stillJobs.delete(key);
-      }
-    })();
-    stillJobs.set(key, job);
+  if (Date.now() - (stillFailed.get(key) || 0) < 24 * 3600e3) return null;
+  if (!stillQueue.includes(key) && stillQueue.length < 1000) {
+    stillQueue.push(key);
+    setImmediate(pumpStills);
   }
-  return stillJobs.get(key);
+  return null;
 }
 
-/** Its version, for the URL: changes when it is made again. */
+/** When it was made (part of its URL, so a new one is never served from cache); 0 when there is none. */
 function stillAt(kind, id) {
   try { return Math.floor(fs.statSync(stillFile(kind, id)).mtimeMs); } catch (_) { return 0; }
 }
 
-module.exports = { ensure, index, sheetFile, remove, dirFor, madeAt, INTERVAL, _make: make, still, stillAt, stillArgs, stillDir };
+module.exports = { ensure, index, sheetFile, remove, dirFor, madeAt, INTERVAL, _make: make, still, stillAt, stillArgs, stillDir, _makeStill: makeStill };

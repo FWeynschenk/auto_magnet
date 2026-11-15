@@ -60,11 +60,22 @@
         v-show="pb && !fatal && (playing || pb.mode === 'file' || pb.mode === 'hls')"
         ref="screen"
         class="screen"
-        :class="{ idle: !controlsShown, fs: isFullscreen }"
+        :class="[{ idle: !controlsShown, fs: isFullscreen }, `crop-${crop}`]"
         @pointermove="onScreenMove"
         @pointerdown="onScreenDown"
       >
         <div v-if="notice" class="notice" role="status">{{ notice }}</div>
+
+        <!-- What's playing, over the top of the picture in full screen (the
+             page's own header says it otherwise). Comes and goes with the bar. -->
+        <div v-if="item && isFullscreen && playing" class="title-osd" :class="{ hidden: !controlsShown }">
+          <div class="t">{{ item.kind === 'episode' ? item.show_title : item.title }}</div>
+          <div v-if="item.kind === 'episode'" class="s">
+            Season {{ item.season }} · Episode {{ item.episode }}<template v-if="item.title"> — {{ item.title }}</template>
+          </div>
+          <div v-else-if="item.year" class="s">{{ item.year }}</div>
+        </div>
+        <div v-if="flash" class="flash" role="status">{{ flash }}</div>
 
         <video
           ref="video"
@@ -103,9 +114,11 @@
           :subs-available="!!item?.subtitles?.some(s => s.available)"
           :subs-on="!!subId"
           :has-next="!!item?.next"
+          :crop="crop"
           @fullscreen="toggleFullscreen"
           @subs="toggleSubs"
           @next="playNext"
+          @crop="setCrop"
         />
 
         <div v-if="resumedAt" class="toast-resume">
@@ -882,6 +895,7 @@ function onKey(e) {
   else if (k === 'z') nudge(-250);
   else if (k === 'x') nudge(250);
   else if (k === 'n') playNext();
+  else if (k === 'r') setCrop(CROP_MODES[(CROP_MODES.indexOf(crop.value) + 1) % CROP_MODES.length]);
   else if (k === 's' && showSkip.value) skipIntro();
   else if (k === 's' && showSkipCredits.value) skipCredits();
   else if (k === 'a' && audioTracks.value.length > 1) {
@@ -904,6 +918,7 @@ const buffering = ref(false);
 let hideTimer = null;
 let downWhileHidden = false;
 let downNearBar = false;
+let downWithMenu = false;
 let pointer = null;   // last { x, y } of the mouse over the screen
 let lastSubId = '';
 
@@ -931,7 +946,7 @@ function poke() {
     // Kept while the mouse is at the bar, or the keyboard is in it (a click
     // also leaves focus behind — on the timeline after a seek — and that
     // shouldn't pin the bar up for good).
-    if (nearBar(pointer) || screen.value?.querySelector('.controls :focus-visible')) { poke(); return; }
+    if (nearBar(pointer) || screen.value?.querySelector('.controls :focus-visible, .crop-menu')) { poke(); return; }
     controlsShown.value = false;
   }, 3000);
 }
@@ -963,6 +978,7 @@ function onScreenDown(e) {
   pointer = { x: e.clientX, y: e.clientY };
   downWhileHidden = !controlsShown.value;
   downNearBar = nearBar(pointer);
+  downWithMenu = !!screen.value?.querySelector('.crop-menu');
   poke();
 }
 
@@ -972,6 +988,8 @@ function onVideoTap(e) {
   // A tap on a touch screen, or a click where the faded bar was: bring the
   // controls back, don't pause — that click was meant for a button.
   if (downWhileHidden && (e.pointerType === 'touch' || downNearBar)) return;
+  // A click away from an open menu only closes it.
+  if (downWithMenu) return;
   togglePlay();
 }
 
@@ -996,6 +1014,46 @@ function toggleSubs() {
   }
   onSubMenu();
 }
+
+// ─── Picture: fit, fill, zoom or stretch ─────────────────────────────────────
+// Remembered in this browser, per show (or per film): a 4:3 show can stay
+// filled on the TV and fitted on the laptop.
+
+const CROP_MODES = ['fit', 'fill', 'zoom', 'stretch'];
+const CROP_NAMES = { fit: 'Fit', fill: 'Fill screen', zoom: 'Zoom', stretch: 'Stretch' };
+const CROP_KEY = 'amagnet_crop';
+const crop = ref('fit');
+const flash = ref('');
+let flashTimer = null;
+
+function cropSlot() {
+  const i = item.value;
+  if (!i) return null;
+  return i.kind === 'episode' ? `show:${i.show_id}` : `movie:${props.id}`;
+}
+function readCrops() {
+  try { return JSON.parse(localStorage.getItem(CROP_KEY) || '{}') || {}; } catch (_) { return {}; }
+}
+function loadCrop() {
+  const slot = cropSlot();
+  const m = slot && readCrops()[slot];
+  crop.value = CROP_MODES.includes(m) ? m : 'fit';
+}
+function setCrop(m) {
+  if (!CROP_MODES.includes(m)) return;
+  crop.value = m;
+  const slot = cropSlot();
+  if (slot) {
+    const all = readCrops();
+    if (m === 'fit') delete all[slot]; else all[slot] = m;
+    try { localStorage.setItem(CROP_KEY, JSON.stringify(all)); } catch (_) {}
+  }
+  flash.value = CROP_NAMES[m];
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flash.value = ''; }, 1500);
+  poke();
+}
+watchRef(() => item.value && cropSlot(), loadCrop, { immediate: true });
 
 // Volume and mute, per browser.
 const VOLUME_KEY = 'amagnet_volume';
@@ -1035,6 +1093,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
   clearTimeout(hideTimer);
+  clearTimeout(flashTimer);
   if (document.fullscreenElement && document.fullscreenElement === screen.value) document.exitFullscreen().catch(() => {});
   video.value?.textTracks.removeEventListener('change', onTextTracksChange);
   clearInterval(busyTimer);
@@ -1060,12 +1119,30 @@ watchRef(() => [props.kind, props.id], load);
 .video { width: 100%; max-height: calc(100vh - 150px); background: #000; display: block; opacity: .999; }
 .screen.fs .video, .screen:fullscreen .video { max-height: 100vh; height: 100vh; }
 .screen .controls.hidden { opacity: 0; pointer-events: none; }
+
+/* Picture modes. Fit is the video's own shape. The others first make the
+   video as big as the space it has (in a window as in full screen), then:
+   fill crops what sticks out, stretch pulls it to the space's shape, and zoom
+   enlarges by a third, which takes away black bars that are part of the
+   picture (a 2.39:1 film inside a 16:9 frame). */
+.screen:not(.fs).crop-fill .video, .screen:not(.fs).crop-stretch .video, .screen:not(.fs).crop-zoom .video { height: calc(100vh - 150px); }
+.screen.crop-fill .video { object-fit: cover; }
+.screen.crop-stretch .video { object-fit: fill; }
+/* clip-path is applied before the scale: an eighth off each side, enlarged by
+   a third, is exactly the space the video had. */
+.screen.crop-zoom .video { object-fit: contain; transform: scale(1.3333); clip-path: inset(12.5%); }
 /* Subtitles keep a little room from the bottom edge, sit above the control
    bar while it shows, and drop back down when it fades. (Chrome, Edge,
    Safari; Firefox keeps them where they are.) */
 .screen .video::-webkit-media-text-track-container { transition: transform .2s; transform: translateY(-5%); }
 .screen:not(.idle) .video::-webkit-media-text-track-container { transform: translateY(-72px); }
 .screen.fs:not(.idle) .video::-webkit-media-text-track-container { transform: translateY(-104px); }
+/* Zoom enlarges the subtitles with the picture: they are shrunk back by as
+   much, so they stay their size and on the screen. (Firefox can't, and shows
+   them zoomed.) */
+.screen.crop-zoom .video::-webkit-media-text-track-container { transform: scale(.75) translateY(-5%); }
+.screen.crop-zoom:not(.idle) .video::-webkit-media-text-track-container { transform: scale(.75) translateY(-72px); }
+.screen.crop-zoom.fs:not(.idle) .video::-webkit-media-text-track-container { transform: scale(.75) translateY(-104px); }
 .big-play {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2;
   width: 72px; height: 72px; border-radius: 50%; border: 0; padding: 0;
@@ -1090,6 +1167,18 @@ watchRef(() => [props.kind, props.id], load);
 .warn { color: var(--yellow); }
 .prog { width: 280px; max-width: 80vw; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .prog div { height: 100%; background: var(--accent); transition: width .5s; }
+.title-osd {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 2; pointer-events: none;
+  padding: 22px 32px 48px; color: #fff; transition: opacity .2s;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, .75), rgba(0, 0, 0, .35) 60%, transparent);
+}
+.title-osd.hidden { opacity: 0; }
+.title-osd .t { font-size: 26px; font-weight: 700; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.title-osd .s { font-size: 17px; margin-top: 4px; color: rgba(255, 255, 255, .85); text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.flash {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 4; pointer-events: none;
+  background: rgba(0, 0, 0, .7); color: #fff; font-size: 20px; font-weight: 600; padding: 10px 18px; border-radius: 8px;
+}
 .notice {
   position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 2; max-width: min(640px, calc(100% - 32px));
   background: rgba(127, 29, 29, .92); border: 1px solid var(--red); color: #fff;

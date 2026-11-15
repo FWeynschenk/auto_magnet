@@ -39,7 +39,22 @@
         :title="subsOn ? 'Subtitles off (C)' : 'Subtitles on (C)'" @mousedown.prevent @click="$emit('subs')">
         <svg viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1zm7 0h-1.5v-.5h-2v3h2V13H18v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1z" /></svg>
       </button>
-      <button v-if="pipOk" class="ic" aria-label="Picture in picture" title="Picture in picture" @mousedown.prevent @click="togglePip">
+      <span class="crop-wrap">
+        <button class="ic" :class="{ on: crop !== 'fit' }" aria-haspopup="menu" :aria-expanded="cropOpen"
+          :aria-label="`Picture: ${CROP_LABEL[crop]} (R)`" :title="`Picture: ${CROP_LABEL[crop]} (R)`"
+          @mousedown.prevent @click="cropOpen = !cropOpen">
+          <svg viewBox="0 0 24 24"><path d="M19 12h-2v3h-3v2h5zM7 9h3V7H5v5h2zm14-6H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H3V5h18z" /></svg>
+        </button>
+        <div v-if="cropOpen" ref="cropMenu" class="crop-menu" role="menu" aria-label="Picture">
+          <div class="crop-head">Picture</div>
+          <button v-for="m in CROP_MODES" :key="m" role="menuitemradio" :aria-checked="crop === m" :class="{ sel: crop === m }"
+            @mousedown.prevent @click="pick(m)">
+            <span class="tick">{{ crop === m ? '✓' : '' }}</span>
+            <span class="lbl">{{ CROP_LABEL[m] }}<small>{{ CROP_HINT[m] }}</small></span>
+          </button>
+        </div>
+      </span>
+      <button v-if="pipOk" class="ic pip" aria-label="Picture in picture" title="Picture in picture" @mousedown.prevent @click="togglePip">
         <svg viewBox="0 0 24 24"><path d="M19 7h-8v6h8zm2-4H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H3V5h18z" /></svg>
       </button>
       <button class="ic" :aria-label="fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'" :title="fullscreen ? 'Exit full screen (F)' : 'Full screen (F)'"
@@ -63,8 +78,27 @@ const props = defineProps({
   subsAvailable: { type: Boolean, default: false },
   subsOn: { type: Boolean, default: false },
   hasNext: { type: Boolean, default: false },
+  crop: { type: String, default: 'fit' },
 });
-defineEmits(['fullscreen', 'subs', 'next']);
+const emit = defineEmits(['fullscreen', 'subs', 'next', 'crop']);
+
+// How the picture fills the screen. Chosen in the player, remembered by it.
+const CROP_MODES = ['fit', 'fill', 'zoom', 'stretch'];
+const CROP_LABEL = { fit: 'Fit', fill: 'Fill screen', zoom: 'Zoom', stretch: 'Stretch' };
+const CROP_HINT = {
+  fit: 'The whole picture; black bars where its shape isn\'t the screen\'s',
+  fill: 'No black bars: the edges that don\'t fit are cut off',
+  zoom: 'For black bars that are part of the picture itself',
+  stretch: 'No black bars, nothing cut off — the picture is pulled out of shape',
+};
+const cropOpen = ref(false);
+const cropMenu = ref(null);
+function pick(m) { cropOpen.value = false; emit('crop', m); }
+// A click anywhere else closes the menu — on the click, not the press, so the
+// player can still see the menu was open and not take that click as a pause.
+function onDocDown(e) {
+  if (cropOpen.value && !e.target.closest?.('.crop-wrap')) cropOpen.value = false;
+}
 
 const paused = ref(true);
 const current = ref(0);
@@ -121,10 +155,10 @@ async function togglePip() {
 const EVENTS = ['play', 'pause', 'timeupdate', 'durationchange', 'loadedmetadata', 'volumechange', 'seeked', 'ended'];
 function bind(v, on) { for (const e of EVENTS) v?.[on ? 'addEventListener' : 'removeEventListener'](e, sync); }
 watch(() => props.video, (v, old) => { bind(old, false); bind(v, true); sync(); });
-onMounted(() => { bind(props.video, true); sync(); });
-onBeforeUnmount(() => bind(props.video, false));
+onMounted(() => { bind(props.video, true); sync(); document.addEventListener('click', onDocDown, true); });
+onBeforeUnmount(() => { bind(props.video, false); document.removeEventListener('click', onDocDown, true); });
 
-defineExpose({ toggle, skip, toggleMute, setVolume });
+defineExpose({ toggle, skip, toggleMute, setVolume, closeMenus: () => { cropOpen.value = false; } });
 </script>
 
 <style scoped>
@@ -150,6 +184,22 @@ defineExpose({ toggle, skip, toggleMute, setVolume });
 .time { color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; margin-left: 8px; white-space: nowrap; }
 .dim { color: rgba(255, 255, 255, .65); }
 .spacer { flex: 1; }
+.crop-wrap { position: relative; display: inline-flex; }
+.crop-menu {
+  position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 5; width: 280px;
+  background: rgba(20, 20, 24, .96); border: 1px solid rgba(255, 255, 255, .15); border-radius: 8px;
+  padding: 4px; display: flex; flex-direction: column; box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+}
+.crop-head { color: rgba(255, 255, 255, .6); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 6px 10px 4px; }
+.crop-menu button {
+  background: transparent; border: 0; color: #fff; text-align: left; cursor: pointer;
+  display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 6px; font-size: 14px;
+}
+.crop-menu button:hover { background: rgba(255, 255, 255, .12); opacity: 1; }
+.crop-menu .tick { width: 14px; flex-shrink: 0; color: var(--accent); }
+.crop-menu .lbl { display: flex; flex-direction: column; gap: 2px; }
+.crop-menu small { color: rgba(255, 255, 255, .6); font-size: 12px; line-height: 1.3; }
+.crop-menu .sel .lbl { font-weight: 600; }
 /* Full screen is usually a big screen seen from further away: bigger targets. */
 .big { padding: 36px 16px 12px; }
 .big .row { gap: 6px; }
@@ -162,5 +212,11 @@ defineExpose({ toggle, skip, toggleMute, setVolume });
   .ic { padding: 5px; }
   .ic svg { width: 22px; height: 22px; }
   .vol-slider { display: none; }
+}
+/* A phone's width holds all but one: picture-in-picture, the one a phone
+   offers by itself when the app is left. */
+@media (max-width: 480px) {
+  .pip { display: none; }
+  .row { gap: 0; }
 }
 </style>

@@ -115,10 +115,12 @@
           :subs-on="!!subId"
           :has-next="!!item?.next"
           :crop="crop"
+          :loudness="loudness"
           @fullscreen="toggleFullscreen"
           @subs="toggleSubs"
           @next="playNext"
           @crop="setCrop"
+          @loudness="setLoudness"
         />
 
         <div v-if="resumedAt" class="toast-resume">
@@ -1055,6 +1057,76 @@ function setCrop(m) {
 }
 watchRef(() => item.value && cropSlot(), loadCrop, { immediate: true });
 
+// ─── Sound: as made, evened out, or night ────────────────────────────────────
+// A compressor in the browser between the video and the speakers: loud
+// scenes come down, quiet speech comes up. It works on everything that plays,
+// the original file included, without converting anything again. Kept per
+// browser: it is about where you watch, more than what.
+//
+// Measured in Chromium on tones from -40 to -6 dBFS (34 dB apart): Even out
+// leaves them 20 dB apart, Night 13 dB, with speech-level sound (-30 to
+// -24) about where it was. A limiter after it keeps the peaks from clipping.
+
+const LOUD_KEY = 'amagnet_loudness';
+const LOUD_SETTINGS = {
+  even: { threshold: -30, ratio: 4, trim: -9 },
+  night: { threshold: -36, ratio: 6, trim: -12 },
+};
+const LOUD_NAMES = { off: 'Sound as made', even: 'Sound evened out', night: 'Night sound' };
+const loudness = ref((() => {
+  try { const m = localStorage.getItem(LOUD_KEY); return LOUD_SETTINGS[m] ? m : 'off'; } catch (_) { return 'off'; }
+})());
+let audio = null;   // { ctx, src, comp, trim, lim } once built
+
+/**
+ * Route the video's sound for the chosen mode. The chain is built only once
+ * it is first wanted and the page may start sound (after a click or key):
+ * once the video feeds it, every sound goes through it, and a browser that
+ * won't start it yet would play the video silent.
+ */
+function routeAudio() {
+  const v = video.value;
+  if (!v) return;
+  if (!audio) {
+    if (loudness.value === 'off') return;
+    if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return;   // after the first click or key
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      const ctx = new AC();
+      audio = { ctx, src: ctx.createMediaElementSource(v), comp: ctx.createDynamicsCompressor(), trim: ctx.createGain(), lim: ctx.createDynamicsCompressor() };
+      audio.comp.knee.value = 10; audio.comp.attack.value = 0.01; audio.comp.release.value = 0.3;
+      audio.lim.threshold.value = -3; audio.lim.knee.value = 0; audio.lim.ratio.value = 20;
+      audio.lim.attack.value = 0.002; audio.lim.release.value = 0.1;
+    } catch (_) { audio = null; return; }
+  }
+  const { ctx, src, comp, trim, lim } = audio;
+  for (const n of [src, comp, trim, lim]) n.disconnect();
+  const set = LOUD_SETTINGS[loudness.value];
+  if (set) {
+    comp.threshold.value = set.threshold; comp.ratio.value = set.ratio;
+    trim.gain.value = Math.pow(10, set.trim / 20);
+    src.connect(comp); comp.connect(trim); trim.connect(lim); lim.connect(ctx.destination);
+  } else {
+    src.connect(ctx.destination);
+  }
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+}
+
+function setLoudness(m) {
+  if (m !== 'off' && !LOUD_SETTINGS[m]) return;
+  loudness.value = m;
+  try { if (m === 'off') localStorage.removeItem(LOUD_KEY); else localStorage.setItem(LOUD_KEY, m); } catch (_) {}
+  routeAudio();
+  flash.value = LOUD_NAMES[m];
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flash.value = ''; }, 1500);
+  poke();
+}
+// Chosen earlier but not started yet (the page opened without a click): the
+// first click or key, or play, starts it.
+const startAudio = () => { if (loudness.value !== 'off' && (!audio || audio.ctx.state === 'suspended')) routeAudio(); };
+
 // Volume and mute, per browser.
 const VOLUME_KEY = 'amagnet_volume';
 function saveVolume() {
@@ -1085,10 +1157,17 @@ onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange);
   restoreVolume();
   video.value?.textTracks.addEventListener('change', onTextTracksChange);
+  video.value?.addEventListener('play', startAudio);
+  document.addEventListener('pointerdown', startAudio, true);
+  document.addEventListener('keydown', startAudio, true);
+  routeAudio();
   load();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('pagehide', onHide);
+  document.removeEventListener('pointerdown', startAudio, true);
+  document.removeEventListener('keydown', startAudio, true);
+  audio?.ctx.close().catch(() => {});
   document.removeEventListener('click', onDocClick);
   document.removeEventListener('keydown', onKey);
   document.removeEventListener('fullscreenchange', onFullscreenChange);

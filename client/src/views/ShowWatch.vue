@@ -18,7 +18,7 @@
 
       <div class="season-tabs">
         <button v-for="s in data.seasons" :key="s.season" class="btn-ghost btn-sm" :class="{ on: s.season === season }"
-          @click="season = s.season">Season {{ s.season }}</button>
+          @click="pickSeason(s.season)">Season {{ s.season }}</button>
         <button v-if="current && current.episodes.some(e => e.status === 'done')" class="btn-ghost btn-sm mark" @click="markSeason">
           Mark season {{ seasonWatched ? 'unwatched' : 'watched' }}
         </button>
@@ -59,6 +59,7 @@ import { ref, computed, onMounted } from 'vue';
 import { watch } from '../api.js';
 import { notifyError, notifySuccess } from '../toast.js';
 import { isAdmin } from '../session.js';
+import { lastSeason, rememberSeason } from '../seasons.js';
 
 const props = defineProps({ id: { type: String, required: true } });
 const data = ref(null);
@@ -74,15 +75,35 @@ const current = computed(() => data.value?.seasons.find(s => s.season === season
 const done = computed(() => (data.value?.seasons || []).flatMap(s => s.episodes).filter(e => e.status === 'done'));
 const availableCount = computed(() => done.value.length);
 const seasonWatched = computed(() => current.value?.episodes.filter(e => e.status === 'done').every(e => e.progress?.watched));
-// Where to pick up: something half-watched, else the first unwatched episode.
-const resume = computed(() => done.value.find(e => e.progress?.position > 0 && !e.progress.watched)
-  || done.value.find(e => !e.progress?.watched) || null);
+// Where to pick up: from the episode watched most recently — itself if it is
+// half-watched, else the next one not yet watched. Not the first half-watched
+// episode in the list: one opened for a minute in season 3 would otherwise
+// win over season 1, being watched now.
+const resume = computed(() => {
+  const eps = done.value;
+  const latest = eps.filter(e => e.progress?.updated_at)
+    .sort((a, b) => String(b.progress.updated_at).localeCompare(String(a.progress.updated_at)))[0];
+  if (latest && !latest.progress.watched && latest.progress.position > 0) return latest;
+  if (latest) {
+    const after = eps.slice(eps.indexOf(latest) + 1).find(e => !e.progress?.watched);
+    if (after) return after;
+  }
+  return eps.find(e => e.progress?.position > 0 && !e.progress.watched) || eps.find(e => !e.progress?.watched) || null;
+});
+
+function pickSeason(s) {
+  season.value = s;
+  rememberSeason(Number(props.id), s);
+}
 
 async function load() {
   try {
     data.value = await watch.show(props.id);
     if (season.value === null) {
-      season.value = resume.value?.season ?? data.value.seasons.find(s => s.episodes.some(e => e.status === 'done'))?.season
+      // The season last picked or played in this browser, while it is still here.
+      const last = lastSeason(Number(props.id));
+      season.value = (last !== null && data.value.seasons.some(s => s.season === last) ? last : null)
+        ?? resume.value?.season ?? data.value.seasons.find(s => s.episodes.some(e => e.status === 'done'))?.season
         ?? data.value.seasons[0]?.season ?? null;
     }
   } catch (err) {

@@ -202,6 +202,7 @@
 <script setup>
 import { ask, current as asking } from '../dialog.js';
 import { ref, computed, onMounted, onBeforeUnmount, watch as watchRef, nextTick } from 'vue';
+import { rememberSeason } from '../seasons.js';
 import PlayerControls from '../components/PlayerControls.vue';
 import { useRouter } from 'vue-router';
 import Hls from 'hls.js';
@@ -328,6 +329,7 @@ async function load() {
     return;
   }
   pb.value = item.value.playback;
+  if (item.value.kind === 'episode') rememberSeason(Number(item.value.show_id), Number(item.value.season));
   loading.value = false;
   if (pb.value.mode === 'unavailable') { fatal.value = pb.value.error || 'This can\'t be played'; return; }
   const def = item.value.subtitles.find(s => s.default);

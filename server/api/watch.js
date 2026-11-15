@@ -55,6 +55,9 @@ function summary(item, prog) {
   else Object.assign(out, {
     show_id: item.show.id, show_title: item.show_title, season: item.season, episode: item.episode,
     still_url: item.still_url, air_date: item.air_date,
+    // A frame from the episode itself: for cards when TMDB has no picture
+    // (or it won't load). Made the first time it's asked for.
+    frame_url: m ? `${base(item.kind, item.id)}/still.jpg${thumbs.stillAt(item.kind, item.id) ? `?v=${thumbs.stillAt(item.kind, item.id)}` : ''}` : null,
   });
   return out;
 }
@@ -366,6 +369,16 @@ router.get('/items/:kind/:id/thumbs/:n.jpg', wrap(async (req, res) => {
   if (!Number.isInteger(n) || n < 1 || n > 999) throw bad('Not found', 404);
   const file = thumbs.sheetFile(kind, id, n);
   if (!fs.existsSync(file)) throw bad('Not found', 404);
+  res.type('image/jpeg');
+  res.set('Cache-Control', 'private, max-age=86400');
+  await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));
+}));
+
+/** A picture of an episode, taken from its video — see thumbs.still. */
+router.get('/items/:kind/:id/still.jpg', wrap(async (req, res) => {
+  const { kind, id } = params(req);
+  const file = await thumbs.still(kind, id);
+  if (!file) throw bad('Not found', 404);
   res.type('image/jpeg');
   res.set('Cache-Control', 'private, max-age=86400');
   await new Promise((resolve) => res.sendFile(file, { cacheControl: false }, () => resolve()));

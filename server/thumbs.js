@@ -124,6 +124,104 @@ function madeAt(kind, id) {
 
 function remove(kind, id) {
   fs.rmSync(dirFor(kind, id), { recursive: true, force: true });
+  fs.rmSync(stillDir(kind, id), { recursive: true, force: true });
 }
 
-module.exports = { ensure, index, sheetFile, remove, dirFor, madeAt, INTERVAL, _make: make };
+// ─── Stills ──────────────────────────────────────────────────────────────────
+// A picture of an episode for its card, for episodes TMDB has none for: one
+// frame from about a third of the way in (past the opening, before the end),
+// the most typical of the keyframes around it so a black cut or a blur isn't
+// what's shown. HDR is tone-mapped, or it comes out grey. Made the first time
+// a card asks, a couple at a time, and kept beside the seek thumbnails.
+
+const STILL_W = 480;
+const stillDir = (kind, id) => path.join(root(), 'stills', `${kind}-${id}`);
+const stillFile = (kind, id) => path.join(stillDir(kind, id), 'still.jpg');
+const stillJobs = new Map();       // key → promise, while being made
+const stillFailed = new Map();     // key → when it last failed: not tried again for an hour
+const STILL_PARALLEL = 2;
+let stillRunning = 0;
+const stillWaiting = [];
+
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => { err = (err + d).slice(-2000); });
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').pop() || `ffmpeg exited ${code}`))));
+  });
+}
+
+/** The ffmpeg arguments for a still of `src`. Pure, for tests. */
+function stillArgs(src, out, { duration = 0, hdr = false } = {}) {
+  const at = duration > 0 ? Math.floor(duration / 3) : 60;
+  const tone = hdr ? ['zscale=t=linear:npl=100', 'format=gbrpf32le', 'zscale=p=bt709',
+    'tonemap=tonemap=hable:desat=0', 'zscale=t=bt709:m=bt709:r=tv'] : [];
+  return ['-nostdin', '-y', '-hide_banner', '-loglevel', 'error', '-ss', String(at), '-skip_frame', 'nokey', '-i', src,
+    '-map', '0:v:0', '-an', '-sn', '-dn',
+    '-vf', [...tone, 'thumbnail=8', `scale=${STILL_W}:-2`, 'format=yuvj420p'].join(','),
+    '-frames:v', '1', '-q:v', '4', out];
+}
+
+async function makeStill(kind, id) {
+  const media = require('./media');
+  const row = media.rows.get(kind, id);
+  if (!row) return null;
+  const src = sourceOf(row);
+  if (!src) return null;
+  const free = media.freeBytes();
+  if (free !== null && free < 1e9) return null;
+  let info = null;
+  try { info = JSON.parse(row.probe); } catch (_) {}
+  const v = info && media.mainVideo(info.streams || []);
+  // From the web version the video is already SDR.
+  const hdr = src === row.path && media.isHdr(v);
+  const duration = row.duration || Number(info?.format?.duration) || 0;
+  fs.mkdirSync(stillDir(kind, id), { recursive: true });
+  const tmp = path.join(stillDir(kind, id), 'still.tmp.jpg');
+  try {
+    await runFfmpeg(stillArgs(src, tmp, { duration, hdr }));
+  } catch (err) {
+    // Shorter than a third in? Start at the beginning instead.
+    if (!fs.existsSync(tmp) || !fs.statSync(tmp).size) await runFfmpeg(stillArgs(src, tmp, { duration: 0.1, hdr }));
+  }
+  if (!fs.existsSync(tmp) || !fs.statSync(tmp).size) throw new Error('no frame came out');
+  fs.renameSync(tmp, stillFile(kind, id));
+  return stillFile(kind, id);
+}
+
+/**
+ * The still's path, making it first if need be (waits for that, a second or
+ * two). null when there is no file to take one from, or it can't be made.
+ */
+async function still(kind, id) {
+  const file = stillFile(kind, id);
+  if (fs.existsSync(file)) return file;
+  const key = `${kind}:${id}`;
+  if (Date.now() - (stillFailed.get(key) || 0) < 3600e3) return null;
+  if (!stillJobs.has(key)) {
+    const job = (async () => {
+      if (stillRunning >= STILL_PARALLEL) await new Promise(r => stillWaiting.push(r));
+      stillRunning++;
+      try { return await makeStill(kind, id); } catch (err) {
+        stillFailed.set(key, Date.now());
+        log.warn(`episode picture failed: ${err.message}`, { type: kind, id });
+        return null;
+      } finally {
+        stillRunning--;
+        stillWaiting.shift()?.();
+        stillJobs.delete(key);
+      }
+    })();
+    stillJobs.set(key, job);
+  }
+  return stillJobs.get(key);
+}
+
+/** Its version, for the URL: changes when it is made again. */
+function stillAt(kind, id) {
+  try { return Math.floor(fs.statSync(stillFile(kind, id)).mtimeMs); } catch (_) { return 0; }
+}
+
+module.exports = { ensure, index, sheetFile, remove, dirFor, madeAt, INTERVAL, _make: make, still, stillAt, stillArgs, stillDir };

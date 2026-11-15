@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.automagnet.app.Api
 import com.automagnet.app.Item
 
 val Bg = Color(0xFF111827)
@@ -69,7 +70,8 @@ fun Artwork(url: String?, fallback: String, wide: Boolean, progress: Float, watc
             .background(Surface)
     ) {
         if (url != null) {
-            AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            // Server pictures (an episode's frame) come as a path on the server.
+            AsyncImage(model = Api.abs(url), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         } else {
             Text(
                 fallback.split(" ").filter { it.isNotEmpty() }.take(2).joinToString("") { it.take(1).uppercase() },
@@ -102,7 +104,7 @@ fun progressOf(item: Item): Float {
 @Composable
 fun ItemCard(item: Item, wide: Boolean, width: Dp, onClick: () -> Unit) {
     Column(Modifier.width(width).clickable(onClick = onClick), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Artwork(if (wide) item.stillUrl ?: item.posterUrl else item.posterUrl, item.heading, wide, progressOf(item), item.progress?.watched == true)
+        Artwork(if (wide) item.stillUrl ?: item.frameUrl ?: item.posterUrl else item.posterUrl, item.heading, wide, progressOf(item), item.progress?.watched == true)
         Text(item.heading, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(item.subheading, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }

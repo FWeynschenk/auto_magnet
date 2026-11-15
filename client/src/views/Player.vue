@@ -82,7 +82,7 @@
           class="video"
           playsinline
           preload="metadata"
-          :poster="item?.still_url || undefined"
+          :poster="item?.still_url || item?.frame_url || undefined"
           @timeupdate="onTime"
           @play="onPlayState"
           @pause="onPlayState(); report(true)"

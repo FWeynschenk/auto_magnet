@@ -321,6 +321,7 @@ async function load() {
   upNext.value = false;
   resumedAt.value = 0;
   offset.value = 0;
+  lastReported = -1;
   try {
     item.value = await watch.item(props.kind, props.id, { play: true });
   } catch (err) {
@@ -748,10 +749,20 @@ function prepareNext() {
   watch.prepare(next.kind || 'episode', next.id, { soon: true }).catch(() => { nextRequested = null; });
 }
 
-/** Send the position. On leaving the page, by beacon so it survives the unload. */
+/**
+ * Send the position. On leaving the page, by beacon so it survives the unload.
+ *
+ * For the item that is playing — not the one in the address: going to the
+ * next episode changes the address first, and the last report of the one
+ * being left (sent as it is torn down) went out under the next one's id. The
+ * next episode then started where the last had stopped, or counted as watched
+ * when the last was left in its credits.
+ */
 function report(force, { beacon = false } = {}) {
   const v = video.value;
-  if (!v || !item.value || !attachedUrl) return;
+  const it = item.value;
+  if (!v || !it || !attachedUrl) return;
+  const { kind, id } = it;
   const pos = v.currentTime;
   const duration = Number.isFinite(v.duration) && pb.value?.complete !== false ? v.duration : (item.value.duration || null);
   if (!pos || (!force && Math.abs(pos - lastReported) < 5)) return;
@@ -759,11 +770,12 @@ function report(force, { beacon = false } = {}) {
   lastReportAt = Date.now();
   const body = { position: pos, duration, at: Date.now() };
   if (beacon && navigator.sendBeacon) {
-    navigator.sendBeacon(`/api/watch/progress/${props.kind}/${props.id}`,
+    navigator.sendBeacon(`/api/watch/progress/${kind}/${id}`,
       new Blob([JSON.stringify(body)], { type: 'application/json' }));
     return;
   }
-  watch.progress(props.kind, props.id, body).then(p => { if (item.value) item.value.progress = p; }).catch(() => {});
+  // The answer is this item's progress: kept only while it is still the one playing.
+  watch.progress(kind, id, body).then(p => { if (item.value === it) it.progress = p; }).catch(() => {});
 }
 
 function onEnded() {

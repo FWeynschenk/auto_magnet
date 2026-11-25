@@ -74,6 +74,7 @@ export const shows = {
   episodes:     (id)                  => req('GET',    `/shows/${id}/episodes`),
   redoEpisode:  (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/redo`),
   skipEpisode:  (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/skip`),
+  searchNow:    (showId, epId)        => req('POST',   `/shows/${showId}/episodes/${epId}/search-now`),
   retryFailed:  ()                    => req('POST',   '/shows/retry-failed'),
   refreshTmdb:  (id)                  => req('POST',   `/shows/${id}/refresh-tmdb`),
   addEpisode:   (id, body)            => req('POST',   `/shows/${id}/episodes/manual`, body),

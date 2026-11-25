@@ -7,7 +7,7 @@
         class="toast"
         :class="t.type"
       >
-        <span class="toast-icon">{{ t.type === 'success' ? '✓' : '!' }}</span>
+        <span class="toast-icon">{{ t.type === 'success' ? '✓' : t.type === 'info' ? 'i' : '!' }}</span>
         <span class="toast-msg">{{ t.message }}</span>
         <button class="toast-close" aria-label="Dismiss" @click="dismissToast(t.id)">✕</button>
       </div>
@@ -46,6 +46,7 @@ import { toasts, dismissToast } from '../toast.js';
 }
 .toast.error   { border-color: var(--red); }
 .toast.success { border-color: var(--green); }
+.toast.info    { border-color: var(--accent); }
 
 .toast-icon {
   flex-shrink: 0;
@@ -56,6 +57,7 @@ import { toasts, dismissToast } from '../toast.js';
 }
 .toast.error   .toast-icon { background: var(--red);   color: #fff; }
 .toast.success .toast-icon { background: var(--green); color: #052e16; }
+.toast.info    .toast-icon { background: var(--accent); color: #fff; }
 
 .toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.4; }
 

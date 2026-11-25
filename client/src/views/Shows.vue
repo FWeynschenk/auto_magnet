@@ -89,6 +89,7 @@
       @choose-episode="chooseEpisode"
       @update-show="updateManagedShow"
       @skip-episode="manageSkip"
+      @changed="manageChanged"
       @refresh-tmdb="manageRefreshTmdb"
     />
 
@@ -307,6 +308,12 @@ async function manageRedo(episode) {
       episode_id: episode.id,
     };
   }
+}
+
+async function manageChanged() {
+  const show = manageShow.value;
+  await silentReload();
+  manageShow.value = list.value.find(s => s.id === show.id) || null;
 }
 
 async function manageSkip(episode) {

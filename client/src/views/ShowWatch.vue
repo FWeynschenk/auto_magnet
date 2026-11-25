@@ -41,6 +41,10 @@
               <div v-if="e.overview" class="overview">{{ e.overview }}</div>
             </div>
           </component>
+          <!-- Out already, though the dates (days, not times) say not yet. -->
+          <button v-if="canTryNow(e)" class="btn-ghost btn-sm try" :disabled="trying === e.id"
+            :title="`Search for ${ep(e)} now, without waiting for its air date to pass`" @click="tryNow(e)">
+            {{ trying === e.id ? 'Searching…' : 'Try now' }}</button>
           <button v-if="e.status === 'done'" class="tick" :class="{ on: e.progress?.watched }"
             :aria-label="e.progress?.watched ? 'Mark unwatched' : 'Mark watched'"
             :title="e.progress?.watched ? 'Watched — click to unmark' : 'Mark watched'"
@@ -58,9 +62,10 @@
 import { ask } from '../dialog.js';
 import { ref, computed, onMounted } from 'vue';
 import { watch } from '../api.js';
-import { notifyError, notifySuccess } from '../toast.js';
+import { notifyError, notifySuccess, pushToast } from '../toast.js';
 import { isAdmin } from '../session.js';
 import { lastSeason, rememberSeason } from '../seasons.js';
+import { shows as showsApi } from '../api.js';
 
 const props = defineProps({ id: { type: String, required: true } });
 const data = ref(null);
@@ -94,6 +99,28 @@ const resume = computed(() => {
   }
   return eps.find(e => e.progress?.position > 0 && !e.progress.watched) || eps.find(e => !e.progress?.watched) || null;
 });
+
+// Try now: for an episode waiting for a release, or airing today or tomorrow
+// by its date — releases come out hours before our day-based dates allow.
+const trying = ref(null);
+const localDay = (offset = 0) => {
+  const d = new Date(Date.now() + offset * 86400e3);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const canTryNow = (e) => isAdmin.value && (e.status === 'pending'
+  || (e.status === 'upcoming' && (!e.air_date || e.air_date <= localDay(1))));
+async function tryNow(e) {
+  trying.value = e.id;
+  try {
+    const r = await showsApi.searchNow(Number(props.id), e.id);
+    if (r.found) { notifySuccess(`${ep(e)} found — downloading: ${r.release}`); await load(); }
+    else pushToast(r.message, 'info', 8000);
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    trying.value = null;
+  }
+}
 
 function pickSeason(s) {
   season.value = s;
@@ -161,7 +188,8 @@ h1 { font-size: 24px; margin-bottom: 4px; }
 .season-tabs .mark { margin-left: auto; }
 .eps { list-style: none; display: flex; flex-direction: column; gap: 10px; }
 .eps li { display: flex; align-items: center; gap: 10px; }
-.eps li.off { opacity: .55; }
+.eps li.off .ep { opacity: .55; }
+.try { flex-shrink: 0; white-space: nowrap; }
 .ep { flex: 1; display: flex; gap: 14px; padding: 8px; border-radius: var(--radius); min-width: 0; }
 a.ep:hover { background: var(--surface); }
 .still { position: relative; width: 180px; flex-shrink: 0; aspect-ratio: 16/9; background: var(--surface); border-radius: 6px; overflow: hidden; }

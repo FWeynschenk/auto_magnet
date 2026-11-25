@@ -99,6 +99,14 @@
 
             <!-- Actions -->
             <div class="ep-actions">
+              <!-- Out already, though the dates (days, not times) say not yet. -->
+              <button
+                v-if="['pending', 'upcoming', 'failed'].includes(ep.status)"
+                class="btn-ghost btn-xs"
+                :disabled="busy === ep.id"
+                :title="'Search for it now, without waiting for its air date to pass'"
+                @click="tryNow(ep)"
+              >{{ busy === ep.id && trying ? 'Searching…' : 'Try now' }}</button>
               <button
                 v-if="ep.status !== 'upcoming' && ep.status !== 'skipped'"
                 class="btn-ghost btn-xs"
@@ -166,7 +174,8 @@
 import { ask } from '../dialog.js';
 import { ref, computed, onMounted } from 'vue';
 import { useDialog } from '../composables/useDialog.js';
-import { settings as settingsApi } from '../api.js';
+import { settings as settingsApi, shows as showsApi } from '../api.js';
+import { notifyError, notifySuccess, pushToast } from '../toast.js';
 
 const props = defineProps({
   show:       Object,
@@ -179,7 +188,7 @@ const props = defineProps({
    */
   onAddEpisode: { type: Function, default: null },
 });
-const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode', 'choose-episode', 'update-show']);
+const emit = defineEmits(['close', 'redo-episode', 'skip-episode', 'refresh-tmdb', 'add-episode', 'choose-episode', 'update-show', 'changed']);
 
 const targets = ref([]);
 onMounted(async () => {
@@ -246,6 +255,23 @@ async function redo(ep) {
   }
   busy.value = ep.id;
   try { emit('redo-episode', ep); } finally { busy.value = null; }
+}
+
+// Try now: search at once, air date or not.
+const trying = ref(false);
+async function tryNow(ep) {
+  busy.value = ep.id;
+  trying.value = true;
+  try {
+    const r = await showsApi.searchNow(props.show.id, ep.id);
+    if (r.found) { notifySuccess(`S${pad(ep.season)}E${pad(ep.episode)} found — downloading: ${r.release}`); emit('changed'); }
+    else pushToast(r.message, 'info', 8000);
+  } catch (err) {
+    notifyError(err.message);
+  } finally {
+    busy.value = null;
+    trying.value = false;
+  }
 }
 
 async function skip(ep) {

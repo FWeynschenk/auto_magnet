@@ -165,6 +165,20 @@ router.post('/:id/episodes/:epId/redo', async (req, res) => {
   res.json(episodes.byId(ep.id));
 });
 
+// Try now: search for a pending or upcoming episode at once, air date or not.
+router.post('/:id/episodes/:epId/search-now', async (req, res) => {
+  const ep = episodes.byId(req.params.epId);
+  if (!ep || String(ep.show_id) !== String(req.params.id)) {
+    return res.status(404).json({ error: 'Episode not found' });
+  }
+  try {
+    const result = await require('../scheduler').searchNow(ep.id);
+    res.json({ ...result, episode: publicRow(episodes.byId(ep.id)) });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
 // Skip an episode so the scheduler advances past it
 router.post('/:id/episodes/:epId/skip', (req, res) => {
   const ep = episodes.byId(req.params.epId);

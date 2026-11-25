@@ -812,8 +812,47 @@ async function grabSeasonPacks(show, deadline = Infinity) {
   return added;
 }
 
-/** Search for and grab one already-aired pending episode. Returns true on success. */
+// Episodes being searched for right now: the run's own pass and a Try now
+// from the page must never grab the same episode twice over.
+const grabbing = new Set();
+const SEARCHABLE = new Set(['pending', 'upcoming', 'failed']);
+
+/** Search for and grab one episode. Returns true on success. */
 async function grabEpisode(show, ep) {
+  if (grabbing.has(ep.id)) return false;
+  const fresh = episodes.byId(ep.id);
+  if (!fresh || !SEARCHABLE.has(fresh.status)) return false;   // found meanwhile
+  grabbing.add(ep.id);
+  try { return await grabOne(show, fresh); } finally { grabbing.delete(ep.id); }
+}
+
+/**
+ * Try now: search for one episode at once, whatever its air date says. The
+ * dates are days, not times — an episode out this morning counts as aired
+ * from just before midnight UTC, plus the buffer — and are sometimes a day
+ * off; this is for when it is out already.
+ * @returns {{ found: boolean, release?: string, message: string }}
+ */
+async function searchNow(epId) {
+  const ep = episodes.byId(epId);
+  if (!ep) throw Object.assign(new Error('Episode not found'), { status: 404 });
+  const show = shows.byId(ep.show_id);
+  const label = epLabel(ep.season, ep.episode);
+  if (!SEARCHABLE.has(ep.status)) {
+    throw Object.assign(new Error(`${label} isn't waiting for a release (it is ${ep.status})`), { status: 409 });
+  }
+  if (grabbing.has(ep.id)) return { found: false, message: `${label} is being searched for right now` };
+  log.info(`"${show.title}" ${label}: Try now${ep.status === 'upcoming' && ep.air_date ? ` (dated ${ep.air_date})` : ''}`, { type: 'episode', id: ep.id });
+  const ok = await grabEpisode(show, ep);
+  const row = episodes.byId(ep.id);
+  if (ok) return { found: true, release: row.release_title, message: `Found: ${row.release_title}` };
+  if (row.last_error?.startsWith('Blocked')) return { found: false, message: row.last_error };
+  return { found: false, message: `Nothing out yet for ${label} that fits` + (row.status === 'upcoming'
+    ? ' — try again later; on its own it is looked for once its air date has passed'
+    : ' — it is looked for again every run') };
+}
+
+async function grabOne(show, ep) {
   const label = epLabel(ep.season, ep.episode);
 
   const key = `episode:${ep.id}`;
@@ -943,5 +982,5 @@ function start() {
 
 module.exports = {
   start, run, runInfo, quickSync, hasAired, effectivelyAired, wrongReleases, showIdentity,
-  syncEpisodes, syncShowMeta, makeSeasonFetcher, waitingOn, searchablePending,
+  syncEpisodes, syncShowMeta, makeSeasonFetcher, waitingOn, searchablePending, searchNow,
 };

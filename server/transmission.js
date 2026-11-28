@@ -198,7 +198,84 @@ async function startTorrents(ids, target = null) { if (ids.length) await rpc('to
 
 async function startTorrent(id, target = null) { await rpc('torrent-start',  { ids: [id] }, target); }
 async function stopTorrent(id, target = null)  { await rpc('torrent-stop',   { ids: [id] }, target); }
-async function purgeTorrent(id, target = null) { await rpc('torrent-remove', { ids: [id], 'delete-local-data': true }, target); }
+/**
+ * Remove a torrent and its files — for good.
+ *
+ * Asked to "remove and delete data", the Transmission desktop apps (GTK, Qt,
+ * macOS) move the files to the system trash when their trash setting is on:
+ * every episode deleted, replaced or cleaned up after seeding piled up there.
+ * So when this process can see the torrent's files (where it plays them from),
+ * Transmission is only asked to forget the torrent, and the files are deleted
+ * here. Only when they can't be seen — Transmission on another machine, or a
+ * path map missing — is Transmission asked to delete them, as before.
+ */
+async function purgeTorrent(id, target = null, { call = rpc } = {}) {
+  let t = null, sess = null;
+  try {
+    t = (await call('torrent-get', { ids: [id], fields: ['id', 'name', 'downloadDir', 'files', 'haveValid', 'haveUnchecked'] }, target))?.torrents?.[0] || null;
+    if (t) sess = await call('session-get', { fields: ['incomplete-dir', 'incomplete-dir-enabled'] }, target);
+  } catch (_) { t = null; }
+  const plan = t ? localPurgePlan(t, sess) : null;
+  if (!plan) {
+    await call('torrent-remove', { ids: [id], 'delete-local-data': true }, target);
+    return { deletedHere: false };
+  }
+  await call('torrent-remove', { ids: [id], 'delete-local-data': false }, target);
+  const removed = removeLocal(plan);
+  return { deletedHere: true, removed };
+}
+
+/**
+ * The torrent's files as this process sees them — each where it may be:
+ * finished in the download folder, or partway (named .part, or in the
+ * incomplete folder) — and the folders they may leave empty. null when its
+ * storage isn't visible from here: the download folder isn't there, or it has
+ * downloaded something and none of it is.
+ */
+function localPurgePlan(t, sess, { mapPath = require('./paths').mapPath } = {}) {
+  const fs = require('fs');
+  const path = require('path');
+  if (!t?.downloadDir || !Array.isArray(t.files)) return null;
+  const roots = [mapPath(t.downloadDir)];
+  if (sess?.['incomplete-dir-enabled'] && sess['incomplete-dir']) roots.push(mapPath(sess['incomplete-dir']));
+  let rootSeen = false;
+  try { rootSeen = fs.statSync(roots[0]).isDirectory(); } catch (_) {}
+  if (!rootSeen) return null;
+  const files = [];
+  const dirs = new Set();
+  for (const f of t.files) {
+    const rel = String(f.name || '');
+    // A name that climbs out of its folder is never followed.
+    if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return null;
+    for (const root of roots) {
+      for (const p of [path.join(root, rel), path.join(root, `${rel}.part`)]) {
+        if (fs.existsSync(p)) files.push(p);
+        for (let d = path.dirname(p); d.startsWith(root + path.sep); d = path.dirname(d)) dirs.add(d);
+      }
+    }
+  }
+  const have = (Number(t.haveValid) || 0) + (Number(t.haveUnchecked) || 0);
+  if (have > 0 && files.length === 0) return null;
+  return { files: [...new Set(files)], dirs: [...dirs].sort((a, b) => b.length - a.length), roots };
+}
+
+/** Delete the files, then the folders they leave empty (deepest first) — never the roots themselves. */
+function removeLocal(plan) {
+  const fs = require('fs');
+  let removed = 0;
+  for (const f of plan.files) {
+    try { fs.rmSync(f, { force: true }); removed++; } catch (err) { console.warn(`[transmission] couldn't delete ${f}: ${err.message}`); }
+  }
+  for (const d of plan.dirs) {
+    if (plan.roots.includes(d)) continue;
+    try {
+      // Only what Transmission would also clear: nothing, or a desktop's junk.
+      const left = fs.readdirSync(d);
+      if (left.every(n => /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*)$/i.test(n))) fs.rmSync(d, { recursive: true, force: true });
+    } catch (_) { /* gone already, or not empty */ }
+  }
+  return removed;
+}
 
 function screenedError(reason) {
   const err = new Error(`rejected by content screen: ${reason}`);
@@ -552,7 +629,7 @@ function removeTorrent(id, targetName = null) {
 
 module.exports = {
   addTorrent, getTorrentProgress, testConnection, removeTorrent,
-  getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent, setFilesUnwanted,
+  getTorrentFiles, getTorrentInfo, getSeedInfo, startTorrent, stopTorrent, purgeTorrent, localPurgePlan, setFilesUnwanted,
   listTorrents, setTorrentLocation, freeSpace, activeDownloads, stopTorrents, startTorrents,
   screenOnce, listQuarantined, QUARANTINE_LABEL,
   listTargets, resolveTarget, progressKey, torrentRef, lowerHash,
